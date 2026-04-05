@@ -8,7 +8,9 @@ using Microsoft.Extensions.Configuration.AzureAppConfiguration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
+using XtremeIdiots.Portal.Integrations.Servers.Api.Client.V1;
 using XtremeIdiots.Portal.Repository.Api.Client.V1;
+using XtremeIdiots.Portal.Server.Events.Processor.App.Commands;
 
 var host = new HostBuilder()
     .ConfigureAppConfiguration(builder =>
@@ -33,6 +35,7 @@ var host = new HostBuilder()
             {
                 options.Connect(new Uri(appConfigEndpoint), credential)
                     .Select("RepositoryApi:*", environmentLabel)
+                    .Select("ServersIntegrationApi:*", environmentLabel)
                     .ConfigureRefresh(refresh =>
                     {
                         refresh.Register("Sentinel", environmentLabel, refreshAll: true)
@@ -62,6 +65,18 @@ var host = new HostBuilder()
         services.AddRepositoryApiClient(options => options
             .WithBaseUrl(configuration["RepositoryApi:BaseUrl"] ?? throw new InvalidOperationException("RepositoryApi:BaseUrl is required"))
             .WithEntraIdAuthentication(configuration["RepositoryApi:ApplicationAudience"] ?? throw new InvalidOperationException("RepositoryApi:ApplicationAudience is required")));
+
+        services.AddServersApiClient(options => options
+            .WithBaseUrl(configuration["ServersIntegrationApi:BaseUrl"] ?? throw new InvalidOperationException("ServersIntegrationApi:BaseUrl is required"))
+            .WithEntraIdAuthentication(configuration["ServersIntegrationApi:ApplicationAudience"] ?? throw new InvalidOperationException("ServersIntegrationApi:ApplicationAudience is required")));
+
+        // Command framework
+        services.AddTransient<IChatCommandProcessor, ChatCommandProcessor>();
+        services.AddTransient<IRconResponseService, RconResponseService>();
+
+        // Chat commands — add new commands here
+        services.AddTransient<IChatCommand, MapVoteLikeCommand>();
+        services.AddTransient<IChatCommand, MapVoteDislikeCommand>();
 
         services.AddMemoryCache();
         services.AddHealthChecks();

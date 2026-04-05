@@ -15,6 +15,8 @@ using XtremeIdiots.Portal.Repository.Api.Client.V1;
 using XtremeIdiots.Portal.Server.Events.Abstractions.V1.Events;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Functions;
 
+using XtremeIdiots.Portal.Server.Events.Processor.App.Commands;
+
 using static XtremeIdiots.Portal.Server.Events.Processor.App.Tests.ServiceBusTestHelpers;
 
 namespace XtremeIdiots.Portal.Server.Events.Processor.App.Tests.Functions;
@@ -30,6 +32,7 @@ public class ChatMessageProcessorTests
     private readonly IMemoryCache _cache;
     private readonly TelemetryClient _telemetry;
     private readonly Mock<FunctionContext> _functionContext = new();
+    private readonly Mock<IChatCommandProcessor> _commandProcessor = new();
     private readonly ChatMessageProcessor _sut;
 
     private static readonly Guid TestServerId = Guid.Parse("11111111-1111-1111-1111-111111111111");
@@ -43,13 +46,16 @@ public class ChatMessageProcessorTests
         _versionedChat.Setup(x => x.V1).Returns(_chatApi.Object);
         _repoClient.Setup(x => x.ChatMessages).Returns(_versionedChat.Object);
 
+        _commandProcessor.Setup(x => x.ProcessAsync(It.IsAny<CommandContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(CommandResult.NotHandled);
+
         _cache = new MemoryCache(Options.Create(new MemoryCacheOptions()));
         _telemetry = new TelemetryClient(new Microsoft.ApplicationInsights.Extensibility.TelemetryConfiguration
         {
             TelemetryChannel = new Mock<ITelemetryChannel>().Object
         });
 
-        _sut = new ChatMessageProcessor(_logger.Object, _repoClient.Object, _cache, _telemetry);
+        _sut = new ChatMessageProcessor(_logger.Object, _repoClient.Object, _cache, _telemetry, _commandProcessor.Object);
     }
 
     private static ChatMessageEvent CreateValidEvent(

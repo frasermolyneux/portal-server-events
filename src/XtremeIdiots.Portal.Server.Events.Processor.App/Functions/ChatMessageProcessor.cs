@@ -14,13 +14,16 @@ using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.ChatMessages;
 using XtremeIdiots.Portal.Server.Events.Abstractions.V1;
 using XtremeIdiots.Portal.Server.Events.Abstractions.V1.Events;
 
+using XtremeIdiots.Portal.Server.Events.Processor.App.Commands;
+
 namespace XtremeIdiots.Portal.Server.Events.Processor.App.Functions;
 
 public class ChatMessageProcessor(
     ILogger<ChatMessageProcessor> logger,
     IRepositoryApiClient repositoryApiClient,
     IMemoryCache memoryCache,
-    TelemetryClient telemetryClient)
+    TelemetryClient telemetryClient,
+    IChatCommandProcessor chatCommandProcessor)
 {
     private static readonly TimeSpan DelayWarningThreshold = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan PlayerCacheExpiration = TimeSpan.FromMinutes(15);
@@ -108,6 +111,27 @@ public class ChatMessageProcessor(
             .ConfigureAwait(false);
 
         TrackEvent("ChatMessagePersisted", chatEvent);
+
+        // Process commands after persisting the chat message
+        var commandContext = new CommandContext
+        {
+            ServerId = chatEvent.ServerId,
+            GameType = chatEvent.GameType,
+            PlayerGuid = chatEvent.PlayerGuid,
+            Username = chatEvent.Username,
+            Message = chatEvent.Message,
+            EventGeneratedUtc = chatEvent.EventGeneratedUtc,
+            EventPublishedUtc = chatEvent.EventPublishedUtc,
+            PlayerId = playerId
+        };
+
+        var commandResult = await chatCommandProcessor.ProcessAsync(commandContext, context.CancellationToken).ConfigureAwait(false);
+
+        if (commandResult.Handled)
+        {
+            logger.LogInformation("Command processed for {Username}: Success={Success}",
+                chatEvent.Username, commandResult.Success);
+        }
     }
 
     private async Task<Guid> GetPlayerId(GameType gameType, string guid)
