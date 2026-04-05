@@ -8,7 +8,6 @@ public static class Queues
     public const string PlayerConnected = "player-connected";
     public const string PlayerDisconnected = "player-disconnected";
     public const string ChatMessage = "chat-message";
-    public const string MapVote = "map-vote";
     public const string ServerConnected = "server-connected";
     public const string MapChange = "map-change";
     public const string ServerStatus = "server-status";
