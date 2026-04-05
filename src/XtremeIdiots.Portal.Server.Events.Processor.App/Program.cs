@@ -10,6 +10,8 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.FeatureManagement;
 
+using MX.GeoLocation.Api.Client.V1;
+
 using XtremeIdiots.Portal.Integrations.Servers.Api.Client.V1;
 using XtremeIdiots.Portal.Repository.Api.Client.V1;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Commands;
@@ -39,6 +41,7 @@ var host = new HostBuilder()
                 options.Connect(new Uri(appConfigEndpoint), credential)
                     .Select("RepositoryApi:*", environmentLabel)
                     .Select("ServersIntegrationApi:*", environmentLabel)
+                    .Select("GeoLocationApi:*", environmentLabel)
                     .Select("ContentSafety:*", environmentLabel)
                     .UseFeatureFlags(ff => ff.Label = environmentLabel)
                     .ConfigureRefresh(refresh =>
@@ -74,6 +77,13 @@ var host = new HostBuilder()
         services.AddServersApiClient(options => options
             .WithBaseUrl(configuration["ServersIntegrationApi:BaseUrl"] ?? throw new InvalidOperationException("ServersIntegrationApi:BaseUrl is required"))
             .WithEntraIdAuthentication(configuration["ServersIntegrationApi:ApplicationAudience"] ?? throw new InvalidOperationException("ServersIntegrationApi:ApplicationAudience is required")));
+
+        services.AddGeoLocationApiClient(options =>
+        {
+            options.WithBaseUrl(configuration["GeoLocationApi:BaseUrl"] ?? throw new InvalidOperationException("GeoLocationApi:BaseUrl is required"))
+                .WithApiKeyAuthentication(configuration["GeoLocationApi:ApiKey"] ?? throw new InvalidOperationException("GeoLocationApi:ApiKey is required"), "Ocp-Apim-Subscription-Key")
+                .WithEntraIdAuthentication(configuration["GeoLocationApi:ApplicationAudience"] ?? throw new InvalidOperationException("GeoLocationApi:ApplicationAudience is required"));
+        });
 
         // Command framework
         services.AddTransient<IChatCommandProcessor, ChatCommandProcessor>();

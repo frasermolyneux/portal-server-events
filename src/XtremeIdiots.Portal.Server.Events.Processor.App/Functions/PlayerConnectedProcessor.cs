@@ -8,6 +8,8 @@ using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
 
+using MX.GeoLocation.Api.Client.V1;
+
 using XtremeIdiots.Portal.Repository.Api.Client.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Constants.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.Players;
@@ -19,6 +21,7 @@ namespace XtremeIdiots.Portal.Server.Events.Processor.App.Functions;
 public class PlayerConnectedProcessor(
     ILogger<PlayerConnectedProcessor> logger,
     IRepositoryApiClient repositoryApiClient,
+    IGeoLocationApiClient geoLocationApiClient,
     IMemoryCache memoryCache,
     TelemetryClient telemetryClient)
 {
@@ -110,6 +113,7 @@ public class PlayerConnectedProcessor(
             {
                 InvalidatePlayerCache(gameType, playerEvent.PlayerGuid);
                 TrackEvent("PlayerCreated", playerEvent);
+                await EnrichWithGeoLocation(playerEvent).ConfigureAwait(false);
                 return;
             }
             else
@@ -137,6 +141,81 @@ public class PlayerConnectedProcessor(
         await repositoryApiClient.Players.V1.UpdatePlayer(editPlayerDto).ConfigureAwait(false);
         InvalidatePlayerCache(gameType, playerEvent.PlayerGuid);
         TrackEvent("PlayerConnected", playerEvent);
+
+        // GeoIP enrichment (best-effort, never blocks player processing)
+        await EnrichWithGeoLocation(playerEvent).ConfigureAwait(false);
+    }
+
+    private async Task EnrichWithGeoLocation(PlayerConnectedEvent playerEvent)
+    {
+        if (string.IsNullOrWhiteSpace(playerEvent.IpAddress))
+            return;
+
+        try
+        {
+            var geoResult = await geoLocationApiClient.GeoLookup.V1_1
+                .GetIpIntelligence(playerEvent.IpAddress)
+                .ConfigureAwait(false);
+
+            if (geoResult.IsSuccess && geoResult.Result?.Data is not null)
+            {
+                var intel = geoResult.Result.Data;
+
+                var properties = new Dictionary<string, string>
+                {
+                    ["GameType"] = playerEvent.GameType,
+                    ["ServerId"] = playerEvent.ServerId.ToString(),
+                    ["PlayerGuid"] = playerEvent.PlayerGuid,
+                    ["Username"] = playerEvent.Username,
+                    ["CountryCode"] = intel.CountryCode ?? string.Empty,
+                    ["CountryName"] = intel.CountryName ?? string.Empty,
+                    ["CityName"] = intel.CityName ?? string.Empty,
+                    ["Latitude"] = intel.Latitude?.ToString() ?? string.Empty,
+                    ["Longitude"] = intel.Longitude?.ToString() ?? string.Empty
+                };
+
+                if (intel.Anonymizer is not null)
+                {
+                    properties["IsAnonymous"] = intel.Anonymizer.IsAnonymous.ToString();
+                    properties["IsAnonymousVpn"] = intel.Anonymizer.IsAnonymousVpn.ToString();
+                    properties["IsTorExitNode"] = intel.Anonymizer.IsTorExitNode.ToString();
+                    properties["IsHostingProvider"] = intel.Anonymizer.IsHostingProvider.ToString();
+                    properties["IsPublicProxy"] = intel.Anonymizer.IsPublicProxy.ToString();
+                }
+
+                if (intel.ProxyCheck is not null)
+                {
+                    properties["RiskScore"] = intel.ProxyCheck.RiskScore.ToString();
+                    properties["IsProxy"] = intel.ProxyCheck.IsProxy.ToString();
+                    properties["IsVpn"] = intel.ProxyCheck.IsVpn.ToString();
+                    properties["ProxyType"] = intel.ProxyCheck.ProxyType;
+                }
+
+                telemetryClient.TrackEvent(new EventTelemetry("PlayerIntelligenceEnriched")
+                {
+                    Properties = { ["GameType"] = playerEvent.GameType, ["ServerId"] = playerEvent.ServerId.ToString(),
+                        ["PlayerGuid"] = playerEvent.PlayerGuid, ["Username"] = playerEvent.Username,
+                        ["CountryCode"] = intel.CountryCode ?? string.Empty,
+                        ["RiskScore"] = intel.ProxyCheck?.RiskScore.ToString() ?? string.Empty,
+                        ["IsVpn"] = intel.ProxyCheck?.IsVpn.ToString() ?? string.Empty,
+                        ["IsProxy"] = intel.ProxyCheck?.IsProxy.ToString() ?? string.Empty,
+                        ["IsAnonymous"] = intel.Anonymizer?.IsAnonymous.ToString() ?? string.Empty,
+                        ["IsTorExitNode"] = intel.Anonymizer?.IsTorExitNode.ToString() ?? string.Empty
+                    }
+                });
+
+                logger.LogInformation("IP Intelligence for {Username}: Country={CountryCode}, RiskScore={RiskScore}, IsVpn={IsVpn}, IsProxy={IsProxy}",
+                    playerEvent.Username,
+                    intel.CountryCode,
+                    intel.ProxyCheck?.RiskScore,
+                    intel.ProxyCheck?.IsVpn,
+                    intel.ProxyCheck?.IsProxy);
+            }
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "IP intelligence enrichment failed for {IpAddress}", playerEvent.IpAddress);
+        }
     }
 
     private async Task<Guid> GetPlayerId(GameType gameType, string guid)

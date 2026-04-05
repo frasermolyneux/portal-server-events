@@ -7,6 +7,10 @@ using Microsoft.Extensions.Options;
 
 using Moq;
 
+using MX.Api.Abstractions;
+using MX.GeoLocation.Abstractions.Models.V1_1;
+using MX.GeoLocation.Api.Client.V1;
+
 using XtremeIdiots.Portal.Repository.Abstractions.Constants.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Interfaces.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.Players;
@@ -22,6 +26,9 @@ public class PlayerConnectedProcessorTests
 {
     private readonly Mock<ILogger<PlayerConnectedProcessor>> _logger = new();
     private readonly Mock<IRepositoryApiClient> _repoClient = new();
+    private readonly Mock<IGeoLocationApiClient> _geoClient = new();
+    private readonly Mock<IVersionedGeoLookupApi> _versionedGeoLookup = new();
+    private readonly Mock<MX.GeoLocation.Abstractions.Interfaces.V1_1.IGeoLookupApi> _geoLookupApi = new();
     private readonly Mock<IVersionedPlayersApi> _versionedPlayers = new();
     private readonly Mock<IPlayersApi> _playersApi = new();
     private readonly IMemoryCache _cache;
@@ -37,13 +44,16 @@ public class PlayerConnectedProcessorTests
         _versionedPlayers.Setup(x => x.V1).Returns(_playersApi.Object);
         _repoClient.Setup(x => x.Players).Returns(_versionedPlayers.Object);
 
+        _versionedGeoLookup.Setup(x => x.V1_1).Returns(_geoLookupApi.Object);
+        _geoClient.Setup(x => x.GeoLookup).Returns(_versionedGeoLookup.Object);
+
         _cache = new MemoryCache(Options.Create(new MemoryCacheOptions()));
         _telemetry = new TelemetryClient(new Microsoft.ApplicationInsights.Extensibility.TelemetryConfiguration
         {
             TelemetryChannel = new Mock<ITelemetryChannel>().Object
         });
 
-        _sut = new PlayerConnectedProcessor(_logger.Object, _repoClient.Object, _cache, _telemetry);
+        _sut = new PlayerConnectedProcessor(_logger.Object, _repoClient.Object, _geoClient.Object, _cache, _telemetry);
     }
 
     private static PlayerConnectedEvent CreateValidEvent(
@@ -185,5 +195,80 @@ public class PlayerConnectedProcessorTests
         await _sut.ProcessPlayerConnected(message, _functionContext.Object);
 
         _playersApi.Verify(x => x.HeadPlayerByGameType(It.IsAny<GameType>(), It.IsAny<string>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task ProcessPlayerConnected_WithIpAddress_EnrichesWithGeoLocation()
+    {
+        var evt = CreateValidEvent();
+        var message = CreateMessage(evt);
+
+        _playersApi.Setup(x => x.HeadPlayerByGameType(GameType.CallOfDuty4, "abc123guid"))
+            .ReturnsAsync(SuccessResult());
+
+        var playerDto = CreatePlayerDto(TestPlayerId);
+        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.None))
+            .ReturnsAsync(SuccessResult(playerDto));
+
+        _playersApi.Setup(x => x.UpdatePlayer(It.IsAny<EditPlayerDto>()))
+            .ReturnsAsync(SuccessResult());
+
+        var geoData = Newtonsoft.Json.JsonConvert.DeserializeObject<CityGeoLocationDto>(
+            Newtonsoft.Json.JsonConvert.SerializeObject(new { Latitude = 51.5074, Longitude = -0.1278, CountryCode = "GB" }))!;
+
+        _geoLookupApi.Setup(x => x.GetCityGeoLocation("192.168.1.1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<CityGeoLocationDto>(System.Net.HttpStatusCode.OK, new ApiResponse<CityGeoLocationDto>(geoData)));
+
+        await _sut.ProcessPlayerConnected(message, _functionContext.Object);
+
+        _geoLookupApi.Verify(x => x.GetCityGeoLocation("192.168.1.1", It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task ProcessPlayerConnected_GeoLookupFails_StillProcessesPlayer()
+    {
+        var evt = CreateValidEvent();
+        var message = CreateMessage(evt);
+
+        _playersApi.Setup(x => x.HeadPlayerByGameType(GameType.CallOfDuty4, "abc123guid"))
+            .ReturnsAsync(SuccessResult());
+
+        var playerDto = CreatePlayerDto(TestPlayerId);
+        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.None))
+            .ReturnsAsync(SuccessResult(playerDto));
+
+        _playersApi.Setup(x => x.UpdatePlayer(It.IsAny<EditPlayerDto>()))
+            .ReturnsAsync(SuccessResult());
+
+        _geoLookupApi.Setup(x => x.GetCityGeoLocation("192.168.1.1", It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new HttpRequestException("GeoLocation API unavailable"));
+
+        await _sut.ProcessPlayerConnected(message, _functionContext.Object);
+
+        // Player was still updated despite geo lookup failure
+        _playersApi.Verify(x => x.UpdatePlayer(It.Is<EditPlayerDto>(dto =>
+            dto.PlayerId == TestPlayerId &&
+            dto.Username == "TestPlayer")), Times.Once);
+    }
+
+    [Fact]
+    public async Task ProcessPlayerConnected_EmptyIpAddress_SkipsGeoLookup()
+    {
+        var evt = CreateValidEvent(ipAddress: "");
+        var message = CreateMessage(evt);
+
+        _playersApi.Setup(x => x.HeadPlayerByGameType(GameType.CallOfDuty4, "abc123guid"))
+            .ReturnsAsync(SuccessResult());
+
+        var playerDto = CreatePlayerDto(TestPlayerId);
+        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.None))
+            .ReturnsAsync(SuccessResult(playerDto));
+
+        _playersApi.Setup(x => x.UpdatePlayer(It.IsAny<EditPlayerDto>()))
+            .ReturnsAsync(SuccessResult());
+
+        await _sut.ProcessPlayerConnected(message, _functionContext.Object);
+
+        _geoLookupApi.Verify(x => x.GetCityGeoLocation(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 }
