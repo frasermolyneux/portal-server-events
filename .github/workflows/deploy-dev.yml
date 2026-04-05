@@ -1,0 +1,78 @@
+name: Deploy Dev
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  build-and-test:
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ubuntu-latest
+    steps:
+      - id: ci
+        uses: frasermolyneux/actions/dotnet-func-ci@dotnet-func-ci/v1.4
+        with:
+          dotnet-project: "XtremeIdiots.Portal.Server.Events.Processor.App"
+          dotnet-version: 9.0.x
+          src-folder: "src"
+
+    outputs:
+      build_version: ${{ steps.ci.outputs.build_version }}
+
+  terraform-plan-and-apply-dev:
+    permissions:
+      contents: read
+      id-token: write
+    environment: Development
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ${{ github.repository }}-dev
+    steps:
+      - uses: frasermolyneux/actions/terraform-plan-and-apply@terraform-plan-and-apply/v1.4
+        with:
+          terraform-folder: "terraform"
+          terraform-var-file: "tfvars/dev.tfvars"
+          terraform-backend-file: "backends/dev.backend.hcl"
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - id: terraform-output
+        shell: bash
+        run: |
+          cd terraform
+          echo "function_app_name=$(terraform output -raw function_app_name)" >> $GITHUB_OUTPUT
+          echo "resource_group_name=$(terraform output -raw resource_group_name)" >> $GITHUB_OUTPUT
+        env:
+          ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          ARM_USE_AZUREAD: true
+          ARM_USE_OIDC: true
+
+    outputs:
+      function_app_name: ${{ steps.terraform-output.outputs.function_app_name }}
+      resource_group_name: ${{ steps.terraform-output.outputs.resource_group_name }}
+
+  function-app-deploy-dev:
+    permissions:
+      contents: read
+      id-token: write
+    environment: Development
+    needs: [build-and-test, terraform-plan-and-apply-dev]
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ${{ github.repository }}-dev
+    steps:
+      - uses: frasermolyneux/actions/deploy-function-app@deploy-function-app/v1.2
+        with:
+          function-app-artifact-name: "XtremeIdiots.Portal.Server.Events.Processor.App"
+          function-app-name: ${{ needs.terraform-plan-and-apply-dev.outputs.function_app_name }}
+          function-app-resource-group: ${{ needs.terraform-plan-and-apply-dev.outputs.resource_group_name }}
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}

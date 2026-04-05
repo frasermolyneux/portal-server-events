@@ -1,0 +1,141 @@
+name: PR Verify
+
+# Label-based workflow control:
+# - Always run Terraform plan against Development when Terraform exists (skips for drafts)
+# - 'deploy-dev': Runs Terraform plan+apply and deploys the app to Development (skips for drafts/dependabot)
+# - 'run-prd-plan': Runs Terraform plan against Production (skips for drafts/dependabot)
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
+
+permissions: {}
+
+jobs:
+  build-and-test:
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: frasermolyneux/actions/dotnet-func-ci@dotnet-func-ci/v1.4
+        with:
+          dotnet-project: "XtremeIdiots.Portal.Server.Events.Processor.App"
+          dotnet-version: 9.0.x
+          src-folder: "src"
+
+  # Dev Terraform Plan:
+  # - Runs automatically for feature/bugfix/hotfix branches (non-copilot, non-dependabot)
+  # - Skipped for copilot/* branches unless 'run-dev-plan' label is added
+  # - Always skipped for dependabot PRs
+  terraform-plan-dev:
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
+    if: github.event.pull_request.draft == false && !contains(github.event.pull_request.labels.*.name, 'deploy-dev')
+    needs: build-and-test
+    environment: Development
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ${{ github.repository }}-dev
+    env:
+      AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+    steps:
+      - uses: frasermolyneux/actions/terraform-plan@terraform-plan/v1.4
+        with:
+          terraform-folder: "terraform"
+          terraform-var-file: "tfvars/dev.tfvars"
+          terraform-backend-file: "backends/dev.backend.hcl"
+          AZURE_CLIENT_ID: ${{ env.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ env.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
+  terraform-plan-and-apply-dev:
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
+    if: github.event.pull_request.draft == false && github.event.pull_request.user.login != 'dependabot[bot]' && contains(github.event.pull_request.labels.*.name, 'deploy-dev')
+    needs: build-and-test
+    environment: Development
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ${{ github.repository }}-dev
+    steps:
+      - uses: frasermolyneux/actions/terraform-plan-and-apply@terraform-plan-and-apply/v1.4
+        with:
+          terraform-folder: "terraform"
+          terraform-var-file: "tfvars/dev.tfvars"
+          terraform-backend-file: "backends/dev.backend.hcl"
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - id: terraform-output
+        shell: bash
+        run: |
+          cd terraform
+          echo "function_app_name=$(terraform output -raw function_app_name)" >> $GITHUB_OUTPUT
+          echo "resource_group_name=$(terraform output -raw resource_group_name)" >> $GITHUB_OUTPUT
+        env:
+          ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          ARM_USE_AZUREAD: true
+          ARM_USE_OIDC: true
+
+    outputs:
+      function_app_name: ${{ steps.terraform-output.outputs.function_app_name }}
+      resource_group_name: ${{ steps.terraform-output.outputs.resource_group_name }}
+
+  function-app-deploy-dev:
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
+    if: github.event.pull_request.draft == false && github.event.pull_request.user.login != 'dependabot[bot]' && contains(github.event.pull_request.labels.*.name, 'deploy-dev')
+    environment: Development
+    needs: [build-and-test, terraform-plan-and-apply-dev]
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ${{ github.repository }}-dev
+    steps:
+      - uses: frasermolyneux/actions/deploy-function-app@deploy-function-app/v1.2
+        with:
+          function-app-artifact-name: "XtremeIdiots.Portal.Server.Events.Processor.App"
+          function-app-name: ${{ needs.terraform-plan-and-apply-dev.outputs.function_app_name }}
+          function-app-resource-group: ${{ needs.terraform-plan-and-apply-dev.outputs.resource_group_name }}
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+  # Prd Terraform Plan:
+  terraform-plan-prd:
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
+    if: github.event.pull_request.draft == false && contains(github.event.pull_request.labels.*.name, 'run-prd-plan')
+    needs: build-and-test
+    environment: Production
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ${{ github.repository }}-prd
+    env:
+      AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+    steps:
+      - uses: frasermolyneux/actions/terraform-plan@terraform-plan/v1.4
+        with:
+          terraform-folder: "terraform"
+          terraform-var-file: "tfvars/prd.tfvars"
+          terraform-backend-file: "backends/prd.backend.hcl"
+          AZURE_CLIENT_ID: ${{ env.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ env.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ env.AZURE_SUBSCRIPTION_ID }}

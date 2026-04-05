@@ -1,0 +1,54 @@
+name: Destroy Development
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 23 * * *"
+
+permissions: {}
+
+jobs:
+  terraform-destroy-dev:
+    permissions:
+      id-token: write
+      contents: read
+    environment: Development
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ${{ github.repository }}-dev
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Azure Login
+      uses: azure/login@v2
+      with:
+        client-id: ${{ vars.AZURE_CLIENT_ID }}
+        tenant-id: ${{ vars.AZURE_TENANT_ID }}
+        subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v4
+      with:
+        terraform_wrapper: false
+
+    - name: Terraform Init
+      shell: bash
+      run: |
+        cd terraform
+        terraform init -backend-config=backends/dev.backend.hcl -var-file=tfvars/dev.tfvars
+      env:
+        ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+        ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+        ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+        ARM_USE_AZUREAD: true
+        ARM_USE_OIDC: true
+
+    - uses: frasermolyneux/actions/terraform-destroy@terraform-destroy/v1.2
+      with:
+        terraform-folder: "terraform"
+        terraform-var-file: "tfvars/dev.tfvars"
+        terraform-backend-file: "backends/dev.backend.hcl"
+        AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+        AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+        AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+        perform-checkout: "false"

@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="XtremeIdiots.Portal.Server.Events.Abstractions.V1/XtremeIdiots.Portal.Server.Events.Abstractions.V1.csproj" />
+  <Project Path="XtremeIdiots.Portal.Server.Events.Processor.App.Tests/XtremeIdiots.Portal.Server.Events.Processor.App.Tests.csproj" />
+  <Project Path="XtremeIdiots.Portal.Server.Events.Processor.App/XtremeIdiots.Portal.Server.Events.Processor.App.csproj" />
+</Solution>

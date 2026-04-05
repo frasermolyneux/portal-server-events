@@ -1,0 +1,16 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+    <PackageId>XtremeIdiots.Portal.Server.Events.Abstractions.V1</PackageId>
+    <Product>XtremeIdiots Portal</Product>
+    <Title>XtremeIdiots Portal Server Events Abstractions</Title>
+    <Description>Service Bus event contracts for the XtremeIdiots Portal server event pipeline.</Description>
+    <PackageProjectUrl>https://github.com/frasermolyneux/portal-server-events</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/frasermolyneux/portal-server-events</RepositoryUrl>
+  </PropertyGroup>
+
+</Project>
