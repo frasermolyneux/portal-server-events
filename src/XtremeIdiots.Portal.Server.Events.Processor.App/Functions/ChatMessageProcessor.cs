@@ -6,6 +6,7 @@ using Microsoft.ApplicationInsights;
 using Microsoft.ApplicationInsights.DataContracts;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 
 using XtremeIdiots.Portal.Repository.Api.Client.V1;
@@ -15,6 +16,7 @@ using XtremeIdiots.Portal.Server.Events.Abstractions.V1;
 using XtremeIdiots.Portal.Server.Events.Abstractions.V1.Events;
 
 using XtremeIdiots.Portal.Server.Events.Processor.App.Commands;
+using XtremeIdiots.Portal.Server.Events.Processor.App.Moderation;
 
 namespace XtremeIdiots.Portal.Server.Events.Processor.App.Functions;
 
@@ -23,7 +25,9 @@ public class ChatMessageProcessor(
     IRepositoryApiClient repositoryApiClient,
     IMemoryCache memoryCache,
     TelemetryClient telemetryClient,
-    IChatCommandProcessor chatCommandProcessor)
+    IChatCommandProcessor chatCommandProcessor,
+    IChatModerationPipeline moderationPipeline,
+    IConfiguration configuration)
 {
     private static readonly TimeSpan DelayWarningThreshold = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan PlayerCacheExpiration = TimeSpan.FromMinutes(15);
@@ -87,13 +91,15 @@ public class ChatMessageProcessor(
         });
 
         // Get player context (cached)
-        var playerId = await GetPlayerId(gameType, chatEvent.PlayerGuid).ConfigureAwait(false);
+        var playerContext = await GetPlayerContext(gameType, chatEvent.PlayerGuid).ConfigureAwait(false);
 
-        if (playerId == Guid.Empty)
+        if (playerContext is null)
         {
             throw new InvalidOperationException(
                 $"Player not found for Guid '{chatEvent.PlayerGuid}'. Message will retry.");
         }
+
+        var playerId = playerContext.Value.PlayerId;
 
         // Map ChatMessageType to ChatType
         var chatType = chatEvent.Type == ChatMessageType.Team ? ChatType.Team : ChatType.All;
@@ -132,28 +138,50 @@ public class ChatMessageProcessor(
             logger.LogInformation("Command processed for {Username}: Success={Success}",
                 chatEvent.Username, commandResult.Success);
         }
+
+        // Run moderation pipeline (never throws)
+        var moderationContext = new ModerationContext
+        {
+            ServerId = chatEvent.ServerId,
+            GameType = chatEvent.GameType,
+            PlayerGuid = chatEvent.PlayerGuid,
+            Username = chatEvent.Username,
+            Message = chatEvent.Message,
+            PlayerId = playerId,
+            PlayerFirstSeen = playerContext.Value.FirstSeen,
+            HasModerateChatTag = playerContext.Value.HasModerateChatTag
+        };
+
+        await moderationPipeline.RunAsync(moderationContext, context.CancellationToken).ConfigureAwait(false);
     }
 
-    private async Task<Guid> GetPlayerId(GameType gameType, string guid)
+    private async Task<PlayerContextInfo?> GetPlayerContext(GameType gameType, string guid)
     {
         var cacheKey = $"player-ctx-{gameType}-{guid}";
 
-        if (memoryCache.TryGetValue(cacheKey, out Guid cachedId))
-            return cachedId;
+        if (memoryCache.TryGetValue(cacheKey, out PlayerContextInfo cached))
+            return cached;
 
         var response = await repositoryApiClient.Players.V1
-            .GetPlayerByGameType(gameType, guid, PlayerEntityOptions.None)
+            .GetPlayerByGameType(gameType, guid, PlayerEntityOptions.Tags)
             .ConfigureAwait(false);
 
         if (!response.IsSuccess || response.Result?.Data is null)
-            return Guid.Empty;
+            return null;
 
-        var playerId = response.Result.Data.PlayerId;
-        memoryCache.Set(cacheKey, playerId,
+        var player = response.Result.Data;
+        var moderateTagName = configuration["ContentSafety:ModerateChatTagName"] ?? "moderate-chat";
+        var hasTag = player.Tags.Any(t =>
+            string.Equals(t.Tag?.Name, moderateTagName, StringComparison.OrdinalIgnoreCase));
+
+        var ctx = new PlayerContextInfo(player.PlayerId, player.FirstSeen, hasTag);
+        memoryCache.Set(cacheKey, ctx,
             new MemoryCacheEntryOptions().SetSlidingExpiration(PlayerCacheExpiration));
 
-        return playerId;
+        return ctx;
     }
+
+    private readonly record struct PlayerContextInfo(Guid PlayerId, DateTime FirstSeen, bool HasModerateChatTag);
 
     private void TrackEvent(string eventName, ChatMessageEvent chatEvent)
     {

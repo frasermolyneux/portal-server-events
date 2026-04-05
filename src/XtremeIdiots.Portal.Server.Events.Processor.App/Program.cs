@@ -1,5 +1,6 @@
 using System.Reflection;
 
+using Azure.AI.ContentSafety;
 using Azure.Identity;
 
 using Microsoft.Azure.Functions.Worker;
@@ -7,10 +8,12 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Configuration.AzureAppConfiguration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.FeatureManagement;
 
 using XtremeIdiots.Portal.Integrations.Servers.Api.Client.V1;
 using XtremeIdiots.Portal.Repository.Api.Client.V1;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Commands;
+using XtremeIdiots.Portal.Server.Events.Processor.App.Moderation;
 
 var host = new HostBuilder()
     .ConfigureAppConfiguration(builder =>
@@ -36,6 +39,8 @@ var host = new HostBuilder()
                 options.Connect(new Uri(appConfigEndpoint), credential)
                     .Select("RepositoryApi:*", environmentLabel)
                     .Select("ServersIntegrationApi:*", environmentLabel)
+                    .Select("ContentSafety:*", environmentLabel)
+                    .UseFeatureFlags(ff => ff.Label = environmentLabel)
                     .ConfigureRefresh(refresh =>
                     {
                         refresh.Register("Sentinel", environmentLabel, refreshAll: true)
@@ -77,6 +82,30 @@ var host = new HostBuilder()
         // Chat commands — add new commands here
         services.AddTransient<IChatCommand, MapVoteLikeCommand>();
         services.AddTransient<IChatCommand, MapVoteDislikeCommand>();
+
+        // Feature management
+        services.AddFeatureManagement();
+
+        // Chat moderation services
+        var csEndpoint = configuration["ContentSafety:Endpoint"];
+        if (!string.IsNullOrEmpty(csEndpoint))
+        {
+            services.AddSingleton(_ => new ContentSafetyClient(
+                new Uri(csEndpoint),
+                new DefaultAzureCredential(new DefaultAzureCredentialOptions
+                {
+                    ManagedIdentityClientId = configuration["AZURE_CLIENT_ID"]
+                })));
+        }
+        else
+        {
+            services.AddSingleton(_ => new ContentSafetyClient(
+                new Uri("https://not-configured.cognitiveservices.azure.com/"),
+                new DefaultAzureCredential()));
+        }
+
+        services.AddSingleton<IChatModerationService, ChatModerationService>();
+        services.AddTransient<IChatModerationPipeline, ChatModerationPipeline>();
 
         services.AddMemoryCache();
         services.AddHealthChecks();

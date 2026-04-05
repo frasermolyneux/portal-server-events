@@ -21,6 +21,8 @@
     <PackageReference Include="Microsoft.Extensions.Configuration.AzureAppConfiguration" Version="8.1.2" />
     <PackageReference Include="Microsoft.Extensions.Configuration.UserSecrets" Version="10.0.3" />
     <PackageReference Include="Microsoft.Extensions.Diagnostics.HealthChecks" Version="10.0.3" />
+    <PackageReference Include="Azure.AI.ContentSafety" Version="1.*" />
+    <PackageReference Include="Microsoft.FeatureManagement" Version="4.*" />
     <PackageReference Include="XtremeIdiots.Portal.Integrations.Servers.Api.Client.V1" Version="2.1.109" />
     <PackageReference Include="XtremeIdiots.Portal.Repository.Api.Client.V1" Version="2.1.135" />
   </ItemGroup>

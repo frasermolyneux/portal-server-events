@@ -2,6 +2,7 @@ using Microsoft.ApplicationInsights;
 using Microsoft.ApplicationInsights.Channel;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -16,6 +17,7 @@ using XtremeIdiots.Portal.Server.Events.Abstractions.V1.Events;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Functions;
 
 using XtremeIdiots.Portal.Server.Events.Processor.App.Commands;
+using XtremeIdiots.Portal.Server.Events.Processor.App.Moderation;
 
 using static XtremeIdiots.Portal.Server.Events.Processor.App.Tests.ServiceBusTestHelpers;
 
@@ -33,6 +35,8 @@ public class ChatMessageProcessorTests
     private readonly TelemetryClient _telemetry;
     private readonly Mock<FunctionContext> _functionContext = new();
     private readonly Mock<IChatCommandProcessor> _commandProcessor = new();
+    private readonly Mock<IChatModerationPipeline> _moderationPipeline = new();
+    private readonly IConfiguration _configuration;
     private readonly ChatMessageProcessor _sut;
 
     private static readonly Guid TestServerId = Guid.Parse("11111111-1111-1111-1111-111111111111");
@@ -55,7 +59,14 @@ public class ChatMessageProcessorTests
             TelemetryChannel = new Mock<ITelemetryChannel>().Object
         });
 
-        _sut = new ChatMessageProcessor(_logger.Object, _repoClient.Object, _cache, _telemetry, _commandProcessor.Object);
+        _configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["ContentSafety:ModerateChatTagName"] = "moderate-chat"
+            })
+            .Build();
+
+        _sut = new ChatMessageProcessor(_logger.Object, _repoClient.Object, _cache, _telemetry, _commandProcessor.Object, _moderationPipeline.Object, _configuration);
     }
 
     private static ChatMessageEvent CreateValidEvent(
@@ -84,7 +95,7 @@ public class ChatMessageProcessorTests
         var message = CreateMessage(evt);
 
         var playerDto = CreatePlayerDto(TestPlayerId);
-        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.None))
+        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.Tags))
             .ReturnsAsync(SuccessResult(playerDto));
 
         _chatApi.Setup(x => x.CreateChatMessage(It.IsAny<CreateChatMessageDto>(), It.IsAny<CancellationToken>()))
@@ -107,7 +118,7 @@ public class ChatMessageProcessorTests
         var message = CreateMessage(evt);
 
         var playerDto = CreatePlayerDto(TestPlayerId);
-        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.None))
+        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.Tags))
             .ReturnsAsync(SuccessResult(playerDto));
 
         _chatApi.Setup(x => x.CreateChatMessage(It.IsAny<CreateChatMessageDto>(), It.IsAny<CancellationToken>()))
@@ -125,7 +136,7 @@ public class ChatMessageProcessorTests
         var evt = CreateValidEvent();
         var message = CreateMessage(evt);
 
-        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.None))
+        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.Tags))
             .ReturnsAsync(NotFoundResult<PlayerDto>());
 
         await Assert.ThrowsAsync<InvalidOperationException>(
@@ -179,7 +190,7 @@ public class ChatMessageProcessorTests
     public async Task CachedPlayer_DoesNotCallApiAgain()
     {
         var playerDto = CreatePlayerDto(TestPlayerId);
-        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.None))
+        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.Tags))
             .ReturnsAsync(SuccessResult(playerDto));
 
         _chatApi.Setup(x => x.CreateChatMessage(It.IsAny<CreateChatMessageDto>(), It.IsAny<CancellationToken>()))
@@ -190,7 +201,7 @@ public class ChatMessageProcessorTests
         await _sut.ProcessChatMessage(CreateMessage(CreateValidEvent()), _functionContext.Object);
 
         // GetPlayerByGameType should only be called once (second call uses cache)
-        _playersApi.Verify(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.None), Times.Once);
+        _playersApi.Verify(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.Tags), Times.Once);
         _chatApi.Verify(x => x.CreateChatMessage(It.IsAny<CreateChatMessageDto>(), It.IsAny<CancellationToken>()), Times.Exactly(2));
     }
 }
