@@ -46,6 +46,8 @@ var host = new HostBuilder()
                     .Select("RepositoryApi:*", environmentLabel)
                     .Select("ServersIntegrationApi:*", environmentLabel)
                     .Select("GeoLocationApi:*", environmentLabel)
+                    .Select("XtremeIdiots.Portal.Server.Events.Processor.App:*", environmentLabel)
+                    .TrimKeyPrefix("XtremeIdiots.Portal.Server.Events.Processor.App:")
                     .Select("XtremeIdiots:*", environmentLabel)
                     .Select("ContentSafety:*", environmentLabel)
                     .UseFeatureFlags(ff => ff.Label = environmentLabel)
@@ -83,12 +85,23 @@ var host = new HostBuilder()
             .WithBaseUrl(configuration["ServersIntegrationApi:BaseUrl"] ?? throw new InvalidOperationException("ServersIntegrationApi:BaseUrl is required"))
             .WithEntraIdAuthentication(configuration["ServersIntegrationApi:ApplicationAudience"] ?? throw new InvalidOperationException("ServersIntegrationApi:ApplicationAudience is required")));
 
-        services.AddGeoLocationApiClient(options =>
+        var geoBaseUrl = configuration["GeoLocationApi:BaseUrl"];
+        var geoApiKey = configuration["GeoLocationApi:ApiKey"];
+        var geoAudience = configuration["GeoLocationApi:ApplicationAudience"];
+
+        if (!string.IsNullOrEmpty(geoBaseUrl) && !string.IsNullOrEmpty(geoApiKey) && !string.IsNullOrEmpty(geoAudience))
         {
-            options.WithBaseUrl(configuration["GeoLocationApi:BaseUrl"] ?? throw new InvalidOperationException("GeoLocationApi:BaseUrl is required"))
-                .WithApiKeyAuthentication(configuration["GeoLocationApi:ApiKey"] ?? throw new InvalidOperationException("GeoLocationApi:ApiKey is required"), "Ocp-Apim-Subscription-Key")
-                .WithEntraIdAuthentication(configuration["GeoLocationApi:ApplicationAudience"] ?? throw new InvalidOperationException("GeoLocationApi:ApplicationAudience is required"));
-        });
+            services.AddGeoLocationApiClient(options =>
+            {
+                options.WithBaseUrl(geoBaseUrl)
+                    .WithApiKeyAuthentication(geoApiKey, "Ocp-Apim-Subscription-Key")
+                    .WithEntraIdAuthentication(geoAudience);
+            });
+        }
+        else
+        {
+            // GeoLocation API not configured — GeoIP enrichment will be skipped at runtime
+        }
 
         // Forum integration
         services.AddInvisionApiClient(options => options
