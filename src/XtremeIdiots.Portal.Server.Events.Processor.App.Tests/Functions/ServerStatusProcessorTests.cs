@@ -206,7 +206,7 @@ public class ServerStatusProcessorTests
         var message = CreateMessage(evt);
 
         // GeoIP lookup throws for all players
-        _geoLookupApi.Setup(x => x.GetCityGeoLocation(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+        _geoLookupApi.Setup(x => x.GetIpIntelligence(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new HttpRequestException("GeoLocation API unavailable"));
 
         // Player lookup succeeds
@@ -315,11 +315,11 @@ public class ServerStatusProcessorTests
         _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.None))
             .ReturnsAsync(SuccessResult(playerDto));
 
-        var geoData = Newtonsoft.Json.JsonConvert.DeserializeObject<CityGeoLocationDto>(
+        var geoData = Newtonsoft.Json.JsonConvert.DeserializeObject<IpIntelligenceDto>(
             Newtonsoft.Json.JsonConvert.SerializeObject(new { Latitude = 51.5074, Longitude = -0.1278, CountryCode = "GB" }))!;
 
-        _geoLookupApi.Setup(x => x.GetCityGeoLocation("203.0.113.50", It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new ApiResult<CityGeoLocationDto>(System.Net.HttpStatusCode.OK, new ApiResponse<CityGeoLocationDto>(geoData)));
+        _geoLookupApi.Setup(x => x.GetIpIntelligence("203.0.113.50", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<IpIntelligenceDto>(System.Net.HttpStatusCode.OK, new ApiResponse<IpIntelligenceDto>(geoData)));
 
         await _sut.ProcessServerStatus(message, _functionContext.Object);
 
@@ -334,3 +334,4 @@ public class ServerStatusProcessorTests
             It.IsAny<CancellationToken>()), Times.Once);
     }
 }
+
