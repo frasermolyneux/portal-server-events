@@ -16,6 +16,7 @@ using XtremeIdiots.Portal.Integrations.Servers.Api.Client.V1;
 using XtremeIdiots.Portal.Repository.Api.Client.V1;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Commands;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Moderation;
+using XtremeIdiots.Portal.Server.Events.Processor.App.Services;
 
 var host = new HostBuilder()
     .ConfigureAppConfiguration(builder =>
@@ -88,6 +89,9 @@ var host = new HostBuilder()
         // Command framework
         services.AddTransient<IChatCommandProcessor, ChatCommandProcessor>();
         services.AddTransient<IRconResponseService, RconResponseService>();
+
+        // Protected name enforcement
+        services.AddTransient<IProtectedNameService, ProtectedNameService>();
 
         // Chat commands — add new commands here
         services.AddTransient<IChatCommand, MapVoteLikeCommand>();

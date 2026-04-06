@@ -17,6 +17,7 @@ using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.Players;
 using XtremeIdiots.Portal.Repository.Api.Client.V1;
 using XtremeIdiots.Portal.Server.Events.Abstractions.V1.Events;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Functions;
+using XtremeIdiots.Portal.Server.Events.Processor.App.Services;
 
 using static XtremeIdiots.Portal.Server.Events.Processor.App.Tests.ServiceBusTestHelpers;
 
@@ -31,6 +32,7 @@ public class PlayerConnectedProcessorTests
     private readonly Mock<MX.GeoLocation.Abstractions.Interfaces.V1_1.IGeoLookupApi> _geoLookupApi = new();
     private readonly Mock<IVersionedPlayersApi> _versionedPlayers = new();
     private readonly Mock<IPlayersApi> _playersApi = new();
+    private readonly Mock<IProtectedNameService> _protectedNameService = new();
     private readonly IMemoryCache _cache;
     private readonly TelemetryClient _telemetry;
     private readonly Mock<FunctionContext> _functionContext = new();
@@ -53,7 +55,7 @@ public class PlayerConnectedProcessorTests
             TelemetryChannel = new Mock<ITelemetryChannel>().Object
         });
 
-        _sut = new PlayerConnectedProcessor(_logger.Object, _repoClient.Object, _geoClient.Object, _cache, _telemetry);
+        _sut = new PlayerConnectedProcessor(_logger.Object, _repoClient.Object, _geoClient.Object, _protectedNameService.Object, _cache, _telemetry);
     }
 
     private static PlayerConnectedEvent CreateValidEvent(
@@ -86,6 +88,10 @@ public class PlayerConnectedProcessorTests
 
         _playersApi.Setup(x => x.CreatePlayer(It.IsAny<CreatePlayerDto>()))
             .ReturnsAsync(SuccessResult());
+
+        var playerDto = CreatePlayerDto(TestPlayerId);
+        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.None))
+            .ReturnsAsync(SuccessResult(playerDto));
 
         await _sut.ProcessPlayerConnected(message, _functionContext.Object);
 

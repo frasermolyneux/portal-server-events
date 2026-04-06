@@ -15,6 +15,7 @@ using XtremeIdiots.Portal.Repository.Abstractions.Constants.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.Players;
 using XtremeIdiots.Portal.Server.Events.Abstractions.V1;
 using XtremeIdiots.Portal.Server.Events.Abstractions.V1.Events;
+using XtremeIdiots.Portal.Server.Events.Processor.App.Services;
 
 namespace XtremeIdiots.Portal.Server.Events.Processor.App.Functions;
 
@@ -22,6 +23,7 @@ public class PlayerConnectedProcessor(
     ILogger<PlayerConnectedProcessor> logger,
     IRepositoryApiClient repositoryApiClient,
     IGeoLocationApiClient geoLocationApiClient,
+    IProtectedNameService protectedNameService,
     IMemoryCache memoryCache,
     TelemetryClient telemetryClient)
 {
@@ -113,6 +115,21 @@ public class PlayerConnectedProcessor(
             {
                 InvalidatePlayerCache(gameType, playerEvent.PlayerGuid);
                 TrackEvent("PlayerCreated", playerEvent);
+
+                // Protected name enforcement (best-effort, never blocks player processing)
+                var newPlayerId = await GetPlayerId(gameType, playerEvent.PlayerGuid).ConfigureAwait(false);
+                if (newPlayerId != Guid.Empty)
+                {
+                    await protectedNameService.CheckAsync(new ProtectedNameContext
+                    {
+                        ServerId = playerEvent.ServerId,
+                        GameType = playerEvent.GameType,
+                        Username = playerEvent.Username,
+                        PlayerId = newPlayerId,
+                        SlotId = playerEvent.SlotId
+                    }).ConfigureAwait(false);
+                }
+
                 await EnrichWithGeoLocation(playerEvent).ConfigureAwait(false);
                 return;
             }
@@ -141,6 +158,16 @@ public class PlayerConnectedProcessor(
         await repositoryApiClient.Players.V1.UpdatePlayer(editPlayerDto).ConfigureAwait(false);
         InvalidatePlayerCache(gameType, playerEvent.PlayerGuid);
         TrackEvent("PlayerConnected", playerEvent);
+
+        // Protected name enforcement (best-effort, never blocks player processing)
+        await protectedNameService.CheckAsync(new ProtectedNameContext
+        {
+            ServerId = playerEvent.ServerId,
+            GameType = playerEvent.GameType,
+            Username = playerEvent.Username,
+            PlayerId = playerId,
+            SlotId = playerEvent.SlotId
+        }).ConfigureAwait(false);
 
         // GeoIP enrichment (best-effort, never blocks player processing)
         await EnrichWithGeoLocation(playerEvent).ConfigureAwait(false);
