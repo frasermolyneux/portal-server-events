@@ -2,6 +2,7 @@ using System.Reflection;
 
 using Azure.AI.ContentSafety;
 using Azure.Identity;
+using Azure.Messaging.ServiceBus;
 
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Configuration;
@@ -120,6 +121,20 @@ var host = new HostBuilder()
 
         services.AddSingleton<IChatModerationService, ChatModerationService>();
         services.AddTransient<IChatModerationPipeline, ChatModerationPipeline>();
+
+        // Service Bus client for manual DLQ access
+        var serviceBusFqns = configuration["ServiceBusConnection:fullyQualifiedNamespace"];
+        if (!string.IsNullOrEmpty(serviceBusFqns))
+        {
+            services.AddSingleton(_ => new ServiceBusClient(serviceBusFqns, new DefaultAzureCredential(new DefaultAzureCredentialOptions
+            {
+                ManagedIdentityClientId = configuration["AZURE_CLIENT_ID"]
+            })));
+        }
+        else
+        {
+            throw new InvalidOperationException("ServiceBusConnection:fullyQualifiedNamespace is required");
+        }
 
         services.AddMemoryCache();
         services.AddHealthChecks();
