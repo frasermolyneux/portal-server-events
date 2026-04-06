@@ -11,7 +11,9 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.FeatureManagement;
 
+using MX.Api.Client.Configuration;
 using MX.GeoLocation.Api.Client.V1;
+using MX.InvisionCommunity.Api.Client;
 
 using XtremeIdiots.Portal.Integrations.Servers.Api.Client.V1;
 using XtremeIdiots.Portal.Repository.Api.Client.V1;
@@ -44,6 +46,7 @@ var host = new HostBuilder()
                     .Select("RepositoryApi:*", environmentLabel)
                     .Select("ServersIntegrationApi:*", environmentLabel)
                     .Select("GeoLocationApi:*", environmentLabel)
+                    .Select("XtremeIdiots:*", environmentLabel)
                     .Select("ContentSafety:*", environmentLabel)
                     .UseFeatureFlags(ff => ff.Label = environmentLabel)
                     .ConfigureRefresh(refresh =>
@@ -86,6 +89,12 @@ var host = new HostBuilder()
                 .WithApiKeyAuthentication(configuration["GeoLocationApi:ApiKey"] ?? throw new InvalidOperationException("GeoLocationApi:ApiKey is required"), "Ocp-Apim-Subscription-Key")
                 .WithEntraIdAuthentication(configuration["GeoLocationApi:ApplicationAudience"] ?? throw new InvalidOperationException("GeoLocationApi:ApplicationAudience is required"));
         });
+
+        // Forum integration
+        services.AddInvisionApiClient(options => options
+            .WithBaseUrl(configuration["XtremeIdiots:Forums:BaseUrl"] ?? throw new InvalidOperationException("XtremeIdiots:Forums:BaseUrl is required"))
+            .WithApiKeyAuthentication(configuration["XtremeIdiots:Forums:ApiKey"] ?? throw new InvalidOperationException("XtremeIdiots:Forums:ApiKey is required"), "key", ApiKeyLocation.QueryParameter));
+        services.AddTransient<IAdminActionTopics, AdminActionTopics>();
 
         // Command framework
         services.AddTransient<IChatCommandProcessor, ChatCommandProcessor>();

@@ -2,50 +2,206 @@ using System.Text.Json;
 
 using Azure.Messaging.ServiceBus;
 
+using Microsoft.ApplicationInsights;
+using Microsoft.ApplicationInsights.DataContracts;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Logging;
 
+using XtremeIdiots.Portal.Repository.Api.Client.V1;
+using XtremeIdiots.Portal.Repository.Abstractions.Constants.V1;
+using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.AdminActions;
+using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.Players;
 using XtremeIdiots.Portal.Server.Events.Abstractions.V1;
 using XtremeIdiots.Portal.Server.Events.Abstractions.V1.Events;
+
+using XtremeIdiots.Portal.Server.Events.Processor.App.Services;
 
 namespace XtremeIdiots.Portal.Server.Events.Processor.App.Functions;
 
 /// <summary>
-/// Processes ban file change events. Currently logs for observability.
-/// Ban file parsing and admin action creation will be added later.
+/// Processes ban detection events from the agent. For each new ban entry,
+/// creates the player (if not found) and an AdminAction record of type Ban.
 /// </summary>
-public sealed class BanFileChangedProcessor
+public sealed class BanFileChangedProcessor(
+    ILogger<BanFileChangedProcessor> logger,
+    IRepositoryApiClient repositoryApiClient,
+    IAdminActionTopics adminActionTopics,
+    TelemetryClient telemetryClient)
 {
-    private readonly ILogger<BanFileChangedProcessor> _logger;
-
-    public BanFileChangedProcessor(ILogger<BanFileChangedProcessor> logger)
-    {
-        _logger = logger;
-    }
-
     [Function(nameof(ProcessBanFileChanged))]
-    public Task ProcessBanFileChanged(
+    public async Task ProcessBanFileChanged(
         [ServiceBusTrigger(Queues.BanFileChanged, Connection = "ServiceBusConnection")] ServiceBusReceivedMessage message,
         FunctionContext context)
     {
+        BanDetectedEvent? evt;
         try
         {
-            var evt = message.Body.ToObjectFromJson<BanFileChangedEvent>(JsonOptions.Default);
-
-            if (evt is null)
-            {
-                _logger.LogWarning("BanFileChanged was not in expected format. MessageId: {MessageId}", message.MessageId);
-                return Task.CompletedTask;
-            }
-
-            _logger.LogInformation("Ban file changed on server {ServerId}: {FilePath} ({FileSize} bytes)",
-                evt.ServerId, evt.FilePath, evt.FileSize);
+            evt = JsonSerializer.Deserialize<BanDetectedEvent>(message.Body, JsonOptions.Default);
         }
         catch (JsonException ex)
         {
-            _logger.LogWarning(ex, "BanFileChanged was not in expected format. MessageId: {MessageId}", message.MessageId);
+            logger.LogWarning(ex, "BanDetected message was not in expected format. MessageId: {MessageId}", message.MessageId);
+            return;
         }
 
-        return Task.CompletedTask;
+        if (evt is null)
+        {
+            logger.LogWarning("BanDetected deserialized to null. MessageId: {MessageId}", message.MessageId);
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(evt.GameType))
+        {
+            logger.LogWarning("BanDetected missing GameType. MessageId: {MessageId}", message.MessageId);
+            return;
+        }
+
+        if (evt.ServerId == Guid.Empty)
+        {
+            logger.LogWarning("BanDetected has empty ServerId. MessageId: {MessageId}", message.MessageId);
+            return;
+        }
+
+        if (evt.NewBans is null || evt.NewBans.Count == 0)
+        {
+            logger.LogWarning("BanDetected has no bans. MessageId: {MessageId}", message.MessageId);
+            return;
+        }
+
+        if (!Enum.TryParse<GameType>(evt.GameType, out var gameType))
+        {
+            logger.LogWarning("BanDetected has invalid GameType: {GameType}", evt.GameType);
+            return;
+        }
+
+        using var scope = logger.BeginScope(new Dictionary<string, object>
+        {
+            ["GameType"] = evt.GameType,
+            ["ServerId"] = evt.ServerId
+        });
+
+        logger.LogInformation("Processing {Count} ban(s) for server {ServerId}", evt.NewBans.Count, evt.ServerId);
+
+        foreach (var ban in evt.NewBans)
+        {
+            if (string.IsNullOrWhiteSpace(ban.PlayerGuid) || string.IsNullOrWhiteSpace(ban.PlayerName))
+            {
+                logger.LogWarning("Skipping ban entry with missing GUID or name");
+                continue;
+            }
+
+            try
+            {
+                await ProcessSingleBanAsync(gameType, evt.ServerId, ban, context.CancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "Failed to process ban for player {PlayerGuid}", ban.PlayerGuid);
+                throw;
+            }
+        }
+    }
+
+    internal async Task ProcessSingleBanAsync(GameType gameType, Guid serverId, DetectedBan ban, CancellationToken ct)
+    {
+        // Check if player exists
+        var playerExistsResponse = await repositoryApiClient.Players.V1
+            .HeadPlayerByGameType(gameType, ban.PlayerGuid)
+            .ConfigureAwait(false);
+
+        Guid playerId;
+
+        if (playerExistsResponse.IsNotFound)
+        {
+            // Create the player first
+            var createPlayerDto = new CreatePlayerDto(ban.PlayerName, ban.PlayerGuid, gameType);
+
+            var createResult = await repositoryApiClient.Players.V1
+                .CreatePlayer(createPlayerDto)
+                .ConfigureAwait(false);
+
+            if (createResult.IsConflict)
+            {
+                logger.LogInformation("Player creation returned 409 Conflict for {PlayerGuid}, falling through to lookup",
+                    ban.PlayerGuid);
+            }
+            else if (!createResult.IsSuccess)
+            {
+                throw new InvalidOperationException(
+                    $"Failed to create player for GUID '{ban.PlayerGuid}'. API returned {createResult.StatusCode}.");
+            }
+            else
+            {
+                TrackEvent("BanPlayerCreated", gameType, serverId, ban);
+            }
+        }
+
+        // Look up the player to get their ID
+        var playerResponse = await repositoryApiClient.Players.V1
+            .GetPlayerByGameType(gameType, ban.PlayerGuid, PlayerEntityOptions.None)
+            .ConfigureAwait(false);
+
+        if (!playerResponse.IsSuccess || playerResponse.Result?.Data is null)
+        {
+            throw new InvalidOperationException(
+                $"Player not found for GUID '{ban.PlayerGuid}' after creation. Will retry.");
+        }
+
+        var player = playerResponse.Result.Data;
+        playerId = player.PlayerId;
+
+        // Check for existing active ban using server-side filter
+        var activeBansResult = await repositoryApiClient.AdminActions.V1
+            .GetAdminActions(gameType, playerId, null, AdminActionFilter.ActiveBans, 0, 1, null, ct)
+            .ConfigureAwait(false);
+
+        var hasActiveBan = activeBansResult.IsSuccess &&
+            activeBansResult.Result?.Data?.Items?.Any() == true;
+
+        if (hasActiveBan)
+        {
+            logger.LogInformation("Player {PlayerGuid} already has an active ban, skipping", ban.PlayerGuid);
+            return;
+        }
+
+        // Create forum topic (best-effort)
+        var forumTopicId = await adminActionTopics.CreateTopicForAdminAction(
+            AdminActionType.Ban, gameType, playerId, player.Username,
+            DateTime.UtcNow, "Imported from server ban file", null, ct).ConfigureAwait(false);
+
+        // Create the ban admin action
+        var adminAction = new CreateAdminActionDto(playerId, AdminActionType.Ban, "Imported from server ban file")
+        {
+            ForumTopicId = forumTopicId > 0 ? forumTopicId : null
+        };
+        var adminResult = await repositoryApiClient.AdminActions.V1
+            .CreateAdminAction(adminAction, ct)
+            .ConfigureAwait(false);
+
+        if (adminResult.IsSuccess)
+        {
+            logger.LogInformation("Created ban for player {PlayerGuid} ({PlayerName}) on server {ServerId}",
+                ban.PlayerGuid, ban.PlayerName, serverId);
+            TrackEvent("BanImported", gameType, serverId, ban);
+        }
+        else
+        {
+            logger.LogWarning("Failed to create ban for player {PlayerGuid}. Status: {StatusCode}",
+                ban.PlayerGuid, adminResult.StatusCode);
+        }
+    }
+
+    private void TrackEvent(string eventName, GameType gameType, Guid serverId, DetectedBan ban)
+    {
+        telemetryClient.TrackEvent(new EventTelemetry(eventName)
+        {
+            Properties =
+            {
+                ["GameType"] = gameType.ToString(),
+                ["ServerId"] = serverId.ToString(),
+                ["PlayerGuid"] = ban.PlayerGuid,
+                ["PlayerName"] = ban.PlayerName
+            }
+        });
     }
 }
