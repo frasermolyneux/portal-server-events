@@ -3,6 +3,7 @@ using System.Text.Json;
 using Azure.Messaging.ServiceBus;
 
 using Microsoft.ApplicationInsights;
+using Microsoft.ApplicationInsights.DataContracts;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
@@ -202,6 +203,17 @@ public sealed class ServerStatusProcessor(
         }
 
         // Step 4: Track telemetry
+        telemetryClient.TrackEvent(new EventTelemetry("ServerStatusReceived")
+        {
+            Properties =
+            {
+                ["ServerId"] = evt.ServerId.ToString(),
+                ["GameType"] = evt.GameType,
+                ["MapName"] = evt.MapName,
+                ["PlayerCount"] = evt.PlayerCount.ToString()
+            }
+        });
+
         telemetryClient.TrackMetric("ServerPlayerCount", evt.PlayerCount,
             new Dictionary<string, string>
             {
