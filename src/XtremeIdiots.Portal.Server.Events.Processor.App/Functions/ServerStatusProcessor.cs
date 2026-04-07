@@ -92,81 +92,114 @@ public sealed class ServerStatusProcessor(
             ["ServerId"] = evt.ServerId
         });
 
+        var failedSteps = new List<string>();
+
         // Step 1: Update game server live fields
-        var editDto = new EditGameServerDto(evt.ServerId)
+        try
         {
-            LiveTitle = evt.ServerTitle,
-            LiveMap = evt.MapName,
-            LiveMod = evt.ServerMod,
-            LiveMaxPlayers = evt.MaxPlayers,
-            LiveCurrentPlayers = evt.PlayerCount,
-            LiveLastUpdated = evt.EventGeneratedUtc
-        };
-        await repositoryApiClient.GameServers.V1.UpdateGameServer(editDto).ConfigureAwait(false);
-
-        // Step 2: Build and set live player list with GeoIP enrichment
-        var livePlayerDtos = new List<CreateLivePlayerDto>();
-        foreach (var player in evt.Players)
-        {
-            var livePlayer = new CreateLivePlayerDto
+            var editDto = new EditGameServerDto(evt.ServerId)
             {
-                Name = player.Username,
-                IpAddress = player.IpAddress,
-                GameType = gameType,
-                Num = player.SlotId,
-                GameServerId = evt.ServerId,
-                Score = player.Score,
-                Ping = player.Ping,
-                Rate = player.Rate
+                LiveTitle = evt.ServerTitle,
+                LiveMap = evt.MapName,
+                LiveMod = evt.ServerMod,
+                LiveMaxPlayers = evt.MaxPlayers,
+                LiveCurrentPlayers = evt.PlayerCount,
+                LiveLastUpdated = evt.EventGeneratedUtc
             };
-
-            // Resolve PlayerId from cache/API (best-effort)
-            if (!string.IsNullOrWhiteSpace(player.PlayerGuid))
-            {
-                var playerId = await GetPlayerId(gameType, player.PlayerGuid).ConfigureAwait(false);
-                if (playerId != Guid.Empty)
-                    livePlayer.PlayerId = playerId;
-            }
-
-            // IP Intelligence enrichment (best-effort per player)
-            if (!string.IsNullOrWhiteSpace(player.IpAddress))
-            {
-                try
-                {
-                    var intelResult = await geoLocationApiClient.GeoLookup.V1_1
-                        .GetIpIntelligence(player.IpAddress)
-                        .ConfigureAwait(false);
-
-                    if (intelResult.IsSuccess && intelResult.Result?.Data is not null)
-                    {
-                        var intel = intelResult.Result.Data;
-                        livePlayer.Lat = intel.Latitude;
-                        livePlayer.Long = intel.Longitude;
-                        livePlayer.CountryCode = intel.CountryCode;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    logger.LogWarning(ex, "IP intelligence enrichment failed for player {Username} with IP {IpAddress}",
-                        player.Username, player.IpAddress);
-                }
-            }
-
-            livePlayerDtos.Add(livePlayer);
+            await repositoryApiClient.GameServers.V1.UpdateGameServer(editDto).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            failedSteps.Add("UpdateGameServer");
+            logger.LogWarning(ex, "Failed to update game server live fields for {ServerId}", evt.ServerId);
         }
 
-        await repositoryApiClient.LivePlayers.V1
-            .SetLivePlayersForGameServer(evt.ServerId, livePlayerDtos)
-            .ConfigureAwait(false);
+        // Step 2: Build and set live player list with GeoIP enrichment
+        try
+        {
+            var livePlayerDtos = new List<CreateLivePlayerDto>();
+            foreach (var player in evt.Players)
+            {
+                var livePlayer = new CreateLivePlayerDto
+                {
+                    Name = player.Username,
+                    IpAddress = player.IpAddress,
+                    GameType = gameType,
+                    Num = player.SlotId,
+                    GameServerId = evt.ServerId,
+                    Score = player.Score,
+                    Ping = player.Ping,
+                    Rate = player.Rate
+                };
+
+                // Resolve PlayerId from cache/API (best-effort per player)
+                if (!string.IsNullOrWhiteSpace(player.PlayerGuid))
+                {
+                    try
+                    {
+                        var playerId = await GetPlayerId(gameType, player.PlayerGuid).ConfigureAwait(false);
+                        if (playerId != Guid.Empty)
+                            livePlayer.PlayerId = playerId;
+                    }
+                    catch (Exception ex)
+                    {
+                        logger.LogWarning(ex, "Player ID resolution failed for {PlayerGuid}", player.PlayerGuid);
+                    }
+                }
+
+                // IP Intelligence enrichment (best-effort per player)
+                if (!string.IsNullOrWhiteSpace(player.IpAddress))
+                {
+                    try
+                    {
+                        var intelResult = await geoLocationApiClient.GeoLookup.V1_1
+                            .GetIpIntelligence(player.IpAddress)
+                            .ConfigureAwait(false);
+
+                        if (intelResult.IsSuccess && intelResult.Result?.Data is not null)
+                        {
+                            var intel = intelResult.Result.Data;
+                            livePlayer.Lat = intel.Latitude;
+                            livePlayer.Long = intel.Longitude;
+                            livePlayer.CountryCode = intel.CountryCode;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        logger.LogWarning(ex, "IP intelligence enrichment failed for player {Username} with IP {IpAddress}",
+                            player.Username, player.IpAddress);
+                    }
+                }
+
+                livePlayerDtos.Add(livePlayer);
+            }
+
+            await repositoryApiClient.LivePlayers.V1
+                .SetLivePlayersForGameServer(evt.ServerId, livePlayerDtos)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            failedSteps.Add("SetLivePlayers");
+            logger.LogWarning(ex, "Failed to set live players for {ServerId}", evt.ServerId);
+        }
 
         // Step 3: Create player count snapshot for analytics
-        var statDtos = new List<CreateGameServerStatDto>
+        try
         {
-            new(evt.ServerId, evt.PlayerCount, evt.MapName)
-        };
-        await repositoryApiClient.GameServersStats.V1
-            .CreateGameServerStats(statDtos)
-            .ConfigureAwait(false);
+            var statDtos = new List<CreateGameServerStatDto>
+            {
+                new(evt.ServerId, evt.PlayerCount, evt.MapName)
+            };
+            await repositoryApiClient.GameServersStats.V1
+                .CreateGameServerStats(statDtos)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            failedSteps.Add("CreateStats");
+            logger.LogWarning(ex, "Failed to create player count snapshot for {ServerId}", evt.ServerId);
+        }
 
         // Step 4: Track telemetry
         telemetryClient.TrackMetric("ServerPlayerCount", evt.PlayerCount,
@@ -176,8 +209,16 @@ public sealed class ServerStatusProcessor(
                 ["GameType"] = evt.GameType
             });
 
-        logger.LogInformation("Processed server status for {ServerId}: {PlayerCount} players on {MapName}",
-            evt.ServerId, evt.PlayerCount, evt.MapName);
+        if (failedSteps.Count > 0)
+        {
+            logger.LogWarning("Partially processed server status for {ServerId}: failed steps: {FailedSteps}",
+                evt.ServerId, string.Join(", ", failedSteps));
+        }
+        else
+        {
+            logger.LogInformation("Processed server status for {ServerId}: {PlayerCount} players on {MapName}",
+                evt.ServerId, evt.PlayerCount, evt.MapName);
+        }
     }
 
     private async Task<Guid> GetPlayerId(GameType gameType, string guid)

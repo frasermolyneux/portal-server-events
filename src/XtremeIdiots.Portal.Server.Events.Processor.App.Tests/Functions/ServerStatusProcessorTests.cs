@@ -333,5 +333,65 @@ public class ServerStatusProcessorTests
                 list[0].PlayerId == TestPlayerId),
             It.IsAny<CancellationToken>()), Times.Once);
     }
+
+    [Fact]
+    public async Task ProcessServerStatus_UpdateGameServerFails_StillSetsLivePlayersAndStats()
+    {
+        var evt = CreateValidEvent(players: new List<ConnectedPlayer>());
+        var message = CreateMessage(evt);
+
+        _gameServersApi.Setup(x => x.UpdateGameServer(It.IsAny<EditGameServerDto>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new HttpRequestException("Repository API unavailable"));
+
+        await _sut.ProcessServerStatus(message, _functionContext.Object);
+
+        // Live players and stats should still be attempted
+        _livePlayersApi.Verify(x => x.SetLivePlayersForGameServer(
+            TestServerId,
+            It.IsAny<List<CreateLivePlayerDto>>(),
+            It.IsAny<CancellationToken>()), Times.Once);
+
+        _gameServersStatsApi.Verify(x => x.CreateGameServerStats(
+            It.IsAny<List<CreateGameServerStatDto>>(),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task ProcessServerStatus_SetLivePlayersFails_StillCreatesStats()
+    {
+        var evt = CreateValidEvent(players: new List<ConnectedPlayer>());
+        var message = CreateMessage(evt);
+
+        _livePlayersApi.Setup(x => x.SetLivePlayersForGameServer(It.IsAny<Guid>(), It.IsAny<List<CreateLivePlayerDto>>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new HttpRequestException("Repository API unavailable"));
+
+        await _sut.ProcessServerStatus(message, _functionContext.Object);
+
+        // UpdateGameServer and stats should still succeed
+        _gameServersApi.Verify(x => x.UpdateGameServer(It.IsAny<EditGameServerDto>(), It.IsAny<CancellationToken>()), Times.Once);
+
+        _gameServersStatsApi.Verify(x => x.CreateGameServerStats(
+            It.IsAny<List<CreateGameServerStatDto>>(),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task ProcessServerStatus_CreateStatsFails_DoesNotThrow()
+    {
+        var evt = CreateValidEvent(players: new List<ConnectedPlayer>());
+        var message = CreateMessage(evt);
+
+        _gameServersStatsApi.Setup(x => x.CreateGameServerStats(It.IsAny<List<CreateGameServerStatDto>>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new HttpRequestException("Repository API unavailable"));
+
+        await _sut.ProcessServerStatus(message, _functionContext.Object);
+
+        // UpdateGameServer and live players should still succeed
+        _gameServersApi.Verify(x => x.UpdateGameServer(It.IsAny<EditGameServerDto>(), It.IsAny<CancellationToken>()), Times.Once);
+        _livePlayersApi.Verify(x => x.SetLivePlayersForGameServer(
+            TestServerId,
+            It.IsAny<List<CreateLivePlayerDto>>(),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
 }
 
