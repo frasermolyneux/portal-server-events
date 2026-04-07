@@ -124,22 +124,15 @@ var host = new HostBuilder()
         services.AddFeatureManagement();
 
         // Chat moderation services
-        var csEndpoint = configuration["ContentSafety:Endpoint"];
-        if (!string.IsNullOrEmpty(csEndpoint))
-        {
-            services.AddSingleton(_ => new ContentSafetyClient(
-                new Uri(csEndpoint),
-                new DefaultAzureCredential(new DefaultAzureCredentialOptions
-                {
-                    ManagedIdentityClientId = configuration["AZURE_CLIENT_ID"]
-                })));
-        }
-        else
-        {
-            services.AddSingleton(_ => new ContentSafetyClient(
-                new Uri("https://not-configured.cognitiveservices.azure.com/"),
-                new DefaultAzureCredential()));
-        }
+        var csEndpoint = configuration["ContentSafety:Endpoint"]
+            ?? throw new InvalidOperationException("ContentSafety:Endpoint is required");
+
+        services.AddSingleton(_ => new ContentSafetyClient(
+            new Uri(csEndpoint),
+            new DefaultAzureCredential(new DefaultAzureCredentialOptions
+            {
+                ManagedIdentityClientId = configuration["AZURE_CLIENT_ID"]
+            })));
 
         services.AddSingleton<IChatModerationService, ChatModerationService>();
         services.AddTransient<IChatModerationPipeline, ChatModerationPipeline>();

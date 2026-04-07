@@ -164,6 +164,22 @@ public class ChatModerationPipelineTests
     }
 
     [Fact]
+    public async Task RunAsync_LongMessage_TruncatedBeforeCallingApi()
+    {
+        var longMessage = new string('x', 15_000);
+
+        _contentSafety
+            .Setup(x => x.AnalyseAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ChatModerationResult(0, 0, 0, 0, 0, "Hate"));
+
+        await _sut.RunAsync(CreateContext(message: longMessage));
+
+        _contentSafety.Verify(x => x.AnalyseAsync(
+            It.Is<string>(s => s.Length == 10_000),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
     public async Task RunAsync_OnException_DoesNotThrow()
     {
         _contentSafety.Setup(x => x.AnalyseAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
