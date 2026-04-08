@@ -149,13 +149,25 @@ public class PlayerConnectedProcessor(
                 $"Player not found after HEAD success for Guid '{playerEvent.PlayerGuid}'. Will retry.");
         }
 
-        var editPlayerDto = new EditPlayerDto(playerId)
-        {
-            Username = playerEvent.Username,
-            IpAddress = playerEvent.IpAddress
-        };
+        var sessionDto = new RecordPlayerSessionDto(playerId, playerEvent.Username);
 
-        await repositoryApiClient.Players.V1.UpdatePlayer(editPlayerDto).ConfigureAwait(false);
+        await repositoryApiClient.Players.V1.RecordPlayerSession(sessionDto).ConfigureAwait(false);
+
+        // Persist IP separately if available at connect time
+        if (!string.IsNullOrWhiteSpace(playerEvent.IpAddress))
+        {
+            try
+            {
+                await repositoryApiClient.Players.V1
+                    .UpdatePlayerIpAddress(new UpdatePlayerIpAddressDto(playerId, playerEvent.IpAddress))
+                    .ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Failed to persist IP at connect time for {PlayerGuid}", playerEvent.PlayerGuid);
+            }
+        }
+
         InvalidatePlayerCache(gameType, playerEvent.PlayerGuid);
         TrackEvent("PlayerConnected", playerEvent);
 

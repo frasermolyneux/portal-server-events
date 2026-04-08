@@ -114,14 +114,20 @@ public class PlayerConnectedProcessorTests
         _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.None))
             .ReturnsAsync(SuccessResult(playerDto));
 
-        _playersApi.Setup(x => x.UpdatePlayer(It.IsAny<EditPlayerDto>()))
+        _playersApi.Setup(x => x.RecordPlayerSession(It.IsAny<RecordPlayerSessionDto>()))
+            .ReturnsAsync(SuccessResult());
+
+        _playersApi.Setup(x => x.UpdatePlayerIpAddress(It.IsAny<UpdatePlayerIpAddressDto>()))
             .ReturnsAsync(SuccessResult());
 
         await _sut.ProcessPlayerConnected(message, _functionContext.Object);
 
-        _playersApi.Verify(x => x.UpdatePlayer(It.Is<EditPlayerDto>(dto =>
+        _playersApi.Verify(x => x.RecordPlayerSession(It.Is<RecordPlayerSessionDto>(dto =>
             dto.PlayerId == TestPlayerId &&
-            dto.Username == "TestPlayer" &&
+            dto.Username == "TestPlayer")), Times.Once);
+
+        _playersApi.Verify(x => x.UpdatePlayerIpAddress(It.Is<UpdatePlayerIpAddressDto>(dto =>
+            dto.PlayerId == TestPlayerId &&
             dto.IpAddress == "192.168.1.1")), Times.Once);
     }
 
@@ -141,12 +147,15 @@ public class PlayerConnectedProcessorTests
         _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.None))
             .ReturnsAsync(SuccessResult(playerDto));
 
-        _playersApi.Setup(x => x.UpdatePlayer(It.IsAny<EditPlayerDto>()))
+        _playersApi.Setup(x => x.RecordPlayerSession(It.IsAny<RecordPlayerSessionDto>()))
+            .ReturnsAsync(SuccessResult());
+
+        _playersApi.Setup(x => x.UpdatePlayerIpAddress(It.IsAny<UpdatePlayerIpAddressDto>()))
             .ReturnsAsync(SuccessResult());
 
         await _sut.ProcessPlayerConnected(message, _functionContext.Object);
 
-        _playersApi.Verify(x => x.UpdatePlayer(It.IsAny<EditPlayerDto>()), Times.Once);
+        _playersApi.Verify(x => x.RecordPlayerSession(It.IsAny<RecordPlayerSessionDto>()), Times.Once);
     }
 
     [Fact]
@@ -216,7 +225,10 @@ public class PlayerConnectedProcessorTests
         _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.None))
             .ReturnsAsync(SuccessResult(playerDto));
 
-        _playersApi.Setup(x => x.UpdatePlayer(It.IsAny<EditPlayerDto>()))
+        _playersApi.Setup(x => x.RecordPlayerSession(It.IsAny<RecordPlayerSessionDto>()))
+            .ReturnsAsync(SuccessResult());
+
+        _playersApi.Setup(x => x.UpdatePlayerIpAddress(It.IsAny<UpdatePlayerIpAddressDto>()))
             .ReturnsAsync(SuccessResult());
 
         var geoData = Newtonsoft.Json.JsonConvert.DeserializeObject<IpIntelligenceDto>(
@@ -243,7 +255,10 @@ public class PlayerConnectedProcessorTests
         _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.None))
             .ReturnsAsync(SuccessResult(playerDto));
 
-        _playersApi.Setup(x => x.UpdatePlayer(It.IsAny<EditPlayerDto>()))
+        _playersApi.Setup(x => x.RecordPlayerSession(It.IsAny<RecordPlayerSessionDto>()))
+            .ReturnsAsync(SuccessResult());
+
+        _playersApi.Setup(x => x.UpdatePlayerIpAddress(It.IsAny<UpdatePlayerIpAddressDto>()))
             .ReturnsAsync(SuccessResult());
 
         _geoLookupApi.Setup(x => x.GetIpIntelligence("192.168.1.1", It.IsAny<CancellationToken>()))
@@ -251,8 +266,8 @@ public class PlayerConnectedProcessorTests
 
         await _sut.ProcessPlayerConnected(message, _functionContext.Object);
 
-        // Player was still updated despite geo lookup failure
-        _playersApi.Verify(x => x.UpdatePlayer(It.Is<EditPlayerDto>(dto =>
+        // Player session was still recorded despite geo lookup failure
+        _playersApi.Verify(x => x.RecordPlayerSession(It.Is<RecordPlayerSessionDto>(dto =>
             dto.PlayerId == TestPlayerId &&
             dto.Username == "TestPlayer")), Times.Once);
     }
@@ -270,12 +285,13 @@ public class PlayerConnectedProcessorTests
         _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.None))
             .ReturnsAsync(SuccessResult(playerDto));
 
-        _playersApi.Setup(x => x.UpdatePlayer(It.IsAny<EditPlayerDto>()))
+        _playersApi.Setup(x => x.RecordPlayerSession(It.IsAny<RecordPlayerSessionDto>()))
             .ReturnsAsync(SuccessResult());
 
         await _sut.ProcessPlayerConnected(message, _functionContext.Object);
 
         _geoLookupApi.Verify(x => x.GetIpIntelligence(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        _playersApi.Verify(x => x.UpdatePlayerIpAddress(It.IsAny<UpdatePlayerIpAddressDto>()), Times.Never);
     }
 }
 

@@ -12,4 +12,5 @@ public static class Queues
     public const string MapChange = "map-change";
     public const string ServerStatus = "server-status";
     public const string BanFileChanged = "ban-file-changed";
+    public const string PlayerIpResolved = "player-ip-resolved";
 }
