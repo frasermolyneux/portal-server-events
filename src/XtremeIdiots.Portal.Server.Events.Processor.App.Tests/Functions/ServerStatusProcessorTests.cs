@@ -16,6 +16,7 @@ using XtremeIdiots.Portal.Repository.Abstractions.Interfaces.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.GameServers;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.LiveStatus;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.Players;
+using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.RecentPlayers;
 using XtremeIdiots.Portal.Repository.Api.Client.V1;
 using XtremeIdiots.Portal.Server.Events.Abstractions.V1.Events;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Functions;
@@ -37,6 +38,8 @@ public class ServerStatusProcessorTests
     private readonly Mock<ILiveStatusApi> _liveStatusApi = new();
     private readonly Mock<IVersionedGameServersStatsApi> _versionedGameServersStats = new();
     private readonly Mock<IGameServersStatsApi> _gameServersStatsApi = new();
+    private readonly Mock<IVersionedRecentPlayersApi> _versionedRecentPlayers = new();
+    private readonly Mock<IRecentPlayersApi> _recentPlayersApi = new();
     private readonly IMemoryCache _cache;
     private readonly TelemetryClient _telemetry;
     private readonly Mock<FunctionContext> _functionContext = new();
@@ -55,6 +58,9 @@ public class ServerStatusProcessorTests
 
         _versionedGameServersStats.Setup(x => x.V1).Returns(_gameServersStatsApi.Object);
         _repoClient.Setup(x => x.GameServersStats).Returns(_versionedGameServersStats.Object);
+
+        _versionedRecentPlayers.Setup(x => x.V1).Returns(_recentPlayersApi.Object);
+        _repoClient.Setup(x => x.RecentPlayers).Returns(_versionedRecentPlayers.Object);
 
         _versionedGeoLookup.Setup(x => x.V1_1).Returns(_geoLookupApi.Object);
         _geoClient.Setup(x => x.GeoLookup).Returns(_versionedGeoLookup.Object);
@@ -76,6 +82,9 @@ public class ServerStatusProcessorTests
             .ReturnsAsync(SuccessResult());
 
         _gameServersStatsApi.Setup(x => x.CreateGameServerStats(It.IsAny<List<CreateGameServerStatDto>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(SuccessResult());
+
+        _recentPlayersApi.Setup(x => x.CreateRecentPlayers(It.IsAny<List<CreateRecentPlayerDto>>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(SuccessResult());
     }
 
@@ -317,6 +326,99 @@ public class ServerStatusProcessorTests
                 dto.Players[0].GeoIntelligence.Longitude == -0.1278 &&
                 dto.Players[0].GeoIntelligence.CountryCode == "GB" &&
                 dto.Players[0].PlayerId == TestPlayerId),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task ProcessServerStatus_WithGeoData_CreatesRecentPlayers()
+    {
+        var evt = CreateValidEvent(players: new List<ConnectedPlayer>
+        {
+            new()
+            {
+                PlayerGuid = "abc123guid",
+                Username = "TestPlayer",
+                IpAddress = "203.0.113.50",
+                SlotId = 0,
+                ConnectedAtUtc = DateTime.UtcNow.AddMinutes(-5)
+            }
+        });
+        var message = CreateMessage(evt);
+
+        var playerDto = CreatePlayerDto(TestPlayerId);
+        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.None))
+            .ReturnsAsync(SuccessResult(playerDto));
+
+        var geoData = Newtonsoft.Json.JsonConvert.DeserializeObject<IpIntelligenceDto>(
+            Newtonsoft.Json.JsonConvert.SerializeObject(new { Latitude = 51.5074, Longitude = -0.1278, CountryCode = "GB" }))!;
+
+        _geoLookupApi.Setup(x => x.GetIpIntelligence("203.0.113.50", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<IpIntelligenceDto>(System.Net.HttpStatusCode.OK, new ApiResponse<IpIntelligenceDto>(geoData)));
+
+        await _sut.ProcessServerStatus(message, _functionContext.Object);
+
+        _recentPlayersApi.Verify(x => x.CreateRecentPlayers(
+            It.Is<List<CreateRecentPlayerDto>>(list =>
+                list.Count == 1 &&
+                list[0].PlayerId == TestPlayerId &&
+                list[0].Lat == 51.5074 &&
+                list[0].Long == -0.1278 &&
+                list[0].CountryCode == "GB" &&
+                list[0].GameServerId == TestServerId &&
+                list[0].GameType == GameType.CallOfDuty4),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task ProcessServerStatus_PlayersWithoutPlayerId_SkippedInRecentPlayers()
+    {
+        var evt = CreateValidEvent(players: new List<ConnectedPlayer>
+        {
+            new()
+            {
+                PlayerGuid = "unknown-guid",
+                Username = "NewPlayer",
+                IpAddress = "10.0.0.5",
+                SlotId = 3,
+                ConnectedAtUtc = DateTime.UtcNow.AddMinutes(-1)
+            }
+        });
+        var message = CreateMessage(evt);
+
+        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "unknown-guid", PlayerEntityOptions.None))
+            .ReturnsAsync(NotFoundResult<PlayerDto>());
+
+        await _sut.ProcessServerStatus(message, _functionContext.Object);
+
+        // Players without a resolved PlayerId should not be added to recent players
+        _recentPlayersApi.Verify(x => x.CreateRecentPlayers(
+            It.IsAny<List<CreateRecentPlayerDto>>(),
+            It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task ProcessServerStatus_RecentPlayersFails_DoesNotThrow()
+    {
+        var evt = CreateValidEvent();
+        var message = CreateMessage(evt);
+
+        var playerDto = CreatePlayerDto(TestPlayerId);
+        _playersApi.Setup(x => x.GetPlayerByGameType(It.IsAny<GameType>(), It.IsAny<string>(), PlayerEntityOptions.None))
+            .ReturnsAsync(SuccessResult(playerDto));
+
+        _recentPlayersApi.Setup(x => x.CreateRecentPlayers(It.IsAny<List<CreateRecentPlayerDto>>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new HttpRequestException("Repository API unavailable"));
+
+        await _sut.ProcessServerStatus(message, _functionContext.Object);
+
+        // Other steps should still succeed
+        _liveStatusApi.Verify(x => x.SetGameServerLiveStatus(
+            TestServerId,
+            It.IsAny<SetGameServerLiveStatusDto>(),
+            It.IsAny<CancellationToken>()), Times.Once);
+
+        _gameServersStatsApi.Verify(x => x.CreateGameServerStats(
+            It.IsAny<List<CreateGameServerStatDto>>(),
             It.IsAny<CancellationToken>()), Times.Once);
     }
 

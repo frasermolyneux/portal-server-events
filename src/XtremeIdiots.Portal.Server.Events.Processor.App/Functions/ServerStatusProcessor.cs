@@ -15,6 +15,7 @@ using XtremeIdiots.Portal.Repository.Abstractions.Constants.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.GameServers;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.LiveStatus;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.Players;
+using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.RecentPlayers;
 using XtremeIdiots.Portal.Server.Events.Abstractions.V1;
 using XtremeIdiots.Portal.Server.Events.Abstractions.V1.Events;
 
@@ -95,11 +96,11 @@ public sealed class ServerStatusProcessor(
         });
 
         var failedSteps = new List<string>();
+        var livePlayerDtos = new List<CreateLivePlayerDto>();
 
         // Step 1: Build live player list with GeoIP enrichment and set live status
         try
         {
-            var livePlayerDtos = new List<CreateLivePlayerDto>();
             foreach (var player in evt.Players)
             {
                 var livePlayer = new CreateLivePlayerDto
@@ -192,7 +193,44 @@ public sealed class ServerStatusProcessor(
             logger.LogWarning(ex, "Failed to create player count snapshot for {ServerId}", evt.ServerId);
         }
 
-        // Step 3: Track telemetry
+        // Step 3: Populate recent players for map geo-location display
+        try
+        {
+            var recentPlayerDtos = new List<CreateRecentPlayerDto>();
+            foreach (var livePlayer in livePlayerDtos)
+            {
+                if (livePlayer.PlayerId is null || livePlayer.PlayerId == Guid.Empty)
+                    continue;
+
+                var recentPlayer = new CreateRecentPlayerDto(
+                    livePlayer.Name ?? "Unknown",
+                    gameType,
+                    livePlayer.PlayerId.Value)
+                {
+                    IpAddress = livePlayer.IpAddress,
+                    GameServerId = evt.ServerId,
+                    Lat = livePlayer.GeoIntelligence?.Latitude,
+                    Long = livePlayer.GeoIntelligence?.Longitude,
+                    CountryCode = livePlayer.GeoIntelligence?.CountryCode
+                };
+
+                recentPlayerDtos.Add(recentPlayer);
+            }
+
+            if (recentPlayerDtos.Count > 0)
+            {
+                await repositoryApiClient.RecentPlayers.V1
+                    .CreateRecentPlayers(recentPlayerDtos)
+                    .ConfigureAwait(false);
+            }
+        }
+        catch (Exception ex)
+        {
+            failedSteps.Add("CreateRecentPlayers");
+            logger.LogWarning(ex, "Failed to create recent players for {ServerId}", evt.ServerId);
+        }
+
+        // Step 4: Track telemetry
         telemetryClient.TrackEvent(new EventTelemetry("ServerStatusReceived")
         {
             Properties =
