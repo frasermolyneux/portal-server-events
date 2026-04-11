@@ -14,6 +14,7 @@ using MX.GeoLocation.Api.Client.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Constants.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Interfaces.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.GameServers;
+using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.LiveStatus;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.Players;
 using XtremeIdiots.Portal.Repository.Api.Client.V1;
 using XtremeIdiots.Portal.Server.Events.Abstractions.V1.Events;
@@ -32,10 +33,8 @@ public class ServerStatusProcessorTests
     private readonly Mock<MX.GeoLocation.Abstractions.Interfaces.V1_1.IGeoLookupApi> _geoLookupApi = new();
     private readonly Mock<IVersionedPlayersApi> _versionedPlayers = new();
     private readonly Mock<IPlayersApi> _playersApi = new();
-    private readonly Mock<IVersionedGameServersApi> _versionedGameServers = new();
-    private readonly Mock<IGameServersApi> _gameServersApi = new();
-    private readonly Mock<IVersionedLivePlayersApi> _versionedLivePlayers = new();
-    private readonly Mock<ILivePlayersApi> _livePlayersApi = new();
+    private readonly Mock<IVersionedLiveStatusApi> _versionedLiveStatus = new();
+    private readonly Mock<ILiveStatusApi> _liveStatusApi = new();
     private readonly Mock<IVersionedGameServersStatsApi> _versionedGameServersStats = new();
     private readonly Mock<IGameServersStatsApi> _gameServersStatsApi = new();
     private readonly IMemoryCache _cache;
@@ -51,11 +50,8 @@ public class ServerStatusProcessorTests
         _versionedPlayers.Setup(x => x.V1).Returns(_playersApi.Object);
         _repoClient.Setup(x => x.Players).Returns(_versionedPlayers.Object);
 
-        _versionedGameServers.Setup(x => x.V1).Returns(_gameServersApi.Object);
-        _repoClient.Setup(x => x.GameServers).Returns(_versionedGameServers.Object);
-
-        _versionedLivePlayers.Setup(x => x.V1).Returns(_livePlayersApi.Object);
-        _repoClient.Setup(x => x.LivePlayers).Returns(_versionedLivePlayers.Object);
+        _versionedLiveStatus.Setup(x => x.V1).Returns(_liveStatusApi.Object);
+        _repoClient.Setup(x => x.LiveStatus).Returns(_versionedLiveStatus.Object);
 
         _versionedGameServersStats.Setup(x => x.V1).Returns(_gameServersStatsApi.Object);
         _repoClient.Setup(x => x.GameServersStats).Returns(_versionedGameServersStats.Object);
@@ -76,10 +72,7 @@ public class ServerStatusProcessorTests
 
     private void SetupDefaultApiSuccessResponses()
     {
-        _gameServersApi.Setup(x => x.UpdateGameServer(It.IsAny<EditGameServerDto>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(SuccessResult());
-
-        _livePlayersApi.Setup(x => x.SetLivePlayersForGameServer(It.IsAny<Guid>(), It.IsAny<List<CreateLivePlayerDto>>(), It.IsAny<CancellationToken>()))
+        _liveStatusApi.Setup(x => x.SetGameServerLiveStatus(It.IsAny<Guid>(), It.IsAny<SetGameServerLiveStatusDto>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(SuccessResult());
 
         _gameServersStatsApi.Setup(x => x.CreateGameServerStats(It.IsAny<List<CreateGameServerStatDto>>(), It.IsAny<CancellationToken>()))
@@ -124,7 +117,7 @@ public class ServerStatusProcessorTests
     };
 
     [Fact]
-    public async Task ProcessServerStatus_ValidEvent_UpdatesServerAndSetsLivePlayers()
+    public async Task ProcessServerStatus_ValidEvent_SetsLiveStatusAndCreatesStats()
     {
         var evt = CreateValidEvent();
         var message = CreateMessage(evt);
@@ -140,23 +133,19 @@ public class ServerStatusProcessorTests
 
         await _sut.ProcessServerStatus(message, _functionContext.Object);
 
-        // Verify game server was updated with live fields
-        _gameServersApi.Verify(x => x.UpdateGameServer(It.Is<EditGameServerDto>(dto =>
-            dto.GameServerId == TestServerId &&
-            dto.LiveMap == "mp_crash" &&
-            dto.LiveCurrentPlayers == 12 &&
-            dto.LiveLastUpdated.HasValue), It.IsAny<CancellationToken>()), Times.Once);
-
-        // Verify live players were set
-        _livePlayersApi.Verify(x => x.SetLivePlayersForGameServer(
+        // Verify live status was set with server metadata and players
+        _liveStatusApi.Verify(x => x.SetGameServerLiveStatus(
             TestServerId,
-            It.Is<List<CreateLivePlayerDto>>(list =>
-                list.Count == 2 &&
-                list[0].Name == "TestPlayer" &&
-                list[0].PlayerId == TestPlayerId &&
-                list[0].GameServerId == TestServerId &&
-                list[1].Name == "Player2" &&
-                list[1].PlayerId == player2Id),
+            It.Is<SetGameServerLiveStatusDto>(dto =>
+                dto.Map == "mp_crash" &&
+                dto.CurrentPlayers == 12 &&
+                dto.GameType == GameType.CallOfDuty4 &&
+                dto.Players.Count == 2 &&
+                dto.Players[0].Name == "TestPlayer" &&
+                dto.Players[0].PlayerId == TestPlayerId &&
+                dto.Players[0].ConnectedAtUtc.HasValue &&
+                dto.Players[1].Name == "Player2" &&
+                dto.Players[1].PlayerId == player2Id),
             It.IsAny<CancellationToken>()), Times.Once);
 
         // Verify stats snapshot was created
@@ -177,8 +166,7 @@ public class ServerStatusProcessorTests
 
         await _sut.ProcessServerStatus(message, _functionContext.Object);
 
-        _gameServersApi.Verify(x => x.UpdateGameServer(It.IsAny<EditGameServerDto>(), It.IsAny<CancellationToken>()), Times.Never);
-        _livePlayersApi.Verify(x => x.SetLivePlayersForGameServer(It.IsAny<Guid>(), It.IsAny<List<CreateLivePlayerDto>>(), It.IsAny<CancellationToken>()), Times.Never);
+        _liveStatusApi.Verify(x => x.SetGameServerLiveStatus(It.IsAny<Guid>(), It.IsAny<SetGameServerLiveStatusDto>(), It.IsAny<CancellationToken>()), Times.Never);
         _gameServersStatsApi.Verify(x => x.CreateGameServerStats(It.IsAny<List<CreateGameServerStatDto>>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
@@ -200,7 +188,7 @@ public class ServerStatusProcessorTests
     }
 
     [Fact]
-    public async Task ProcessServerStatus_GeoEnrichmentFailure_StillSetsLivePlayers()
+    public async Task ProcessServerStatus_GeoEnrichmentFailure_StillSetsLiveStatus()
     {
         var evt = CreateValidEvent();
         var message = CreateMessage(evt);
@@ -215,14 +203,12 @@ public class ServerStatusProcessorTests
 
         await _sut.ProcessServerStatus(message, _functionContext.Object);
 
-        // Live players should still be set despite GeoIP failures
-        _livePlayersApi.Verify(x => x.SetLivePlayersForGameServer(
+        // Live status should still be set despite GeoIP failures
+        _liveStatusApi.Verify(x => x.SetGameServerLiveStatus(
             TestServerId,
-            It.Is<List<CreateLivePlayerDto>>(list =>
-                list.Count == 2 &&
-                list[0].Lat == null &&
-                list[0].Long == null &&
-                list[0].CountryCode == null),
+            It.Is<SetGameServerLiveStatusDto>(dto =>
+                dto.Players.Count == 2 &&
+                dto.Players[0].GeoIntelligence == null),
             It.IsAny<CancellationToken>()), Times.Once);
 
         // Stats snapshot should still be created
@@ -238,8 +224,7 @@ public class ServerStatusProcessorTests
 
         await _sut.ProcessServerStatus(message, _functionContext.Object);
 
-        _gameServersApi.Verify(x => x.UpdateGameServer(It.IsAny<EditGameServerDto>(), It.IsAny<CancellationToken>()), Times.Never);
-        _livePlayersApi.Verify(x => x.SetLivePlayersForGameServer(It.IsAny<Guid>(), It.IsAny<List<CreateLivePlayerDto>>(), It.IsAny<CancellationToken>()), Times.Never);
+        _liveStatusApi.Verify(x => x.SetGameServerLiveStatus(It.IsAny<Guid>(), It.IsAny<SetGameServerLiveStatusDto>(), It.IsAny<CancellationToken>()), Times.Never);
         _gameServersStatsApi.Verify(x => x.CreateGameServerStats(It.IsAny<List<CreateGameServerStatDto>>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
@@ -251,7 +236,7 @@ public class ServerStatusProcessorTests
 
         await _sut.ProcessServerStatus(message, _functionContext.Object);
 
-        _gameServersApi.Verify(x => x.UpdateGameServer(It.IsAny<EditGameServerDto>(), It.IsAny<CancellationToken>()), Times.Never);
+        _liveStatusApi.Verify(x => x.SetGameServerLiveStatus(It.IsAny<Guid>(), It.IsAny<SetGameServerLiveStatusDto>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -262,7 +247,7 @@ public class ServerStatusProcessorTests
 
         await _sut.ProcessServerStatus(message, _functionContext.Object);
 
-        _gameServersApi.Verify(x => x.UpdateGameServer(It.IsAny<EditGameServerDto>(), It.IsAny<CancellationToken>()), Times.Never);
+        _liveStatusApi.Verify(x => x.SetGameServerLiveStatus(It.IsAny<Guid>(), It.IsAny<SetGameServerLiveStatusDto>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -286,12 +271,12 @@ public class ServerStatusProcessorTests
 
         await _sut.ProcessServerStatus(message, _functionContext.Object);
 
-        _livePlayersApi.Verify(x => x.SetLivePlayersForGameServer(
+        _liveStatusApi.Verify(x => x.SetGameServerLiveStatus(
             TestServerId,
-            It.Is<List<CreateLivePlayerDto>>(list =>
-                list.Count == 1 &&
-                list[0].PlayerId == null &&
-                list[0].Name == "NewPlayer"),
+            It.Is<SetGameServerLiveStatusDto>(dto =>
+                dto.Players.Count == 1 &&
+                dto.Players[0].PlayerId == null &&
+                dto.Players[0].Name == "NewPlayer"),
             It.IsAny<CancellationToken>()), Times.Once);
     }
 
@@ -323,52 +308,28 @@ public class ServerStatusProcessorTests
 
         await _sut.ProcessServerStatus(message, _functionContext.Object);
 
-        _livePlayersApi.Verify(x => x.SetLivePlayersForGameServer(
+        _liveStatusApi.Verify(x => x.SetGameServerLiveStatus(
             TestServerId,
-            It.Is<List<CreateLivePlayerDto>>(list =>
-                list.Count == 1 &&
-                list[0].Lat == 51.5074 &&
-                list[0].Long == -0.1278 &&
-                list[0].CountryCode == "GB" &&
-                list[0].PlayerId == TestPlayerId),
+            It.Is<SetGameServerLiveStatusDto>(dto =>
+                dto.Players.Count == 1 &&
+                dto.Players[0].GeoIntelligence != null &&
+                dto.Players[0].GeoIntelligence.Latitude == 51.5074 &&
+                dto.Players[0].GeoIntelligence.Longitude == -0.1278 &&
+                dto.Players[0].GeoIntelligence.CountryCode == "GB" &&
+                dto.Players[0].PlayerId == TestPlayerId),
             It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
-    public async Task ProcessServerStatus_UpdateGameServerFails_StillSetsLivePlayersAndStats()
+    public async Task ProcessServerStatus_SetLiveStatusFails_StillCreatesStats()
     {
         var evt = CreateValidEvent(players: new List<ConnectedPlayer>());
         var message = CreateMessage(evt);
 
-        _gameServersApi.Setup(x => x.UpdateGameServer(It.IsAny<EditGameServerDto>(), It.IsAny<CancellationToken>()))
+        _liveStatusApi.Setup(x => x.SetGameServerLiveStatus(It.IsAny<Guid>(), It.IsAny<SetGameServerLiveStatusDto>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new HttpRequestException("Repository API unavailable"));
 
         await _sut.ProcessServerStatus(message, _functionContext.Object);
-
-        // Live players and stats should still be attempted
-        _livePlayersApi.Verify(x => x.SetLivePlayersForGameServer(
-            TestServerId,
-            It.IsAny<List<CreateLivePlayerDto>>(),
-            It.IsAny<CancellationToken>()), Times.Once);
-
-        _gameServersStatsApi.Verify(x => x.CreateGameServerStats(
-            It.IsAny<List<CreateGameServerStatDto>>(),
-            It.IsAny<CancellationToken>()), Times.Once);
-    }
-
-    [Fact]
-    public async Task ProcessServerStatus_SetLivePlayersFails_StillCreatesStats()
-    {
-        var evt = CreateValidEvent(players: new List<ConnectedPlayer>());
-        var message = CreateMessage(evt);
-
-        _livePlayersApi.Setup(x => x.SetLivePlayersForGameServer(It.IsAny<Guid>(), It.IsAny<List<CreateLivePlayerDto>>(), It.IsAny<CancellationToken>()))
-            .ThrowsAsync(new HttpRequestException("Repository API unavailable"));
-
-        await _sut.ProcessServerStatus(message, _functionContext.Object);
-
-        // UpdateGameServer and stats should still succeed
-        _gameServersApi.Verify(x => x.UpdateGameServer(It.IsAny<EditGameServerDto>(), It.IsAny<CancellationToken>()), Times.Once);
 
         _gameServersStatsApi.Verify(x => x.CreateGameServerStats(
             It.IsAny<List<CreateGameServerStatDto>>(),
@@ -386,11 +347,9 @@ public class ServerStatusProcessorTests
 
         await _sut.ProcessServerStatus(message, _functionContext.Object);
 
-        // UpdateGameServer and live players should still succeed
-        _gameServersApi.Verify(x => x.UpdateGameServer(It.IsAny<EditGameServerDto>(), It.IsAny<CancellationToken>()), Times.Once);
-        _livePlayersApi.Verify(x => x.SetLivePlayersForGameServer(
+        _liveStatusApi.Verify(x => x.SetGameServerLiveStatus(
             TestServerId,
-            It.IsAny<List<CreateLivePlayerDto>>(),
+            It.IsAny<SetGameServerLiveStatusDto>(),
             It.IsAny<CancellationToken>()), Times.Once);
     }
 }

@@ -13,6 +13,7 @@ using MX.GeoLocation.Api.Client.V1;
 using XtremeIdiots.Portal.Repository.Api.Client.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Constants.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.GameServers;
+using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.LiveStatus;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.Players;
 using XtremeIdiots.Portal.Server.Events.Abstractions.V1;
 using XtremeIdiots.Portal.Server.Events.Abstractions.V1.Events;
@@ -21,7 +22,7 @@ namespace XtremeIdiots.Portal.Server.Events.Processor.App.Functions;
 
 /// <summary>
 /// Processes server status snapshot events published by game server agents every 60 seconds.
-/// Updates live server fields, sets the live player list with GeoIP enrichment,
+/// Updates live server status in Table Storage via the LiveStatus API,
 /// and creates player count snapshots for analytics.
 /// </summary>
 public sealed class ServerStatusProcessor(
@@ -95,27 +96,7 @@ public sealed class ServerStatusProcessor(
 
         var failedSteps = new List<string>();
 
-        // Step 1: Update game server live fields
-        try
-        {
-            var editDto = new EditGameServerDto(evt.ServerId)
-            {
-                LiveTitle = evt.ServerTitle,
-                LiveMap = evt.MapName,
-                LiveMod = evt.ServerMod,
-                LiveMaxPlayers = evt.MaxPlayers,
-                LiveCurrentPlayers = evt.PlayerCount,
-                LiveLastUpdated = evt.EventGeneratedUtc
-            };
-            await repositoryApiClient.GameServers.V1.UpdateGameServer(editDto).ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            failedSteps.Add("UpdateGameServer");
-            logger.LogWarning(ex, "Failed to update game server live fields for {ServerId}", evt.ServerId);
-        }
-
-        // Step 2: Build and set live player list with GeoIP enrichment
+        // Step 1: Build live player list with GeoIP enrichment and set live status
         try
         {
             var livePlayerDtos = new List<CreateLivePlayerDto>();
@@ -130,7 +111,8 @@ public sealed class ServerStatusProcessor(
                     GameServerId = evt.ServerId,
                     Score = player.Score,
                     Ping = player.Ping,
-                    Rate = player.Rate
+                    Rate = player.Rate,
+                    ConnectedAtUtc = player.ConnectedAtUtc
                 };
 
                 // Resolve PlayerId from cache/API (best-effort per player)
@@ -159,10 +141,7 @@ public sealed class ServerStatusProcessor(
 
                         if (intelResult.IsSuccess && intelResult.Result?.Data is not null)
                         {
-                            var intel = intelResult.Result.Data;
-                            livePlayer.Lat = intel.Latitude;
-                            livePlayer.Long = intel.Longitude;
-                            livePlayer.CountryCode = intel.CountryCode;
+                            livePlayer.GeoIntelligence = intelResult.Result.Data;
                         }
                     }
                     catch (Exception ex)
@@ -175,17 +154,28 @@ public sealed class ServerStatusProcessor(
                 livePlayerDtos.Add(livePlayer);
             }
 
-            await repositoryApiClient.LivePlayers.V1
-                .SetLivePlayersForGameServer(evt.ServerId, livePlayerDtos)
+            var liveStatusDto = new SetGameServerLiveStatusDto
+            {
+                Title = evt.ServerTitle,
+                Map = evt.MapName,
+                Mod = evt.ServerMod,
+                GameType = gameType,
+                MaxPlayers = evt.MaxPlayers ?? 0,
+                CurrentPlayers = evt.PlayerCount,
+                Players = livePlayerDtos
+            };
+
+            await repositoryApiClient.LiveStatus.V1
+                .SetGameServerLiveStatus(evt.ServerId, liveStatusDto)
                 .ConfigureAwait(false);
         }
         catch (Exception ex)
         {
-            failedSteps.Add("SetLivePlayers");
-            logger.LogWarning(ex, "Failed to set live players for {ServerId}", evt.ServerId);
+            failedSteps.Add("SetLiveStatus");
+            logger.LogWarning(ex, "Failed to set live status for {ServerId}", evt.ServerId);
         }
 
-        // Step 3: Create player count snapshot for analytics
+        // Step 2: Create player count snapshot for analytics
         try
         {
             var statDtos = new List<CreateGameServerStatDto>
@@ -202,7 +192,7 @@ public sealed class ServerStatusProcessor(
             logger.LogWarning(ex, "Failed to create player count snapshot for {ServerId}", evt.ServerId);
         }
 
-        // Step 4: Track telemetry
+        // Step 3: Track telemetry
         telemetryClient.TrackEvent(new EventTelemetry("ServerStatusReceived")
         {
             Properties =
