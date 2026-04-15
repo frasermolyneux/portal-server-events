@@ -2,10 +2,11 @@ using System.Text.Json;
 
 using Azure.Messaging.ServiceBus;
 
-using Microsoft.ApplicationInsights;
-using Microsoft.ApplicationInsights.DataContracts;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Logging;
+
+using MX.Observability.ApplicationInsights.Auditing;
+using MX.Observability.ApplicationInsights.Auditing.Models;
 
 using XtremeIdiots.Portal.Repository.Api.Client.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.GameServers;
@@ -17,7 +18,7 @@ namespace XtremeIdiots.Portal.Server.Events.Processor.App.Functions;
 public class ServerConnectedProcessor(
     ILogger<ServerConnectedProcessor> logger,
     IRepositoryApiClient repositoryApiClient,
-    TelemetryClient telemetryClient)
+    IAuditLogger auditLogger)
 {
     [Function(nameof(ProcessServerConnected))]
     public async Task ProcessServerConnected(
@@ -70,13 +71,8 @@ public class ServerConnectedProcessor(
             .CreateGameServerEvent(gameServerEventDto)
             .ConfigureAwait(false);
 
-        telemetryClient.TrackEvent(new EventTelemetry("ServerConnected")
-        {
-            Properties =
-            {
-                ["GameType"] = serverEvent.GameType,
-                ["ServerId"] = serverEvent.ServerId.ToString()
-            }
-        });
+        auditLogger.LogAudit(AuditEvent.ServerAction("ServerConnected", AuditAction.Connect)
+            .WithGameContext(serverEvent.GameType, serverEvent.ServerId)
+            .Build());
     }
 }

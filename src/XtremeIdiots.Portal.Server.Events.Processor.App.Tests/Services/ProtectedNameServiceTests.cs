@@ -1,5 +1,5 @@
-using Microsoft.ApplicationInsights;
-using Microsoft.ApplicationInsights.Channel;
+using MX.Observability.ApplicationInsights.Auditing;
+
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
@@ -30,7 +30,7 @@ public class ProtectedNameServiceTests
     private readonly Mock<IAdminActionsApi> _adminActionsApi = new();
     private readonly Mock<IRconApi> _rconApi = new();
     private readonly Mock<ILogger<ProtectedNameService>> _logger = new();
-    private readonly TelemetryClient _telemetry;
+    private readonly Mock<IAuditLogger> _auditLogger = new();
     private readonly IConfiguration _configuration;
     private readonly IMemoryCache _cache;
     private readonly ProtectedNameService _sut;
@@ -58,11 +58,6 @@ public class ProtectedNameServiceTests
 
         _cache = new MemoryCache(Options.Create(new MemoryCacheOptions()));
 
-        _telemetry = new TelemetryClient(new Microsoft.ApplicationInsights.Extensibility.TelemetryConfiguration
-        {
-            TelemetryChannel = new Mock<ITelemetryChannel>().Object
-        });
-
         _configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
@@ -74,7 +69,7 @@ public class ProtectedNameServiceTests
             _repoClient.Object,
             _rconApi.Object,
             _cache,
-            _telemetry,
+            _auditLogger.Object,
             _configuration,
             _logger.Object);
     }

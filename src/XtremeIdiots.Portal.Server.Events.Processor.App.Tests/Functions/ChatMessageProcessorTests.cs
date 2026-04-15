@@ -1,5 +1,5 @@
-using Microsoft.ApplicationInsights;
-using Microsoft.ApplicationInsights.Channel;
+using MX.Observability.ApplicationInsights.Auditing;
+
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Configuration;
@@ -32,7 +32,7 @@ public class ChatMessageProcessorTests
     private readonly Mock<IVersionedChatMessagesApi> _versionedChat = new();
     private readonly Mock<IChatMessagesApi> _chatApi = new();
     private readonly IMemoryCache _cache;
-    private readonly TelemetryClient _telemetry;
+    private readonly Mock<IAuditLogger> _auditLogger = new();
     private readonly Mock<FunctionContext> _functionContext = new();
     private readonly Mock<IChatCommandProcessor> _commandProcessor = new();
     private readonly Mock<IChatModerationPipeline> _moderationPipeline = new();
@@ -54,10 +54,6 @@ public class ChatMessageProcessorTests
             .ReturnsAsync(CommandResult.NotHandled);
 
         _cache = new MemoryCache(Options.Create(new MemoryCacheOptions()));
-        _telemetry = new TelemetryClient(new Microsoft.ApplicationInsights.Extensibility.TelemetryConfiguration
-        {
-            TelemetryChannel = new Mock<ITelemetryChannel>().Object
-        });
 
         _configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
@@ -66,7 +62,7 @@ public class ChatMessageProcessorTests
             })
             .Build();
 
-        _sut = new ChatMessageProcessor(_logger.Object, _repoClient.Object, _cache, _telemetry, _commandProcessor.Object, _moderationPipeline.Object, _configuration);
+        _sut = new ChatMessageProcessor(_logger.Object, _repoClient.Object, _cache, _auditLogger.Object, _commandProcessor.Object, _moderationPipeline.Object, _configuration);
     }
 
     private static ChatMessageEvent CreateValidEvent(

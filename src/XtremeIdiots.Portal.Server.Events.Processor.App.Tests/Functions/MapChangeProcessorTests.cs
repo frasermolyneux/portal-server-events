@@ -1,5 +1,5 @@
-using Microsoft.ApplicationInsights;
-using Microsoft.ApplicationInsights.Channel;
+using MX.Observability.ApplicationInsights.Auditing;
+
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Logging;
 
@@ -21,7 +21,7 @@ public class MapChangeProcessorTests
     private readonly Mock<IRepositoryApiClient> _repoClient = new();
     private readonly Mock<IVersionedGameServersEventsApi> _versionedEvents = new();
     private readonly Mock<IGameServersEventsApi> _eventsApi = new();
-    private readonly TelemetryClient _telemetry;
+    private readonly Mock<IAuditLogger> _auditLogger = new();
     private readonly Mock<FunctionContext> _functionContext = new();
     private readonly MapChangeProcessor _sut;
 
@@ -32,12 +32,7 @@ public class MapChangeProcessorTests
         _versionedEvents.Setup(x => x.V1).Returns(_eventsApi.Object);
         _repoClient.Setup(x => x.GameServersEvents).Returns(_versionedEvents.Object);
 
-        _telemetry = new TelemetryClient(new Microsoft.ApplicationInsights.Extensibility.TelemetryConfiguration
-        {
-            TelemetryChannel = new Mock<ITelemetryChannel>().Object
-        });
-
-        _sut = new MapChangeProcessor(_logger.Object, _repoClient.Object, _telemetry);
+        _sut = new MapChangeProcessor(_logger.Object, _repoClient.Object, _auditLogger.Object);
     }
 
     private static MapChangeEvent CreateValidEvent(

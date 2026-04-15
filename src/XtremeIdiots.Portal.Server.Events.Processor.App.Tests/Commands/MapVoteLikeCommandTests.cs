@@ -5,6 +5,7 @@ using Microsoft.Extensions.Logging;
 using Moq;
 
 using MX.Api.Abstractions;
+using MX.Observability.ApplicationInsights.Auditing;
 
 using XtremeIdiots.Portal.Integrations.Servers.Abstractions.Interfaces.V1;
 using XtremeIdiots.Portal.Integrations.Servers.Abstractions.Models.V1.Rcon;
@@ -26,6 +27,7 @@ public class MapVoteLikeCommandTests
     private readonly Mock<XtremeIdiots.Portal.Repository.Api.Client.V1.IVersionedMapsApi> _versionedMaps = new();
     private readonly Mock<XtremeIdiots.Portal.Repository.Abstractions.Interfaces.V1.IMapsApi> _mapsApi = new();
     private readonly Mock<IRconResponseService> _rconService = new();
+    private readonly Mock<IAuditLogger> _auditLogger = new();
     private readonly Mock<ILogger<MapVoteLikeCommand>> _logger = new();
     private readonly MapVoteLikeCommand _sut;
 
@@ -41,7 +43,7 @@ public class MapVoteLikeCommandTests
         _versionedMaps.Setup(x => x.V1).Returns(_mapsApi.Object);
         _repoClient.Setup(x => x.Maps).Returns(_versionedMaps.Object);
 
-        _sut = new MapVoteLikeCommand(_repoClient.Object, _serversClient.Object, _rconService.Object, _logger.Object);
+        _sut = new MapVoteLikeCommand(_repoClient.Object, _serversClient.Object, _rconService.Object, _auditLogger.Object, _logger.Object);
     }
 
     private static CommandContext CreateContext(Guid? playerId = null, string message = "!like") => new()

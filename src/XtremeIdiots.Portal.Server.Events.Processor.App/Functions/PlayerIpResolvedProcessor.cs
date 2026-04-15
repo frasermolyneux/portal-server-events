@@ -2,11 +2,12 @@ using System.Text.Json;
 
 using Azure.Messaging.ServiceBus;
 
-using Microsoft.ApplicationInsights;
-using Microsoft.ApplicationInsights.DataContracts;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
+
+using MX.Observability.ApplicationInsights.Auditing;
+using MX.Observability.ApplicationInsights.Auditing.Models;
 
 using XtremeIdiots.Portal.Repository.Api.Client.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Constants.V1;
@@ -24,7 +25,7 @@ public class PlayerIpResolvedProcessor(
     ILogger<PlayerIpResolvedProcessor> logger,
     IRepositoryApiClient repositoryApiClient,
     IMemoryCache memoryCache,
-    TelemetryClient telemetryClient)
+    IAuditLogger auditLogger)
 {
     private static readonly TimeSpan StaleThreshold = TimeSpan.FromMinutes(30);
     private static readonly TimeSpan PlayerCacheExpiration = TimeSpan.FromMinutes(15);
@@ -108,16 +109,11 @@ public class PlayerIpResolvedProcessor(
             return;
         }
 
-        telemetryClient.TrackEvent(new EventTelemetry("PlayerIpResolved")
-        {
-            Properties =
-            {
-                ["GameType"] = evt.GameType,
-                ["ServerId"] = evt.ServerId.ToString(),
-                ["PlayerGuid"] = evt.PlayerGuid,
-                ["IpAddress"] = evt.IpAddress
-            }
-        });
+        auditLogger.LogAudit(AuditEvent.ServerAction("PlayerIpResolved", AuditAction.Update)
+            .WithGameContext(evt.GameType, evt.ServerId)
+            .WithPlayer(evt.PlayerGuid, null)
+            .WithProperty("IpAddress", evt.IpAddress)
+            .Build());
 
         logger.LogInformation("Persisted IP {IpAddress} for player {PlayerGuid}", evt.IpAddress, evt.PlayerGuid);
     }

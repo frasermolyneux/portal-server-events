@@ -1,5 +1,5 @@
-using Microsoft.ApplicationInsights;
-using Microsoft.ApplicationInsights.Channel;
+using MX.Observability.ApplicationInsights.Auditing;
+
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
@@ -34,7 +34,7 @@ public class PlayerConnectedProcessorTests
     private readonly Mock<IPlayersApi> _playersApi = new();
     private readonly Mock<IProtectedNameService> _protectedNameService = new();
     private readonly IMemoryCache _cache;
-    private readonly TelemetryClient _telemetry;
+    private readonly Mock<IAuditLogger> _auditLogger = new();
     private readonly Mock<FunctionContext> _functionContext = new();
     private readonly PlayerConnectedProcessor _sut;
 
@@ -50,12 +50,8 @@ public class PlayerConnectedProcessorTests
         _geoClient.Setup(x => x.GeoLookup).Returns(_versionedGeoLookup.Object);
 
         _cache = new MemoryCache(Options.Create(new MemoryCacheOptions()));
-        _telemetry = new TelemetryClient(new Microsoft.ApplicationInsights.Extensibility.TelemetryConfiguration
-        {
-            TelemetryChannel = new Mock<ITelemetryChannel>().Object
-        });
 
-        _sut = new PlayerConnectedProcessor(_logger.Object, _repoClient.Object, _geoClient.Object, _protectedNameService.Object, _cache, _telemetry);
+        _sut = new PlayerConnectedProcessor(_logger.Object, _repoClient.Object, _geoClient.Object, _protectedNameService.Object, _cache, _auditLogger.Object);
     }
 
     private static PlayerConnectedEvent CreateValidEvent(

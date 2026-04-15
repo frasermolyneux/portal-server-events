@@ -1,5 +1,8 @@
 using Microsoft.Extensions.Logging;
 
+using MX.Observability.ApplicationInsights.Auditing;
+using MX.Observability.ApplicationInsights.Auditing.Models;
+
 using XtremeIdiots.Portal.Integrations.Servers.Api.Client.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Constants.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.Maps;
@@ -12,17 +15,20 @@ public abstract class MapVoteCommandBase : IChatCommand
     private readonly IRepositoryApiClient _repositoryClient;
     private readonly IServersApiClient _serversClient;
     private readonly IRconResponseService _rconService;
+    private readonly IAuditLogger _auditLogger;
     private readonly ILogger _logger;
 
     protected MapVoteCommandBase(
         IRepositoryApiClient repositoryClient,
         IServersApiClient serversClient,
         IRconResponseService rconService,
+        IAuditLogger auditLogger,
         ILogger logger)
     {
         _repositoryClient = repositoryClient;
         _serversClient = serversClient;
         _rconService = rconService;
+        _auditLogger = auditLogger;
         _logger = logger;
     }
 
@@ -60,6 +66,14 @@ public abstract class MapVoteCommandBase : IChatCommand
 
         await _repositoryClient.Maps.V1.UpsertMapVote(
             new UpsertMapVoteDto(mapId, context.PlayerId.Value, context.ServerId, like: IsLike), ct);
+
+        _auditLogger.LogAudit(AuditEvent.ServerAction("MapVoteRecorded", AuditAction.Create)
+            .WithGameContext(context.GameType, context.ServerId)
+            .WithPlayer(context.PlayerGuid, context.Username)
+            .WithSource("MapVoteCommand")
+            .WithProperty("MapName", currentMap)
+            .WithProperty("VoteType", IsLike ? "Like" : "Dislike")
+            .Build());
 
         await _rconService.TrySayAsync(
             context.ServerId,

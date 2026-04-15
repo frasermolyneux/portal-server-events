@@ -7,6 +7,8 @@ using Microsoft.Extensions.Options;
 
 using Moq;
 
+using MX.Observability.ApplicationInsights.Auditing;
+
 using MX.Api.Abstractions;
 using MX.GeoLocation.Abstractions.Models.V1_1;
 using MX.GeoLocation.Api.Client.V1;
@@ -42,6 +44,7 @@ public class ServerStatusProcessorTests
     private readonly Mock<IRecentPlayersApi> _recentPlayersApi = new();
     private readonly IMemoryCache _cache;
     private readonly TelemetryClient _telemetry;
+    private readonly Mock<IAuditLogger> _auditLogger = new();
     private readonly Mock<FunctionContext> _functionContext = new();
     private readonly ServerStatusProcessor _sut;
 
@@ -73,7 +76,7 @@ public class ServerStatusProcessorTests
 
         SetupDefaultApiSuccessResponses();
 
-        _sut = new ServerStatusProcessor(_logger.Object, _repoClient.Object, _geoClient.Object, _cache, _telemetry);
+        _sut = new ServerStatusProcessor(_logger.Object, _repoClient.Object, _geoClient.Object, _cache, _telemetry, _auditLogger.Object);
     }
 
     private void SetupDefaultApiSuccessResponses()

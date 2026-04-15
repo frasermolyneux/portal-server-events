@@ -13,6 +13,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.FeatureManagement;
 
 using MX.Api.Client.Configuration;
+using MX.Observability.ApplicationInsights.Extensions;
 using MX.GeoLocation.Api.Client.V1;
 using MX.InvisionCommunity.Api.Client;
 
@@ -80,7 +81,7 @@ var host = new HostBuilder()
         services.AddSingleton<ITelemetryInitializer, TelemetryInitializer>();
         services.AddApplicationInsightsTelemetryWorkerService();
         services.ConfigureFunctionsApplicationInsights();
-        services.AddApplicationInsightsTelemetryProcessor<DependencyFilterTelemetryProcessor>();
+        services.AddObservability();
 
         services.AddRepositoryApiClient(options => options
             .WithBaseUrl(configuration["RepositoryApi:BaseUrl"] ?? throw new InvalidOperationException("RepositoryApi:BaseUrl is required"))

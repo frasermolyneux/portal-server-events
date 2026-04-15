@@ -2,10 +2,11 @@ using System.Text.Json;
 
 using Azure.Messaging.ServiceBus;
 
-using Microsoft.ApplicationInsights;
-using Microsoft.ApplicationInsights.DataContracts;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Logging;
+
+using MX.Observability.ApplicationInsights.Auditing;
+using MX.Observability.ApplicationInsights.Auditing.Models;
 
 using XtremeIdiots.Portal.Repository.Api.Client.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.GameServers;
@@ -17,7 +18,7 @@ namespace XtremeIdiots.Portal.Server.Events.Processor.App.Functions;
 public class MapChangeProcessor(
     ILogger<MapChangeProcessor> logger,
     IRepositoryApiClient repositoryApiClient,
-    TelemetryClient telemetryClient)
+    IAuditLogger auditLogger)
 {
     [Function(nameof(ProcessMapChange))]
     public async Task ProcessMapChange(
@@ -77,14 +78,9 @@ public class MapChangeProcessor(
             .CreateGameServerEvent(gameServerEventDto)
             .ConfigureAwait(false);
 
-        telemetryClient.TrackEvent(new EventTelemetry("MapChange")
-        {
-            Properties =
-            {
-                ["GameType"] = mapEvent.GameType,
-                ["ServerId"] = mapEvent.ServerId.ToString(),
-                ["MapName"] = mapEvent.MapName
-            }
-        });
+        auditLogger.LogAudit(AuditEvent.ServerAction("MapChange", AuditAction.Update)
+            .WithGameContext(mapEvent.GameType, mapEvent.ServerId)
+            .WithProperty("MapName", mapEvent.MapName)
+            .Build());
     }
 }

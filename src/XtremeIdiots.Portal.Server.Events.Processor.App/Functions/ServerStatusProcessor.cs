@@ -3,10 +3,12 @@ using System.Text.Json;
 using Azure.Messaging.ServiceBus;
 
 using Microsoft.ApplicationInsights;
-using Microsoft.ApplicationInsights.DataContracts;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
+
+using MX.Observability.ApplicationInsights.Auditing;
+using MX.Observability.ApplicationInsights.Auditing.Models;
 
 using MX.GeoLocation.Api.Client.V1;
 
@@ -31,7 +33,8 @@ public sealed class ServerStatusProcessor(
     IRepositoryApiClient repositoryApiClient,
     IGeoLocationApiClient geoLocationApiClient,
     IMemoryCache memoryCache,
-    TelemetryClient telemetryClient)
+    TelemetryClient telemetryClient,
+    IAuditLogger auditLogger)
 {
     private static readonly TimeSpan StaleThreshold = TimeSpan.FromMinutes(2);
     private static readonly TimeSpan PlayerCacheExpiration = TimeSpan.FromMinutes(15);
@@ -231,16 +234,11 @@ public sealed class ServerStatusProcessor(
         }
 
         // Step 4: Track telemetry
-        telemetryClient.TrackEvent(new EventTelemetry("ServerStatusReceived")
-        {
-            Properties =
-            {
-                ["ServerId"] = evt.ServerId.ToString(),
-                ["GameType"] = evt.GameType,
-                ["MapName"] = evt.MapName,
-                ["PlayerCount"] = evt.PlayerCount.ToString()
-            }
-        });
+        auditLogger.LogAudit(AuditEvent.ServerAction("ServerStatusReceived", AuditAction.Execute)
+            .WithGameContext(evt.GameType, evt.ServerId)
+            .WithProperty("MapName", evt.MapName)
+            .WithProperty("PlayerCount", evt.PlayerCount.ToString())
+            .Build());
 
         telemetryClient.TrackMetric("ServerPlayerCount", evt.PlayerCount,
             new Dictionary<string, string>

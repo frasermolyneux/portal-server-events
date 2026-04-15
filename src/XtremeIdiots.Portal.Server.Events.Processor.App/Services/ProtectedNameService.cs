@@ -1,8 +1,9 @@
-using Microsoft.ApplicationInsights;
-using Microsoft.ApplicationInsights.DataContracts;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+
+using MX.Observability.ApplicationInsights.Auditing;
+using MX.Observability.ApplicationInsights.Auditing.Models;
 
 using XtremeIdiots.Portal.Integrations.Servers.Abstractions.Interfaces.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Constants.V1;
@@ -16,7 +17,7 @@ public sealed class ProtectedNameService(
     IRepositoryApiClient repositoryApiClient,
     IRconApi rconApi,
     IMemoryCache memoryCache,
-    TelemetryClient telemetryClient,
+    IAuditLogger auditLogger,
     IConfiguration configuration,
     ILogger<ProtectedNameService> logger) : IProtectedNameService
 {
@@ -76,6 +77,13 @@ public sealed class ProtectedNameService(
 
                 await rconApi.BanPlayerWithVerification(context.ServerId, context.SlotId, context.Username)
                     .ConfigureAwait(false);
+
+                auditLogger.LogAudit(AuditEvent.ServerAction("ProtectedNameBanEnforced", AuditAction.Moderate)
+                    .WithGameContext(context.GameType, context.ServerId)
+                    .WithPlayer(string.Empty, context.Username)
+                    .WithSource("ProtectedNameService")
+                    .WithProperty("ProtectedName", protectedName.Name)
+                    .Build());
 
                 TrackViolation(context, protectedName, ownerUsername);
 
@@ -137,17 +145,11 @@ public sealed class ProtectedNameService(
 
     private void TrackViolation(ProtectedNameContext context, ProtectedNameDto protectedName, string ownerUsername)
     {
-        telemetryClient.TrackEvent(new EventTelemetry("ProtectedNameViolation")
-        {
-            Properties =
-            {
-                ["ServerId"] = context.ServerId.ToString(),
-                ["GameType"] = context.GameType,
-                ["Username"] = context.Username,
-                ["ProtectedName"] = protectedName.Name,
-                ["OwnerId"] = protectedName.PlayerId.ToString(),
-                ["OwnerUsername"] = ownerUsername
-            }
-        });
+        auditLogger.LogAudit(AuditEvent.ServerAction("ProtectedNameViolation", AuditAction.Moderate)
+            .WithGameContext(context.GameType, context.ServerId)
+            .WithPlayer(string.Empty, context.Username)
+            .WithProperty("ProtectedName", protectedName.Name)
+            .WithProperty("Owner", ownerUsername)
+            .Build());
     }
 }

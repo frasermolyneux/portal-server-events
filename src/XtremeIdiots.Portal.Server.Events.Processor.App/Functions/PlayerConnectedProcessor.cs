@@ -2,11 +2,12 @@ using System.Text.Json;
 
 using Azure.Messaging.ServiceBus;
 
-using Microsoft.ApplicationInsights;
-using Microsoft.ApplicationInsights.DataContracts;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
+
+using MX.Observability.ApplicationInsights.Auditing;
+using MX.Observability.ApplicationInsights.Auditing.Models;
 
 using MX.GeoLocation.Api.Client.V1;
 
@@ -25,7 +26,7 @@ public class PlayerConnectedProcessor(
     IGeoLocationApiClient geoLocationApiClient,
     IProtectedNameService protectedNameService,
     IMemoryCache memoryCache,
-    TelemetryClient telemetryClient)
+    IAuditLogger auditLogger)
 {
     private static readonly TimeSpan StaleThreshold = TimeSpan.FromMinutes(30);
     private static readonly TimeSpan PlayerCacheExpiration = TimeSpan.FromMinutes(15);
@@ -114,7 +115,10 @@ public class PlayerConnectedProcessor(
             else if (createResult.IsSuccess)
             {
                 InvalidatePlayerCache(gameType, playerEvent.PlayerGuid);
-                TrackEvent("PlayerCreated", playerEvent);
+                auditLogger.LogAudit(AuditEvent.ServerAction("PlayerCreated", AuditAction.Create)
+                    .WithGameContext(playerEvent.GameType, playerEvent.ServerId)
+                    .WithPlayer(playerEvent.PlayerGuid, playerEvent.Username)
+                    .Build());
 
                 // Protected name enforcement (best-effort, never blocks player processing)
                 var newPlayerId = await GetPlayerId(gameType, playerEvent.PlayerGuid).ConfigureAwait(false);
@@ -169,7 +173,10 @@ public class PlayerConnectedProcessor(
         }
 
         InvalidatePlayerCache(gameType, playerEvent.PlayerGuid);
-        TrackEvent("PlayerConnected", playerEvent);
+        auditLogger.LogAudit(AuditEvent.ServerAction("PlayerConnected", AuditAction.Connect)
+            .WithGameContext(playerEvent.GameType, playerEvent.ServerId)
+            .WithPlayer(playerEvent.PlayerGuid, playerEvent.Username)
+            .Build());
 
         // Protected name enforcement (best-effort, never blocks player processing)
         await protectedNameService.CheckAsync(new ProtectedNameContext
@@ -230,18 +237,16 @@ public class PlayerConnectedProcessor(
                     properties["ProxyType"] = intel.ProxyCheck.ProxyType;
                 }
 
-                telemetryClient.TrackEvent(new EventTelemetry("PlayerIntelligenceEnriched")
-                {
-                    Properties = { ["GameType"] = playerEvent.GameType, ["ServerId"] = playerEvent.ServerId.ToString(),
-                        ["PlayerGuid"] = playerEvent.PlayerGuid, ["Username"] = playerEvent.Username,
-                        ["CountryCode"] = intel.CountryCode ?? string.Empty,
-                        ["RiskScore"] = intel.ProxyCheck?.RiskScore.ToString() ?? string.Empty,
-                        ["IsVpn"] = intel.ProxyCheck?.IsVpn.ToString() ?? string.Empty,
-                        ["IsProxy"] = intel.ProxyCheck?.IsProxy.ToString() ?? string.Empty,
-                        ["IsAnonymous"] = intel.Anonymizer?.IsAnonymous.ToString() ?? string.Empty,
-                        ["IsTorExitNode"] = intel.Anonymizer?.IsTorExitNode.ToString() ?? string.Empty
-                    }
-                });
+                auditLogger.LogAudit(AuditEvent.ServerAction("PlayerIntelligenceEnriched", AuditAction.Update)
+                    .WithGameContext(playerEvent.GameType, playerEvent.ServerId)
+                    .WithPlayer(playerEvent.PlayerGuid, playerEvent.Username)
+                    .WithProperty("CountryCode", intel.CountryCode ?? string.Empty)
+                    .WithProperty("RiskScore", intel.ProxyCheck?.RiskScore.ToString() ?? string.Empty)
+                    .WithProperty("IsVpn", intel.ProxyCheck?.IsVpn.ToString() ?? string.Empty)
+                    .WithProperty("IsProxy", intel.ProxyCheck?.IsProxy.ToString() ?? string.Empty)
+                    .WithProperty("IsAnonymous", intel.Anonymizer?.IsAnonymous.ToString() ?? string.Empty)
+                    .WithProperty("IsTorExitNode", intel.Anonymizer?.IsTorExitNode.ToString() ?? string.Empty)
+                    .Build());
 
                 logger.LogInformation("IP Intelligence for {Username}: Country={CountryCode}, RiskScore={RiskScore}, IsVpn={IsVpn}, IsProxy={IsProxy}",
                     playerEvent.Username,
@@ -282,19 +287,5 @@ public class PlayerConnectedProcessor(
     {
         memoryCache.Remove($"player-id-{gameType}-{guid}");
         memoryCache.Remove($"player-ctx-{gameType}-{guid}");
-    }
-
-    private void TrackEvent(string eventName, PlayerConnectedEvent playerEvent)
-    {
-        telemetryClient.TrackEvent(new EventTelemetry(eventName)
-        {
-            Properties =
-            {
-                ["GameType"] = playerEvent.GameType,
-                ["ServerId"] = playerEvent.ServerId.ToString(),
-                ["PlayerGuid"] = playerEvent.PlayerGuid,
-                ["Username"] = playerEvent.Username
-            }
-        });
     }
 }

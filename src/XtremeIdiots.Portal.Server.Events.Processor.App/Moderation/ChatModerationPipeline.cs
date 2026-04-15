@@ -1,7 +1,9 @@
-using Microsoft.ApplicationInsights;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.FeatureManagement;
+
+using MX.Observability.ApplicationInsights.Auditing;
+using MX.Observability.ApplicationInsights.Auditing.Models;
 
 using XtremeIdiots.Portal.Repository.Abstractions.Constants.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.AdminActions;
@@ -14,7 +16,7 @@ public sealed class ChatModerationPipeline(
     IRepositoryApiClient repositoryClient,
     IConfiguration configuration,
     IFeatureManager featureManager,
-    TelemetryClient telemetryClient,
+    IAuditLogger auditLogger,
     ILogger<ChatModerationPipeline> logger) : IChatModerationPipeline
 {
     public async Task RunAsync(ModerationContext context, CancellationToken ct = default)
@@ -80,6 +82,13 @@ public sealed class ChatModerationPipeline(
 
         await repositoryClient.AdminActions.V1.CreateAdminAction(adminAction, ct);
 
+        auditLogger.LogAudit(AuditEvent.ServerAction("ChatModerationObservationCreated", AuditAction.Create)
+            .WithGameContext(context.GameType, context.ServerId)
+            .WithPlayer(string.Empty, context.Username)
+            .WithSource("ChatModerationPipeline")
+            .WithProperty("ModerationSource", source)
+            .Build());
+
         logger.LogInformation(
             "Chat moderation triggered for player {PlayerId} via {Source}",
             context.PlayerId, source);
@@ -87,13 +96,11 @@ public sealed class ChatModerationPipeline(
 
     private void TrackModerationEvent(ModerationContext context, string source)
     {
-        telemetryClient.TrackEvent("ChatModerationTriggered", new Dictionary<string, string>
-        {
-            ["GameType"] = context.GameType,
-            ["ServerId"] = context.ServerId.ToString(),
-            ["Source"] = source,
-            ["Username"] = context.Username
-        });
+        auditLogger.LogAudit(AuditEvent.ServerAction("ChatModerationTriggered", AuditAction.Moderate)
+            .WithGameContext(context.GameType, context.ServerId)
+            .WithPlayer(string.Empty, context.Username)
+            .WithProperty("ModerationSource", source)
+            .Build());
     }
 
     private static string Truncate(string value, int maxLength)

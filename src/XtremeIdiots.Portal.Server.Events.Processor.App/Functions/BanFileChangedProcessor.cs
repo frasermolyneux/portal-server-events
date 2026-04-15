@@ -2,8 +2,6 @@ using System.Text.Json;
 
 using Azure.Messaging.ServiceBus;
 
-using Microsoft.ApplicationInsights;
-using Microsoft.ApplicationInsights.DataContracts;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Logging;
 
@@ -13,6 +11,9 @@ using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.AdminActions;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.Players;
 using XtremeIdiots.Portal.Server.Events.Abstractions.V1;
 using XtremeIdiots.Portal.Server.Events.Abstractions.V1.Events;
+
+using MX.Observability.ApplicationInsights.Auditing;
+using MX.Observability.ApplicationInsights.Auditing.Models;
 
 using XtremeIdiots.Portal.Server.Events.Processor.App.Services;
 
@@ -26,7 +27,7 @@ public sealed class BanFileChangedProcessor(
     ILogger<BanFileChangedProcessor> logger,
     IRepositoryApiClient repositoryApiClient,
     IAdminActionTopics adminActionTopics,
-    TelemetryClient telemetryClient)
+    IAuditLogger auditLogger)
 {
     [Function(nameof(ProcessBanFileChanged))]
     public async Task ProcessBanFileChanged(
@@ -132,7 +133,10 @@ public sealed class BanFileChangedProcessor(
             }
             else
             {
-                TrackEvent("BanPlayerCreated", gameType, serverId, ban);
+                auditLogger.LogAudit(AuditEvent.ServerAction("BanPlayerCreated", AuditAction.Create)
+                    .WithGameContext(gameType.ToString(), serverId)
+                    .WithPlayer(ban.PlayerGuid, ban.PlayerName)
+                    .Build());
             }
         }
 
@@ -182,7 +186,11 @@ public sealed class BanFileChangedProcessor(
         {
             logger.LogInformation("Created ban for player {PlayerGuid} ({PlayerName}) on server {ServerId}",
                 ban.PlayerGuid, ban.PlayerName, serverId);
-            TrackEvent("BanImported", gameType, serverId, ban);
+            auditLogger.LogAudit(AuditEvent.ServerAction("BanImported", AuditAction.Import)
+                .WithService("BanFileProcessor")
+                .WithGameContext(gameType.ToString(), serverId)
+                .WithPlayer(ban.PlayerGuid, ban.PlayerName)
+                .Build());
         }
         else
         {
@@ -191,17 +199,4 @@ public sealed class BanFileChangedProcessor(
         }
     }
 
-    private void TrackEvent(string eventName, GameType gameType, Guid serverId, DetectedBan ban)
-    {
-        telemetryClient.TrackEvent(new EventTelemetry(eventName)
-        {
-            Properties =
-            {
-                ["GameType"] = gameType.ToString(),
-                ["ServerId"] = serverId.ToString(),
-                ["PlayerGuid"] = ban.PlayerGuid,
-                ["PlayerName"] = ban.PlayerName
-            }
-        });
-    }
 }

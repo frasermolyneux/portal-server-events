@@ -1,5 +1,5 @@
-using Microsoft.ApplicationInsights;
-using Microsoft.ApplicationInsights.Channel;
+using MX.Observability.ApplicationInsights.Auditing;
+
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Logging;
 
@@ -27,7 +27,7 @@ public class BanFileChangedProcessorTests
     private readonly Mock<IVersionedAdminActionsApi> _versionedAdminActions = new();
     private readonly Mock<IAdminActionsApi> _adminActionsApi = new();
     private readonly Mock<IAdminActionTopics> _adminActionTopics = new();
-    private readonly TelemetryClient _telemetry;
+    private readonly Mock<IAuditLogger> _auditLogger = new();
     private readonly Mock<FunctionContext> _functionContext = new();
     private readonly BanFileChangedProcessor _sut;
 
@@ -49,12 +49,7 @@ public class BanFileChangedProcessorTests
                 It.IsAny<AdminActionOrder?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(SuccessResult(new MX.Api.Abstractions.CollectionModel<AdminActionDto>()));
 
-        _telemetry = new TelemetryClient(new Microsoft.ApplicationInsights.Extensibility.TelemetryConfiguration
-        {
-            TelemetryChannel = new Mock<ITelemetryChannel>().Object
-        });
-
-        _sut = new BanFileChangedProcessor(_logger.Object, _repoClient.Object, _adminActionTopics.Object, _telemetry);
+        _sut = new BanFileChangedProcessor(_logger.Object, _repoClient.Object, _adminActionTopics.Object, _auditLogger.Object);
     }
 
     private static BanDetectedEvent CreateValidEvent(

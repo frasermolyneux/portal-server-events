@@ -2,12 +2,13 @@ using System.Text.Json;
 
 using Azure.Messaging.ServiceBus;
 
-using Microsoft.ApplicationInsights;
-using Microsoft.ApplicationInsights.DataContracts;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+
+using MX.Observability.ApplicationInsights.Auditing;
+using MX.Observability.ApplicationInsights.Auditing.Models;
 
 using XtremeIdiots.Portal.Repository.Api.Client.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Constants.V1;
@@ -24,7 +25,7 @@ public class ChatMessageProcessor(
     ILogger<ChatMessageProcessor> logger,
     IRepositoryApiClient repositoryApiClient,
     IMemoryCache memoryCache,
-    TelemetryClient telemetryClient,
+    IAuditLogger auditLogger,
     IChatCommandProcessor chatCommandProcessor,
     IChatModerationPipeline moderationPipeline,
     IConfiguration configuration)
@@ -116,7 +117,10 @@ public class ChatMessageProcessor(
             .CreateChatMessage(chatMessageDto)
             .ConfigureAwait(false);
 
-        TrackEvent("ChatMessagePersisted", chatEvent);
+        auditLogger.LogAudit(AuditEvent.ServerAction("ChatMessagePersisted", AuditAction.Create)
+            .WithGameContext(chatEvent.GameType, chatEvent.ServerId)
+            .WithPlayer(chatEvent.PlayerGuid, chatEvent.Username)
+            .Build());
 
         // Process commands after persisting the chat message
         var commandContext = new CommandContext
@@ -182,18 +186,4 @@ public class ChatMessageProcessor(
     }
 
     private readonly record struct PlayerContextInfo(Guid PlayerId, DateTime FirstSeen, bool HasModerateChatTag);
-
-    private void TrackEvent(string eventName, ChatMessageEvent chatEvent)
-    {
-        telemetryClient.TrackEvent(new EventTelemetry(eventName)
-        {
-            Properties =
-            {
-                ["GameType"] = chatEvent.GameType,
-                ["ServerId"] = chatEvent.ServerId.ToString(),
-                ["PlayerGuid"] = chatEvent.PlayerGuid,
-                ["ChatType"] = chatEvent.Type.ToString()
-            }
-        });
-    }
 }

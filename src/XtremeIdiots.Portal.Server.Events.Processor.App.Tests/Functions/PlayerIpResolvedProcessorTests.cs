@@ -1,5 +1,5 @@
-using Microsoft.ApplicationInsights;
-using Microsoft.ApplicationInsights.Channel;
+using MX.Observability.ApplicationInsights.Auditing;
+
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
@@ -25,7 +25,7 @@ public class PlayerIpResolvedProcessorTests
     private readonly Mock<IVersionedPlayersApi> _versionedPlayers = new();
     private readonly Mock<IPlayersApi> _playersApi = new();
     private readonly IMemoryCache _cache;
-    private readonly TelemetryClient _telemetry;
+    private readonly Mock<IAuditLogger> _auditLogger = new();
     private readonly Mock<FunctionContext> _functionContext = new();
     private readonly PlayerIpResolvedProcessor _sut;
 
@@ -38,12 +38,8 @@ public class PlayerIpResolvedProcessorTests
         _repoClient.Setup(x => x.Players).Returns(_versionedPlayers.Object);
 
         _cache = new MemoryCache(Options.Create(new MemoryCacheOptions()));
-        _telemetry = new TelemetryClient(new Microsoft.ApplicationInsights.Extensibility.TelemetryConfiguration
-        {
-            TelemetryChannel = new Mock<ITelemetryChannel>().Object
-        });
 
-        _sut = new PlayerIpResolvedProcessor(_logger.Object, _repoClient.Object, _cache, _telemetry);
+        _sut = new PlayerIpResolvedProcessor(_logger.Object, _repoClient.Object, _cache, _auditLogger.Object);
     }
 
     private static PlayerIpResolvedEvent CreateValidEvent(

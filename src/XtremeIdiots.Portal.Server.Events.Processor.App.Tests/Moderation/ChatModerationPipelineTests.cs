@@ -1,5 +1,5 @@
-using Microsoft.ApplicationInsights;
-using Microsoft.ApplicationInsights.Channel;
+using MX.Observability.ApplicationInsights.Auditing;
+
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.FeatureManagement;
@@ -25,7 +25,7 @@ public class ChatModerationPipelineTests
     private readonly Mock<IAdminActionsApi> _adminActionsApi = new();
     private readonly Mock<IFeatureManager> _featureManager = new();
     private readonly Mock<ILogger<ChatModerationPipeline>> _logger = new();
-    private readonly TelemetryClient _telemetry;
+    private readonly Mock<IAuditLogger> _auditLogger = new();
     private readonly Dictionary<string, string?> _configValues;
     private readonly IConfiguration _configuration;
     private readonly ChatModerationPipeline _sut;
@@ -58,17 +58,12 @@ public class ChatModerationPipelineTests
             .AddInMemoryCollection(_configValues)
             .Build();
 
-        _telemetry = new TelemetryClient(new Microsoft.ApplicationInsights.Extensibility.TelemetryConfiguration
-        {
-            TelemetryChannel = new Mock<ITelemetryChannel>().Object
-        });
-
         _sut = new ChatModerationPipeline(
             _contentSafety.Object,
             _repoClient.Object,
             _configuration,
             _featureManager.Object,
-            _telemetry,
+            _auditLogger.Object,
             _logger.Object);
     }
 
