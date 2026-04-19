@@ -13,7 +13,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.FeatureManagement;
 
 using MX.Api.Client.Configuration;
-using MX.Observability.ApplicationInsights.Extensions;
+using MX.Observability.ApplicationInsights.WorkerService;
 using MX.GeoLocation.Api.Client.V1;
 using MX.InvisionCommunity.Api.Client;
 
