@@ -1,5 +1,9 @@
 # Copilot Instructions
 
+> Shared conventions:
+> - [`.github-copilot/.github/instructions/terraform.instructions.md`](../../.github-copilot/.github/instructions/terraform.instructions.md)  standard Terraform layout, providers, remote-state, validation, CI/CD.
+> - [`.github-copilot/.github/instructions/dotnet-nuget-library.instructions.md`](../../.github-copilot/.github/instructions/dotnet-nuget-library.instructions.md)  .NET NuGet library standards.
+
 ## Project Overview
 
 This repository contains the XtremeIdiots Portal server event contracts and processor. It has two components:
