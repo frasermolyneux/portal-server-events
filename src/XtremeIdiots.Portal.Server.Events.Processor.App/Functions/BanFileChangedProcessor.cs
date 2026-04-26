@@ -8,6 +8,7 @@ using Microsoft.Extensions.Logging;
 using XtremeIdiots.Portal.Repository.Api.Client.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Constants.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.AdminActions;
+using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.GameServers;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.Players;
 using XtremeIdiots.Portal.Server.Events.Abstractions.V1;
 using XtremeIdiots.Portal.Server.Events.Abstractions.V1.Events;
@@ -83,6 +84,8 @@ public sealed class BanFileChangedProcessor(
 
         logger.LogInformation("Processing {Count} ban(s) for server {ServerId}", evt.NewBans.Count, evt.ServerId);
 
+        var processed = new List<DetectedBan>(evt.NewBans.Count);
+
         foreach (var ban in evt.NewBans)
         {
             if (string.IsNullOrWhiteSpace(ban.PlayerGuid) || string.IsNullOrWhiteSpace(ban.PlayerName))
@@ -94,12 +97,46 @@ public sealed class BanFileChangedProcessor(
             try
             {
                 await ProcessSingleBanAsync(gameType, evt.ServerId, ban, context.CancellationToken).ConfigureAwait(false);
+                processed.Add(ban);
             }
             catch (Exception ex)
             {
                 logger.LogError(ex, "Failed to process ban for player {PlayerGuid}", ban.PlayerGuid);
                 throw;
             }
+        }
+
+        if (processed.Count > 0)
+        {
+            await RecordManualBansDetectedAsync(evt.ServerId, processed, context.CancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Writes a <c>ManualBanDetected</c> game-server event so the manual ban additions made
+    /// directly on a server (and ingested via the agent's BanFileWatcher) are visible on the
+    /// portal-web Server Events page. Failures are logged and swallowed — the bans themselves
+    /// have already been persisted as AdminActions, so a missing UI event must not roll them back.
+    /// </summary>
+    private async Task RecordManualBansDetectedAsync(Guid serverId, IReadOnlyList<DetectedBan> bans, CancellationToken ct)
+    {
+        var eventData = JsonSerializer.Serialize(new
+        {
+            Count = bans.Count,
+            Players = bans.Select(b => new { b.PlayerGuid, b.PlayerName }).ToArray()
+        }, JsonOptions.Default);
+
+        try
+        {
+            await repositoryApiClient.GameServersEvents.V1
+                .CreateGameServerEvent(
+                    new CreateGameServerEventDto(serverId, "ManualBanDetected", eventData),
+                    ct)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Failed to write ManualBanDetected game server event for server {ServerId}", serverId);
         }
     }
 
