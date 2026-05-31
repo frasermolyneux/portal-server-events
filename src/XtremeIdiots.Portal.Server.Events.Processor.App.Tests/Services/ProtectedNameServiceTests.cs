@@ -38,6 +38,7 @@ public class ProtectedNameServiceTests
     private static readonly Guid TestServerId = Guid.Parse("11111111-1111-1111-1111-111111111111");
     private static readonly Guid TestPlayerId = Guid.Parse("22222222-2222-2222-2222-222222222222");
     private static readonly Guid OwnerId = Guid.Parse("33333333-3333-3333-3333-333333333333");
+    private static readonly Guid OwnerId2 = Guid.Parse("55555555-5555-5555-5555-555555555555");
     private const string BotAdminId = "44444444-4444-4444-4444-444444444444";
 
     public ProtectedNameServiceTests()
@@ -77,10 +78,11 @@ public class ProtectedNameServiceTests
     private static ProtectedNameContext CreateContext(
         string? username = null,
         Guid? playerId = null,
-        int slotId = 3) => new()
+        int slotId = 3,
+        string gameType = "CallOfDuty4") => new()
     {
         ServerId = TestServerId,
-        GameType = "CallOfDuty4",
+        GameType = gameType,
         Username = username ?? "TestPlayer",
         PlayerId = playerId ?? TestPlayerId,
         SlotId = slotId
@@ -98,9 +100,9 @@ public class ProtectedNameServiceTests
                 new ApiResponse<CollectionModel<ProtectedNameDto>>(collection)));
     }
 
-    private void SetupOwnerLookup(Guid ownerId, string ownerUsername)
+    private void SetupOwnerLookup(Guid ownerId, string ownerUsername, GameType ownerGameType = GameType.CallOfDuty4)
     {
-        var ownerDto = CreatePlayerDtoWithUsername(ownerId, ownerUsername);
+        var ownerDto = CreatePlayerDtoWithUsername(ownerId, ownerUsername, ownerGameType);
         _playersApi
             .Setup(x => x.GetPlayer(ownerId, PlayerEntityOptions.None))
             .ReturnsAsync(SuccessResult(ownerDto));
@@ -119,9 +121,9 @@ public class ProtectedNameServiceTests
         return Newtonsoft.Json.JsonConvert.DeserializeObject<ProtectedNameDto>(json)!;
     }
 
-    private static PlayerDto CreatePlayerDtoWithUsername(Guid playerId, string username)
+    private static PlayerDto CreatePlayerDtoWithUsername(Guid playerId, string username, GameType gameType)
     {
-        var json = Newtonsoft.Json.JsonConvert.SerializeObject(new { PlayerId = playerId, Username = username });
+        var json = Newtonsoft.Json.JsonConvert.SerializeObject(new { PlayerId = playerId, Username = username, GameType = gameType });
         return Newtonsoft.Json.JsonConvert.DeserializeObject<PlayerDto>(json)!;
     }
 
@@ -158,6 +160,40 @@ public class ProtectedNameServiceTests
 
         _rconApi.Verify(x => x.BanPlayerWithVerification(
             It.IsAny<Guid>(), It.IsAny<int>(), It.IsAny<string?>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task CheckAsync_WhenNameMatchesButOwnerIsDifferentGame_NoAction()
+    {
+        SetupProtectedNames(("TestPlayer", OwnerId));
+        SetupOwnerLookup(OwnerId, "OwnerGuy", GameType.CallOfDuty4);
+
+        await _sut.CheckAsync(CreateContext(username: "TestPlayer", gameType: "CallOfDuty4x"));
+
+        _adminActionsApi.Verify(x => x.CreateAdminAction(
+            It.IsAny<CreateAdminActionDto>(), It.IsAny<CancellationToken>()), Times.Never);
+
+        _rconApi.Verify(x => x.BanPlayerWithVerification(
+            It.IsAny<Guid>(), It.IsAny<int>(), It.IsAny<string?>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task CheckAsync_WhenFirstMatchIsCrossGameAndSecondMatchIsSameGame_EnforcesOnSameGameMatch()
+    {
+        SetupProtectedNames(("TestPlayer", OwnerId), ("TestPlayer", OwnerId2));
+        SetupOwnerLookup(OwnerId, "Cod4Owner", GameType.CallOfDuty4);
+        SetupOwnerLookup(OwnerId2, "Cod4xOwner", GameType.CallOfDuty4x);
+
+        await _sut.CheckAsync(CreateContext(username: "TestPlayer", gameType: "CallOfDuty4x"));
+
+        _adminActionsApi.Verify(x => x.CreateAdminAction(
+            It.Is<CreateAdminActionDto>(dto =>
+                dto.PlayerId == TestPlayerId &&
+                dto.Type == AdminActionType.Ban &&
+                dto.Text.Contains("Cod4xOwner")),
+            It.IsAny<CancellationToken>()), Times.Once);
+
+        _rconApi.Verify(x => x.BanPlayerWithVerification(TestServerId, 3, "TestPlayer"), Times.Once);
     }
 
     [Fact]
@@ -256,7 +292,21 @@ public class ProtectedNameServiceTests
     }
 
     [Fact]
-    public async Task CheckAsync_OwnerLookupFails_StillEnforces()
+    public async Task CheckAsync_InvalidGameType_SkipsCheck()
+    {
+        SetupProtectedNames(("TestPlayer", OwnerId));
+
+        await _sut.CheckAsync(CreateContext(username: "TestPlayer", gameType: "NotARealGameType"));
+
+        _playersApi.Verify(x => x.GetProtectedNames(It.IsAny<int>(), It.IsAny<int>()), Times.Never);
+        _adminActionsApi.Verify(x => x.CreateAdminAction(
+            It.IsAny<CreateAdminActionDto>(), It.IsAny<CancellationToken>()), Times.Never);
+        _rconApi.Verify(x => x.BanPlayerWithVerification(
+            It.IsAny<Guid>(), It.IsAny<int>(), It.IsAny<string?>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task CheckAsync_OwnerLookupFails_SkipsEnforcement()
     {
         SetupProtectedNames(("TestPlayer", OwnerId));
 
@@ -266,14 +316,28 @@ public class ProtectedNameServiceTests
 
         await _sut.CheckAsync(CreateContext(username: "TestPlayer"));
 
-        // Should still create admin action — with owner ID as fallback in reason text
         _adminActionsApi.Verify(x => x.CreateAdminAction(
-            It.Is<CreateAdminActionDto>(dto =>
-                dto.PlayerId == TestPlayerId &&
-                dto.Type == AdminActionType.Ban &&
-                dto.Text.Contains(OwnerId.ToString())),
-            It.IsAny<CancellationToken>()), Times.Once);
+            It.IsAny<CreateAdminActionDto>(), It.IsAny<CancellationToken>()), Times.Never);
 
-        _rconApi.Verify(x => x.BanPlayerWithVerification(TestServerId, 3, "TestPlayer"), Times.Once);
+        _rconApi.Verify(x => x.BanPlayerWithVerification(
+            It.IsAny<Guid>(), It.IsAny<int>(), It.IsAny<string?>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task CheckAsync_OwnerLookupReturnsNonSuccess_SkipsEnforcement()
+    {
+        SetupProtectedNames(("TestPlayer", OwnerId));
+
+        _playersApi
+            .Setup(x => x.GetPlayer(OwnerId, PlayerEntityOptions.None))
+            .ReturnsAsync(new ApiResult<PlayerDto>(System.Net.HttpStatusCode.NotFound));
+
+        await _sut.CheckAsync(CreateContext(username: "TestPlayer"));
+
+        _adminActionsApi.Verify(x => x.CreateAdminAction(
+            It.IsAny<CreateAdminActionDto>(), It.IsAny<CancellationToken>()), Times.Never);
+
+        _rconApi.Verify(x => x.BanPlayerWithVerification(
+            It.IsAny<Guid>(), It.IsAny<int>(), It.IsAny<string?>()), Times.Never);
     }
 }

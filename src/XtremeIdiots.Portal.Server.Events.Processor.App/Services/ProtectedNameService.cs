@@ -24,6 +24,8 @@ public sealed class ProtectedNameService(
     private static readonly TimeSpan CacheDuration = TimeSpan.FromMinutes(5);
     private const string CacheKey = "protected-names-list";
 
+    private sealed record OwnerPlayerInfo(string Username, GameType GameType);
+
     public async Task CheckAsync(ProtectedNameContext context, CancellationToken ct = default)
     {
         try
@@ -31,6 +33,15 @@ public sealed class ProtectedNameService(
             if (context.SlotId <= 0)
             {
                 logger.LogDebug("Skipping protected name check — SlotId {SlotId} is not valid for enforcement", context.SlotId);
+                return;
+            }
+
+            if (!Enum.TryParse<GameType>(context.GameType, true, out var contextGameType))
+            {
+                logger.LogWarning(
+                    "Skipping protected name check — unrecognised game type '{GameType}' for player {PlayerId}",
+                    context.GameType,
+                    context.PlayerId);
                 return;
             }
 
@@ -59,8 +70,31 @@ public sealed class ProtectedNameService(
                     return;
                 }
 
+                var ownerPlayer = await GetOwnerPlayerAsync(protectedName.PlayerId, ct).ConfigureAwait(false);
+
+                if (ownerPlayer is null)
+                {
+                    logger.LogWarning(
+                        "Skipping protected name enforcement for '{ProtectedName}' on player {PlayerId} because owner {OwnerId} could not be resolved",
+                        protectedName.Name,
+                        context.PlayerId,
+                        protectedName.PlayerId);
+                    continue;
+                }
+
+                if (ownerPlayer.GameType != contextGameType)
+                {
+                    logger.LogInformation(
+                        "Skipping protected name enforcement for '{ProtectedName}' on player {PlayerId} due to cross-game scope: owner game {OwnerGameType}, player game {PlayerGameType}",
+                        protectedName.Name,
+                        context.PlayerId,
+                        ownerPlayer.GameType,
+                        contextGameType);
+                    continue;
+                }
+
                 // Violation found — enforce
-                var ownerUsername = await GetOwnerUsernameAsync(protectedName.PlayerId, ct).ConfigureAwait(false);
+                var ownerUsername = ownerPlayer.Username;
 
                 var reason = $"Protected Name Violation - using '{protectedName.Name}' which is registered to {ownerUsername}";
 
@@ -124,7 +158,7 @@ public sealed class ProtectedNameService(
         return items;
     }
 
-    private async Task<string> GetOwnerUsernameAsync(Guid ownerId, CancellationToken ct)
+    private async Task<OwnerPlayerInfo?> GetOwnerPlayerAsync(Guid ownerId, CancellationToken ct)
     {
         try
         {
@@ -133,14 +167,14 @@ public sealed class ProtectedNameService(
                 .ConfigureAwait(false);
 
             if (response.IsSuccess && response.Result?.Data is not null)
-                return response.Result.Data.Username;
+                return new OwnerPlayerInfo(response.Result.Data.Username, response.Result.Data.GameType);
         }
         catch (Exception ex)
         {
-            logger.LogWarning(ex, "Failed to look up owner username for {OwnerId}", ownerId);
+            logger.LogWarning(ex, "Failed to look up owner player details for {OwnerId}", ownerId);
         }
 
-        return ownerId.ToString();
+        return null;
     }
 
     private void TrackViolation(ProtectedNameContext context, ProtectedNameDto protectedName, string ownerUsername)
