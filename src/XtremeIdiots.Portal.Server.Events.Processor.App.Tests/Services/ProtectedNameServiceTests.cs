@@ -38,7 +38,6 @@ public class ProtectedNameServiceTests
     private static readonly Guid TestServerId = Guid.Parse("11111111-1111-1111-1111-111111111111");
     private static readonly Guid TestPlayerId = Guid.Parse("22222222-2222-2222-2222-222222222222");
     private static readonly Guid OwnerId = Guid.Parse("33333333-3333-3333-3333-333333333333");
-    private static readonly Guid OwnerId2 = Guid.Parse("55555555-5555-5555-5555-555555555555");
     private const string BotAdminId = "44444444-4444-4444-4444-444444444444";
 
     public ProtectedNameServiceTests()
@@ -94,15 +93,15 @@ public class ProtectedNameServiceTests
         var collection = new CollectionModel<ProtectedNameDto>(dtos);
 
         _playersApi
-            .Setup(x => x.GetProtectedNames(0, 1000))
+            .Setup(x => x.GetProtectedNames(0, 500, It.IsAny<GameType?>()))
             .ReturnsAsync(new ApiResult<CollectionModel<ProtectedNameDto>>(
                 System.Net.HttpStatusCode.OK,
                 new ApiResponse<CollectionModel<ProtectedNameDto>>(collection)));
     }
 
-    private void SetupOwnerLookup(Guid ownerId, string ownerUsername, GameType ownerGameType = GameType.CallOfDuty4)
+    private void SetupOwnerLookup(Guid ownerId, string ownerUsername)
     {
-        var ownerDto = CreatePlayerDtoWithUsername(ownerId, ownerUsername, ownerGameType);
+        var ownerDto = CreatePlayerDtoWithUsername(ownerId, ownerUsername, GameType.CallOfDuty4);
         _playersApi
             .Setup(x => x.GetPlayer(ownerId, PlayerEntityOptions.None))
             .ReturnsAsync(SuccessResult(ownerDto));
@@ -115,6 +114,7 @@ public class ProtectedNameServiceTests
             ProtectedNameId = Guid.NewGuid(),
             PlayerId = ownerId,
             Name = name,
+            OwnerGameType = GameType.CallOfDuty4,
             CreatedOn = DateTime.UtcNow.AddDays(-30),
             CreatedByUserProfileId = Guid.NewGuid()
         });
@@ -163,10 +163,19 @@ public class ProtectedNameServiceTests
     }
 
     [Fact]
-    public async Task CheckAsync_WhenNameMatchesButOwnerIsDifferentGame_NoAction()
+    public async Task CheckAsync_RequestsProtectedNamesForContextGame()
     {
         SetupProtectedNames(("TestPlayer", OwnerId));
-        SetupOwnerLookup(OwnerId, "OwnerGuy", GameType.CallOfDuty4);
+
+        await _sut.CheckAsync(CreateContext(username: "TestPlayer", gameType: "CallOfDuty4x"));
+
+        _playersApi.Verify(x => x.GetProtectedNames(0, 500, GameType.CallOfDuty4x), Times.Once);
+    }
+
+    [Fact]
+    public async Task CheckAsync_WhenReturnedProtectedNameIsCrossGame_NoAction()
+    {
+        SetupProtectedNames(("TestPlayer", OwnerId));
 
         await _sut.CheckAsync(CreateContext(username: "TestPlayer", gameType: "CallOfDuty4x"));
 
@@ -175,25 +184,8 @@ public class ProtectedNameServiceTests
 
         _rconApi.Verify(x => x.BanPlayerWithVerification(
             It.IsAny<Guid>(), It.IsAny<int>(), It.IsAny<string?>()), Times.Never);
-    }
 
-    [Fact]
-    public async Task CheckAsync_WhenFirstMatchIsCrossGameAndSecondMatchIsSameGame_EnforcesOnSameGameMatch()
-    {
-        SetupProtectedNames(("TestPlayer", OwnerId), ("TestPlayer", OwnerId2));
-        SetupOwnerLookup(OwnerId, "Cod4Owner", GameType.CallOfDuty4);
-        SetupOwnerLookup(OwnerId2, "Cod4xOwner", GameType.CallOfDuty4x);
-
-        await _sut.CheckAsync(CreateContext(username: "TestPlayer", gameType: "CallOfDuty4x"));
-
-        _adminActionsApi.Verify(x => x.CreateAdminAction(
-            It.Is<CreateAdminActionDto>(dto =>
-                dto.PlayerId == TestPlayerId &&
-                dto.Type == AdminActionType.Ban &&
-                dto.Text.Contains("Cod4xOwner")),
-            It.IsAny<CancellationToken>()), Times.Once);
-
-        _rconApi.Verify(x => x.BanPlayerWithVerification(TestServerId, 3, "TestPlayer"), Times.Once);
+        _playersApi.Verify(x => x.GetPlayer(It.IsAny<Guid>(), It.IsAny<PlayerEntityOptions>()), Times.Never);
     }
 
     [Fact]
@@ -246,7 +238,7 @@ public class ProtectedNameServiceTests
     public async Task CheckAsync_WhenApiFails_DoesNotThrow()
     {
         _playersApi
-            .Setup(x => x.GetProtectedNames(0, 1000))
+            .Setup(x => x.GetProtectedNames(0, 500, It.IsAny<GameType?>()))
             .ThrowsAsync(new HttpRequestException("API unavailable"));
 
         // Should not throw
@@ -265,7 +257,59 @@ public class ProtectedNameServiceTests
         // Second call — should use cache, not call API again
         await _sut.CheckAsync(CreateContext(username: "TestPlayer"));
 
-        _playersApi.Verify(x => x.GetProtectedNames(0, 1000), Times.Once);
+        _playersApi.Verify(x => x.GetProtectedNames(0, 500, GameType.CallOfDuty4), Times.Once);
+    }
+
+    [Fact]
+    public async Task CheckAsync_CachesProtectedNamesPerGameType()
+    {
+        SetupProtectedNames(("TestPlayer", OwnerId));
+        SetupOwnerLookup(OwnerId, "OwnerGuy");
+
+        // First game type cache entry
+        await _sut.CheckAsync(CreateContext(username: "TestPlayer", gameType: "CallOfDuty4"));
+
+        // Different game type uses a different cache key and triggers a separate filtered API call.
+        await _sut.CheckAsync(CreateContext(username: "TestPlayer", gameType: "CallOfDuty4x"));
+
+        _playersApi.Verify(x => x.GetProtectedNames(0, 500, GameType.CallOfDuty4), Times.Once);
+        _playersApi.Verify(x => x.GetProtectedNames(0, 500, GameType.CallOfDuty4x), Times.Once);
+    }
+
+    [Fact]
+    public async Task CheckAsync_WhenMatchIsOnSecondPage_StillEnforcesViolation()
+    {
+        var firstPage = Enumerable.Range(0, 500)
+            .Select(i => CreateProtectedNameDto($"NoMatch{i}", Guid.NewGuid()))
+            .ToList();
+
+        var secondPage = new List<ProtectedNameDto>
+        {
+            CreateProtectedNameDto("TargetPlayer", OwnerId)
+        };
+
+        _playersApi
+            .Setup(x => x.GetProtectedNames(0, 500, GameType.CallOfDuty4))
+            .ReturnsAsync(new ApiResult<CollectionModel<ProtectedNameDto>>(
+                System.Net.HttpStatusCode.OK,
+                new ApiResponse<CollectionModel<ProtectedNameDto>>(new CollectionModel<ProtectedNameDto>(firstPage))));
+
+        _playersApi
+            .Setup(x => x.GetProtectedNames(500, 500, GameType.CallOfDuty4))
+            .ReturnsAsync(new ApiResult<CollectionModel<ProtectedNameDto>>(
+                System.Net.HttpStatusCode.OK,
+                new ApiResponse<CollectionModel<ProtectedNameDto>>(new CollectionModel<ProtectedNameDto>(secondPage))));
+
+        SetupOwnerLookup(OwnerId, "OwnerGuy");
+
+        await _sut.CheckAsync(CreateContext(username: "TargetPlayer", gameType: "CallOfDuty4"));
+
+        _playersApi.Verify(x => x.GetProtectedNames(0, 500, GameType.CallOfDuty4), Times.Once);
+        _playersApi.Verify(x => x.GetProtectedNames(500, 500, GameType.CallOfDuty4), Times.Once);
+
+        _adminActionsApi.Verify(x => x.CreateAdminAction(
+            It.Is<CreateAdminActionDto>(dto => dto.Type == AdminActionType.Ban),
+            It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -288,7 +332,7 @@ public class ProtectedNameServiceTests
 
         await _sut.CheckAsync(CreateContext(username: "TestPlayer", slotId: 0));
 
-        _playersApi.Verify(x => x.GetProtectedNames(It.IsAny<int>(), It.IsAny<int>()), Times.Never);
+        _playersApi.Verify(x => x.GetProtectedNames(It.IsAny<int>(), It.IsAny<int>(), It.IsAny<GameType?>()), Times.Never);
     }
 
     [Fact]
@@ -298,7 +342,7 @@ public class ProtectedNameServiceTests
 
         await _sut.CheckAsync(CreateContext(username: "TestPlayer", gameType: "NotARealGameType"));
 
-        _playersApi.Verify(x => x.GetProtectedNames(It.IsAny<int>(), It.IsAny<int>()), Times.Never);
+        _playersApi.Verify(x => x.GetProtectedNames(It.IsAny<int>(), It.IsAny<int>(), It.IsAny<GameType?>()), Times.Never);
         _adminActionsApi.Verify(x => x.CreateAdminAction(
             It.IsAny<CreateAdminActionDto>(), It.IsAny<CancellationToken>()), Times.Never);
         _rconApi.Verify(x => x.BanPlayerWithVerification(

@@ -8,7 +8,6 @@ using MX.Observability.ApplicationInsights.Auditing.Models;
 using XtremeIdiots.Portal.Integrations.Servers.Abstractions.Interfaces.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Constants.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.AdminActions;
-using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.Players;
 using XtremeIdiots.Portal.Repository.Api.Client.V1;
 
 namespace XtremeIdiots.Portal.Server.Events.Processor.App.Services;
@@ -22,9 +21,11 @@ public sealed class ProtectedNameService(
     ILogger<ProtectedNameService> logger) : IProtectedNameService
 {
     private static readonly TimeSpan CacheDuration = TimeSpan.FromMinutes(5);
-    private const string CacheKey = "protected-names-list";
+    private const string CacheKeyPrefix = "protected-names-list:";
+    private const int ProtectedNamesPageSize = 500;
 
-    private sealed record OwnerPlayerInfo(string Username, GameType GameType);
+    private sealed record OwnerPlayerInfo(string Username);
+    private sealed record ScopedProtectedName(string Name, Guid PlayerId, GameType OwnerGameType);
 
     public async Task CheckAsync(ProtectedNameContext context, CancellationToken ct = default)
     {
@@ -45,7 +46,7 @@ public sealed class ProtectedNameService(
                 return;
             }
 
-            var protectedNames = await GetProtectedNamesAsync(ct).ConfigureAwait(false);
+            var protectedNames = await GetProtectedNamesAsync(contextGameType, ct).ConfigureAwait(false);
 
             if (protectedNames is null || !protectedNames.Any())
                 return;
@@ -70,6 +71,17 @@ public sealed class ProtectedNameService(
                     return;
                 }
 
+                if (protectedName.OwnerGameType != contextGameType)
+                {
+                    logger.LogInformation(
+                        "Skipping protected name enforcement for '{ProtectedName}' on player {PlayerId} due to cross-game scope: owner game {OwnerGameType}, player game {PlayerGameType}",
+                        protectedName.Name,
+                        context.PlayerId,
+                        protectedName.OwnerGameType,
+                        contextGameType);
+                    continue;
+                }
+
                 var ownerPlayer = await GetOwnerPlayerAsync(protectedName.PlayerId, ct).ConfigureAwait(false);
 
                 if (ownerPlayer is null)
@@ -79,17 +91,6 @@ public sealed class ProtectedNameService(
                         protectedName.Name,
                         context.PlayerId,
                         protectedName.PlayerId);
-                    continue;
-                }
-
-                if (ownerPlayer.GameType != contextGameType)
-                {
-                    logger.LogInformation(
-                        "Skipping protected name enforcement for '{ProtectedName}' on player {PlayerId} due to cross-game scope: owner game {OwnerGameType}, player game {PlayerGameType}",
-                        protectedName.Name,
-                        context.PlayerId,
-                        ownerPlayer.GameType,
-                        contextGameType);
                     continue;
                 }
 
@@ -135,27 +136,47 @@ public sealed class ProtectedNameService(
         }
     }
 
-    private async Task<IEnumerable<ProtectedNameDto>?> GetProtectedNamesAsync(CancellationToken ct)
+    private async Task<IReadOnlyList<ScopedProtectedName>?> GetProtectedNamesAsync(GameType contextGameType, CancellationToken ct)
     {
-        if (memoryCache.TryGetValue(CacheKey, out IEnumerable<ProtectedNameDto>? cached))
+        var cacheKey = $"{CacheKeyPrefix}{contextGameType}";
+
+        if (memoryCache.TryGetValue(cacheKey, out IReadOnlyList<ScopedProtectedName>? cached))
             return cached;
 
-        var response = await repositoryApiClient.Players.V1
-            .GetProtectedNames(0, 1000)
-            .ConfigureAwait(false);
+        var scopedItems = new List<ScopedProtectedName>();
+        var skip = 0;
 
-        if (!response.IsSuccess || response.Result?.Data?.Items is null)
+        while (true)
         {
-            logger.LogWarning("Failed to fetch protected names: {StatusCode}", response.StatusCode);
-            return null;
+            var response = await repositoryApiClient.Players.V1
+                .GetProtectedNames(skip, ProtectedNamesPageSize, contextGameType)
+                .ConfigureAwait(false);
+
+            if (!response.IsSuccess || response.Result?.Data?.Items is null)
+            {
+                logger.LogWarning("Failed to fetch protected names for game {GameType} at skip {Skip}: {StatusCode}", contextGameType, skip, response.StatusCode);
+                return null;
+            }
+
+            var page = response.Result.Data.Items
+                .Select(item => new ScopedProtectedName(item.Name, item.PlayerId, item.OwnerGameType))
+                .ToList();
+
+            if (page.Count == 0)
+                break;
+
+            scopedItems.AddRange(page);
+
+            if (page.Count < ProtectedNamesPageSize)
+                break;
+
+            skip += ProtectedNamesPageSize;
         }
 
-        var items = response.Result.Data.Items.ToList();
-
-        memoryCache.Set(CacheKey, (IEnumerable<ProtectedNameDto>)items,
+        memoryCache.Set(cacheKey, (IReadOnlyList<ScopedProtectedName>)scopedItems,
             new MemoryCacheEntryOptions().SetAbsoluteExpiration(CacheDuration));
 
-        return items;
+        return scopedItems;
     }
 
     private async Task<OwnerPlayerInfo?> GetOwnerPlayerAsync(Guid ownerId, CancellationToken ct)
@@ -167,7 +188,7 @@ public sealed class ProtectedNameService(
                 .ConfigureAwait(false);
 
             if (response.IsSuccess && response.Result?.Data is not null)
-                return new OwnerPlayerInfo(response.Result.Data.Username, response.Result.Data.GameType);
+                return new OwnerPlayerInfo(response.Result.Data.Username);
         }
         catch (Exception ex)
         {
@@ -177,7 +198,7 @@ public sealed class ProtectedNameService(
         return null;
     }
 
-    private void TrackViolation(ProtectedNameContext context, ProtectedNameDto protectedName, string ownerUsername)
+    private void TrackViolation(ProtectedNameContext context, ScopedProtectedName protectedName, string ownerUsername)
     {
         auditLogger.LogAudit(AuditEvent.ServerAction("ProtectedNameViolation", AuditAction.Moderate)
             .WithGameContext(context.GameType, context.ServerId)
