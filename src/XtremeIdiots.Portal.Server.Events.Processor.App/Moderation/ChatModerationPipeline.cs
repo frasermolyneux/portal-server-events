@@ -13,6 +13,7 @@ namespace XtremeIdiots.Portal.Server.Events.Processor.App.Moderation;
 
 public sealed class ChatModerationPipeline(
     IChatModerationService contentSafety,
+    IChatModerationSettingsProvider settingsProvider,
     IRepositoryApiClient repositoryClient,
     IConfiguration configuration,
     IFeatureManager featureManager,
@@ -26,7 +27,14 @@ public sealed class ChatModerationPipeline(
             if (!await featureManager.IsEnabledAsync("EventIngest.ChatToxicityDetection"))
                 return;
 
-            var minLength = int.TryParse(configuration["ContentSafety:MinMessageLength"], out var ml) ? ml : 5;
+            var moderationSettings = await settingsProvider
+                .GetForServerAsync(context.ServerId, ct)
+                .ConfigureAwait(false);
+
+            if (!moderationSettings.IsCategoryEnabled)
+                return;
+
+            var minLength = moderationSettings.MinMessageLength;
 
             if (context.Message.Length < minLength)
                 return;
@@ -52,14 +60,11 @@ public sealed class ChatModerationPipeline(
             if (moderationResult is null)
                 return;
 
-            var threshold = int.TryParse(configuration["ContentSafety:SeverityThreshold"], out var st) ? st : 4;
-            if (moderationResult.MaxSeverity < threshold)
+            var triggeredCategories = GetTriggeredCategories(moderationResult, moderationSettings);
+            if (triggeredCategories.Count == 0)
                 return;
 
-            var reason = $"[AI Content Safety] {moderationResult.Category} (severity {moderationResult.MaxSeverity}/6). " +
-                $"Message: \"{Truncate(context.Message, 200)}\" | " +
-                $"Scores: Hate={moderationResult.HateSeverity}, Violence={moderationResult.ViolenceSeverity}, " +
-                $"Sexual={moderationResult.SexualSeverity}, SelfHarm={moderationResult.SelfHarmSeverity}";
+            var reason = BuildObservationReason(moderationResult, moderationSettings, context.Message, triggeredCategories);
 
             await CreateObservationAsync(context, reason, "AI Content Safety", ct);
             TrackModerationEvent(context, "AI Content Safety");
@@ -105,4 +110,49 @@ public sealed class ChatModerationPipeline(
 
     private static string Truncate(string value, int maxLength)
         => value.Length <= maxLength ? value : value[..maxLength] + "...";
+
+    private static List<string> GetTriggeredCategories(ChatModerationResult result, ChatModerationSettings settings)
+    {
+        var triggered = new List<string>();
+
+        if (settings.HateSeverityThreshold.HasValue && result.HateSeverity >= settings.HateSeverityThreshold.Value)
+            triggered.Add("Hate");
+
+        if (settings.ViolenceSeverityThreshold.HasValue && result.ViolenceSeverity >= settings.ViolenceSeverityThreshold.Value)
+            triggered.Add("Violence");
+
+        if (settings.SexualSeverityThreshold.HasValue && result.SexualSeverity >= settings.SexualSeverityThreshold.Value)
+            triggered.Add("Sexual");
+
+        if (settings.SelfHarmSeverityThreshold.HasValue && result.SelfHarmSeverity >= settings.SelfHarmSeverityThreshold.Value)
+            triggered.Add("SelfHarm");
+
+        return triggered;
+    }
+
+    private static string BuildObservationReason(
+        ChatModerationResult result,
+        ChatModerationSettings settings,
+        string message,
+        IReadOnlyList<string> triggeredCategories)
+    {
+        var lines = new List<string>
+        {
+            "[AI Content Safety]",
+            $"Triggered categories: {string.Join(", ", triggeredCategories)}",
+            "",
+            $"Hate: {result.HateSeverity}/6 (threshold: {FormatThreshold(settings.HateSeverityThreshold)})",
+            $"Violence: {result.ViolenceSeverity}/6 (threshold: {FormatThreshold(settings.ViolenceSeverityThreshold)})",
+            $"Sexual: {result.SexualSeverity}/6 (threshold: {FormatThreshold(settings.SexualSeverityThreshold)})",
+            $"SelfHarm: {result.SelfHarmSeverity}/6 (threshold: {FormatThreshold(settings.SelfHarmSeverityThreshold)})",
+            "",
+            "Message excerpt:",
+            $"\"{Truncate(message, 200)}\""
+        };
+
+        return string.Join(Environment.NewLine, lines);
+    }
+
+    private static string FormatThreshold(int? value)
+        => value.HasValue ? value.Value.ToString() : "Disabled";
 }

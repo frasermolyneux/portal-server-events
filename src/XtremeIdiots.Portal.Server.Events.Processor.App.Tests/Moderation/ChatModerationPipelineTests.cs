@@ -20,6 +20,7 @@ namespace XtremeIdiots.Portal.Server.Events.Processor.App.Tests.Moderation;
 public class ChatModerationPipelineTests
 {
     private readonly Mock<IChatModerationService> _contentSafety = new();
+    private readonly Mock<IChatModerationSettingsProvider> _settingsProvider = new();
     private readonly Mock<IRepositoryApiClient> _repoClient = new();
     private readonly Mock<IVersionedAdminActionsApi> _versionedAdminActions = new();
     private readonly Mock<IAdminActionsApi> _adminActionsApi = new();
@@ -50,7 +51,6 @@ public class ChatModerationPipelineTests
         {
             ["ContentSafety:MinMessageLength"] = "5",
             ["ContentSafety:NewPlayerWindowDays"] = "7",
-            ["ContentSafety:SeverityThreshold"] = "4",
             ["ContentSafety:BotAdminId"] = "33333333-3333-3333-3333-333333333333"
         };
 
@@ -58,8 +58,18 @@ public class ChatModerationPipelineTests
             .AddInMemoryCollection(_configValues)
             .Build();
 
+        _settingsProvider
+            .Setup(x => x.GetForServerAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ChatModerationSettings(
+                MinMessageLength: 5,
+                HateSeverityThreshold: 4,
+                ViolenceSeverityThreshold: 4,
+                SexualSeverityThreshold: 4,
+                SelfHarmSeverityThreshold: 4));
+
         _sut = new ChatModerationPipeline(
             _contentSafety.Object,
+            _settingsProvider.Object,
             _repoClient.Object,
             _configuration,
             _featureManager.Object,
@@ -71,16 +81,16 @@ public class ChatModerationPipelineTests
         string? message = null,
         bool isNewPlayer = true,
         bool hasModerateChatTag = false) => new()
-    {
-        ServerId = TestServerId,
-        GameType = "CallOfDuty4",
-        PlayerGuid = "abc123guid",
-        Username = "TestPlayer",
-        Message = message ?? "This is a test message",
-        PlayerId = TestPlayerId,
-        PlayerFirstSeen = isNewPlayer ? DateTime.UtcNow.AddDays(-1) : DateTime.UtcNow.AddDays(-30),
-        HasModerateChatTag = hasModerateChatTag
-    };
+        {
+            ServerId = TestServerId,
+            GameType = "CallOfDuty4",
+            PlayerGuid = "abc123guid",
+            Username = "TestPlayer",
+            Message = message ?? "This is a test message",
+            PlayerId = TestPlayerId,
+            PlayerFirstSeen = isNewPlayer ? DateTime.UtcNow.AddDays(-1) : DateTime.UtcNow.AddDays(-30),
+            HasModerateChatTag = hasModerateChatTag
+        };
 
     [Fact]
     public async Task RunAsync_WhenFeatureDisabled_DoesNothing()
@@ -132,7 +142,7 @@ public class ChatModerationPipelineTests
     {
         _contentSafety
             .Setup(x => x.AnalyseAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new ChatModerationResult(2, 0, 0, 0, 2, "Hate"));
+            .ReturnsAsync(new ChatModerationResult(2, 2, 2, 2, 2, "Hate"));
 
         await _sut.RunAsync(CreateContext(isNewPlayer: true));
 
@@ -172,6 +182,49 @@ public class ChatModerationPipelineTests
         _contentSafety.Verify(x => x.AnalyseAsync(
             It.Is<string>(s => s.Length == 10_000),
             It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task RunAsync_CategorySpecificThresholds_TriggerWhenAnyCategoryMatches()
+    {
+        _settingsProvider
+            .Setup(x => x.GetForServerAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ChatModerationSettings(
+                MinMessageLength: 5,
+                HateSeverityThreshold: 6,
+                ViolenceSeverityThreshold: 2,
+                SexualSeverityThreshold: null,
+                SelfHarmSeverityThreshold: null));
+
+        _contentSafety
+            .Setup(x => x.AnalyseAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ChatModerationResult(1, 0, 0, 2, 2, "Violence"));
+
+        await _sut.RunAsync(CreateContext(isNewPlayer: true));
+
+        _adminActionsApi.Verify(x => x.CreateAdminAction(
+            It.Is<CreateAdminActionDto>(dto =>
+                dto.Type == Repository.Abstractions.Constants.V1.AdminActionType.Observation &&
+                dto.Text.Contains("Triggered categories: Violence")),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task RunAsync_AllCategoriesDisabled_DoesNothing()
+    {
+        _settingsProvider
+            .Setup(x => x.GetForServerAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ChatModerationSettings(
+                MinMessageLength: 5,
+                HateSeverityThreshold: null,
+                ViolenceSeverityThreshold: null,
+                SexualSeverityThreshold: null,
+                SelfHarmSeverityThreshold: null));
+
+        await _sut.RunAsync(CreateContext(isNewPlayer: true));
+
+        _contentSafety.Verify(x => x.AnalyseAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        _adminActionsApi.Verify(x => x.CreateAdminAction(It.IsAny<CreateAdminActionDto>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]

@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Net;
 
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
@@ -56,19 +57,21 @@ internal sealed class AdminActionTopics(
     private string PostContent(AdminActionType type, Guid playerId, string username, DateTime created, string text)
     {
         var portalBaseUrl = (configuration["XtremeIdiots:PortalBaseUrl"] ?? "https://portal.xtremeidiots.com").TrimEnd('/');
-        return $"""
-            <p>
-               Username: {username}<br>
-               Player Link: <a href="{portalBaseUrl}/Players/Details/{playerId}">Portal</a><br>
-               {type} Created: {created.ToString(CultureInfo.InvariantCulture)}
-            </p>
-            <p>
-               {text}
-            </p>
-            <p>
-               <small>Do not edit this post directly as it will be overwritten by the Portal. Add comments on posts below or edit the record in the Portal.</small>
-            </p>
-            """;
+        var encodedText = WebUtility.HtmlEncode(text)
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace("\n", "<br>", StringComparison.Ordinal);
+
+        return "<p>" +
+                $"Username: {WebUtility.HtmlEncode(username)}<br>" +
+                $"Player Link: <a href=\"{portalBaseUrl}/Players/Details/{playerId}\">Portal</a><br>" +
+                $"{type} Created: {created.ToString(CultureInfo.InvariantCulture)}" +
+                "</p>" +
+                "<p>" +
+                $"{encodedText}" +
+                "</p>" +
+                "<p>" +
+                "<small>Do not edit this post directly as it will be overwritten by the Portal. Add comments on posts below or edit the record in the Portal.</small>" +
+                "</p>";
     }
 
     private int ResolveForumId(AdminActionType type, GameType gameType)

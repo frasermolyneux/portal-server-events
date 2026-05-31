@@ -141,6 +141,7 @@ var host = new HostBuilder()
             })));
 
         services.AddSingleton<IChatModerationService, ChatModerationService>();
+        services.AddSingleton<IChatModerationSettingsProvider, ChatModerationSettingsProvider>();
         services.AddTransient<IChatModerationPipeline, ChatModerationPipeline>();
 
         // Service Bus client for manual DLQ access
