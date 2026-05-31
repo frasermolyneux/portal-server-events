@@ -80,13 +80,13 @@ public class ProtectedNameServiceTests
         Guid? playerId = null,
         int slotId = 3,
         string gameType = "CallOfDuty4") => new()
-    {
-        ServerId = TestServerId,
-        GameType = gameType,
-        Username = username ?? "TestPlayer",
-        PlayerId = playerId ?? TestPlayerId,
-        SlotId = slotId
-    };
+        {
+            ServerId = TestServerId,
+            GameType = gameType,
+            Username = username ?? "TestPlayer",
+            PlayerId = playerId ?? TestPlayerId,
+            SlotId = slotId
+        };
 
     private void SetupProtectedNames(params (string name, Guid ownerId)[] entries)
     {
