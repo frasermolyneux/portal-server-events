@@ -18,6 +18,7 @@ public class RegisterCommandTests
     private readonly Mock<XtremeIdiots.Portal.Repository.Api.Client.V1.IVersionedConnectedPlayersApi> _versionedConnectedPlayers = new();
     private readonly Mock<IConnectedPlayersApi> _connectedPlayersApi = new();
     private readonly Mock<IRconResponseService> _rconResponseService = new();
+    private readonly Mock<IRegisterCommandRateLimiter> _rateLimiter = new();
     private readonly Mock<IAuditLogger> _auditLogger = new();
     private readonly Mock<ILogger<RegisterCommand>> _logger = new();
 
@@ -30,6 +31,13 @@ public class RegisterCommandTests
     {
         _versionedConnectedPlayers.Setup(x => x.V1).Returns(_connectedPlayersApi.Object);
         _repoClient.Setup(x => x.ConnectedPlayers).Returns(_versionedConnectedPlayers.Object);
+        _rateLimiter
+            .Setup(x => x.TryAcquire(It.IsAny<Guid>(), It.IsAny<DateTime>(), out It.Ref<TimeSpan>.IsAny))
+            .Returns((Guid _, DateTime _, out TimeSpan retryAfter) =>
+            {
+                retryAfter = TimeSpan.Zero;
+                return true;
+            });
 
         _rconResponseService
             .Setup(x => x.TryTellAsync(
@@ -52,7 +60,7 @@ public class RegisterCommandTests
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(true);
 
-        _sut = new RegisterCommand(_repoClient.Object, _rconResponseService.Object, _auditLogger.Object, _logger.Object);
+        _sut = new RegisterCommand(_repoClient.Object, _rconResponseService.Object, _rateLimiter.Object, _auditLogger.Object, _logger.Object);
     }
 
     private static CommandContext CreateContext(string message = "!register AB12CD", Guid? playerId = null) => new()
@@ -232,6 +240,37 @@ public class RegisterCommandTests
             "abc123",
             3,
             "Registration failed due to a temporary error. Please try again.",
+            "TestPlayer",
+            It.IsAny<DateTime>(),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WhenRateLimited_ReturnsFailedAndDoesNotCallConsumeApi()
+    {
+        _rateLimiter
+            .Setup(x => x.TryAcquire(It.IsAny<Guid>(), It.IsAny<DateTime>(), out It.Ref<TimeSpan>.IsAny))
+            .Returns((Guid _, DateTime _, out TimeSpan retryAfter) =>
+            {
+                retryAfter = TimeSpan.FromSeconds(42);
+                return false;
+            });
+
+        var result = await _sut.ExecuteAsync(CreateContext());
+
+        Assert.True(result.Handled);
+        Assert.False(result.Success);
+        Assert.Equal("Too many !register attempts. Please wait 42 seconds and try again.", result.ResponseMessage);
+
+        _connectedPlayersApi.Verify(x => x.ConsumeConnectedPlayerActivationCode(
+            It.IsAny<XtremeIdiots.Portal.Repository.Abstractions.Models.V1.ConnectedPlayers.ConsumeConnectedPlayerActivationCodeDto>(),
+            It.IsAny<CancellationToken>()), Times.Never);
+
+        _rconResponseService.Verify(x => x.TryTellAsync(
+            TestServerId,
+            "abc123",
+            3,
+            "Too many !register attempts. Please wait 42 seconds and try again.",
             "TestPlayer",
             It.IsAny<DateTime>(),
             It.IsAny<CancellationToken>()), Times.Once);

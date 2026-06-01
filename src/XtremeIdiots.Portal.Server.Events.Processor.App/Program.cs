@@ -118,6 +118,7 @@ var host = new HostBuilder()
         // Command framework
         services.AddTransient<IChatCommandProcessor, ChatCommandProcessor>();
         services.AddTransient<IRconResponseService, RconResponseService>();
+        services.AddSingleton<IRegisterCommandRateLimiter, RegisterCommandRateLimiter>();
         services.AddSingleton<IChatCommandCatalog, ChatCommandCatalog>();
 
         // Protected name enforcement

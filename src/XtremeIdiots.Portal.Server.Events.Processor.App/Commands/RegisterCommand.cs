@@ -17,17 +17,20 @@ public sealed class RegisterCommand : IChatCommand
 
     private readonly IRepositoryApiClient _repositoryClient;
     private readonly IRconResponseService _rconResponseService;
+    private readonly IRegisterCommandRateLimiter _rateLimiter;
     private readonly IAuditLogger _auditLogger;
     private readonly ILogger<RegisterCommand> _logger;
 
     public RegisterCommand(
         IRepositoryApiClient repositoryClient,
         IRconResponseService rconResponseService,
+        IRegisterCommandRateLimiter rateLimiter,
         IAuditLogger auditLogger,
         ILogger<RegisterCommand> logger)
     {
         _repositoryClient = repositoryClient;
         _rconResponseService = rconResponseService;
+        _rateLimiter = rateLimiter;
         _auditLogger = auditLogger;
         _logger = logger;
     }
@@ -51,6 +54,13 @@ public sealed class RegisterCommand : IChatCommand
         if (context.PlayerId is null)
         {
             return await FailAsync(context, "Player context unavailable", ct).ConfigureAwait(false);
+        }
+
+        if (!_rateLimiter.TryAcquire(context.PlayerId.Value, DateTime.UtcNow, out var retryAfter))
+        {
+            var seconds = Math.Max(1, (int)Math.Ceiling(retryAfter.TotalSeconds));
+            return await FailAsync(context, $"Too many !register attempts. Please wait {seconds} seconds and try again.", ct)
+                .ConfigureAwait(false);
         }
 
         var parts = context.Message
