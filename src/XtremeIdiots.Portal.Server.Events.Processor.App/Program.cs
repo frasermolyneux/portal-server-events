@@ -118,11 +118,13 @@ var host = new HostBuilder()
         // Command framework
         services.AddTransient<IChatCommandProcessor, ChatCommandProcessor>();
         services.AddTransient<IRconResponseService, RconResponseService>();
+        services.AddSingleton<IChatCommandCatalog, ChatCommandCatalog>();
 
         // Protected name enforcement
         services.AddTransient<IProtectedNameService, ProtectedNameService>();
 
         // Chat commands — add new commands here
+        services.AddTransient<IChatCommand, CommandsCommand>();
         services.AddTransient<IChatCommand, MapVoteLikeCommand>();
         services.AddTransient<IChatCommand, MapVoteDislikeCommand>();
         services.AddTransient<IChatCommand, RegisterCommand>();
