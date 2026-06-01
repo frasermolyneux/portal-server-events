@@ -1,0 +1,157 @@
+using System.Net;
+
+using Microsoft.Extensions.Logging;
+
+using Moq;
+
+using MX.Observability.ApplicationInsights.Auditing;
+
+using XtremeIdiots.Portal.Repository.Abstractions.Interfaces.V1;
+using XtremeIdiots.Portal.Repository.Api.Client.V1;
+using XtremeIdiots.Portal.Server.Events.Processor.App.Commands;
+
+namespace XtremeIdiots.Portal.Server.Events.Processor.App.Tests.Commands;
+
+public class RegisterCommandTests
+{
+    private readonly Mock<IRepositoryApiClient> _repoClient = new();
+    private readonly Mock<XtremeIdiots.Portal.Repository.Api.Client.V1.IVersionedConnectedPlayersApi> _versionedConnectedPlayers = new();
+    private readonly Mock<IConnectedPlayersApi> _connectedPlayersApi = new();
+    private readonly Mock<IAuditLogger> _auditLogger = new();
+    private readonly Mock<ILogger<RegisterCommand>> _logger = new();
+
+    private readonly RegisterCommand _sut;
+
+    private static readonly Guid TestServerId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+    private static readonly Guid TestPlayerId = Guid.Parse("22222222-2222-2222-2222-222222222222");
+
+    public RegisterCommandTests()
+    {
+        _versionedConnectedPlayers.Setup(x => x.V1).Returns(_connectedPlayersApi.Object);
+        _repoClient.Setup(x => x.ConnectedPlayers).Returns(_versionedConnectedPlayers.Object);
+
+        _sut = new RegisterCommand(_repoClient.Object, _auditLogger.Object, _logger.Object);
+    }
+
+    private static CommandContext CreateContext(string message = "!register AB12CD", Guid? playerId = null) => new()
+    {
+        ServerId = TestServerId,
+        GameType = "CallOfDuty4",
+        PlayerGuid = "abc123",
+        Username = "TestPlayer",
+        Message = message,
+        EventGeneratedUtc = DateTime.UtcNow,
+        EventPublishedUtc = DateTime.UtcNow,
+        PlayerId = playerId ?? TestPlayerId
+    };
+
+    [Theory]
+    [InlineData("!register AB12CD", true)]
+    [InlineData("!REGISTER AB12CD", true)]
+    [InlineData(" !register AB12CD", true)]
+    [InlineData("!registering AB12CD", false)]
+    [InlineData("!like", false)]
+    public void CanHandle_ReturnsExpected(string message, bool expected)
+    {
+        var result = _sut.CanHandle(message);
+        Assert.Equal(expected, result);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WhenPlayerIdMissing_ReturnsFailed()
+    {
+        var result = await _sut.ExecuteAsync(CreateContext(playerId: null) with { PlayerId = null });
+
+        Assert.True(result.Handled);
+        Assert.False(result.Success);
+        Assert.Equal("Player context unavailable", result.ResponseMessage);
+
+        _connectedPlayersApi.Verify(x => x.ConsumeConnectedPlayerActivationCode(It.IsAny<XtremeIdiots.Portal.Repository.Abstractions.Models.V1.ConnectedPlayers.ConsumeConnectedPlayerActivationCodeDto>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Theory]
+    [InlineData("!register")]
+    [InlineData("!register AB12CD EXTRA")]
+    [InlineData("!register 123")]
+    [InlineData("!register abc!23")]
+    public async Task ExecuteAsync_WhenCommandFormatInvalid_ReturnsFailed(string message)
+    {
+        var result = await _sut.ExecuteAsync(CreateContext(message));
+
+        Assert.True(result.Handled);
+        Assert.False(result.Success);
+        _connectedPlayersApi.Verify(x => x.ConsumeConnectedPlayerActivationCode(It.IsAny<XtremeIdiots.Portal.Repository.Abstractions.Models.V1.ConnectedPlayers.ConsumeConnectedPlayerActivationCodeDto>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WhenConsumeSucceeds_ReturnsSuccessAndUsesNormalizedCode()
+    {
+        _connectedPlayersApi
+            .Setup(x => x.ConsumeConnectedPlayerActivationCode(It.IsAny<XtremeIdiots.Portal.Repository.Abstractions.Models.V1.ConnectedPlayers.ConsumeConnectedPlayerActivationCodeDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new MX.Api.Abstractions.ApiResult<XtremeIdiots.Portal.Repository.Abstractions.Models.V1.ConnectedPlayers.ConnectedPlayerDto>(HttpStatusCode.Created));
+
+        var result = await _sut.ExecuteAsync(CreateContext("!register ab12cd"));
+
+        Assert.True(result.Handled);
+        Assert.True(result.Success);
+
+        _connectedPlayersApi.Verify(x => x.ConsumeConnectedPlayerActivationCode(
+            It.Is<XtremeIdiots.Portal.Repository.Abstractions.Models.V1.ConnectedPlayers.ConsumeConnectedPlayerActivationCodeDto>(dto =>
+                dto.PlayerId == TestPlayerId && dto.Code == "AB12CD"),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WhenConsumeReturnsOk_ReturnsSuccess()
+    {
+        _connectedPlayersApi
+            .Setup(x => x.ConsumeConnectedPlayerActivationCode(It.IsAny<XtremeIdiots.Portal.Repository.Abstractions.Models.V1.ConnectedPlayers.ConsumeConnectedPlayerActivationCodeDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new MX.Api.Abstractions.ApiResult<XtremeIdiots.Portal.Repository.Abstractions.Models.V1.ConnectedPlayers.ConnectedPlayerDto>(HttpStatusCode.OK));
+
+        var result = await _sut.ExecuteAsync(CreateContext());
+
+        Assert.True(result.Handled);
+        Assert.True(result.Success);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WithTabSeparatedArguments_ParsesAndSucceeds()
+    {
+        _connectedPlayersApi
+            .Setup(x => x.ConsumeConnectedPlayerActivationCode(It.IsAny<XtremeIdiots.Portal.Repository.Abstractions.Models.V1.ConnectedPlayers.ConsumeConnectedPlayerActivationCodeDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new MX.Api.Abstractions.ApiResult<XtremeIdiots.Portal.Repository.Abstractions.Models.V1.ConnectedPlayers.ConnectedPlayerDto>(HttpStatusCode.OK));
+
+        var result = await _sut.ExecuteAsync(CreateContext("!register\tAB12CD"));
+
+        Assert.True(result.Handled);
+        Assert.True(result.Success);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WhenConsumeConflicts_ReturnsFailed()
+    {
+        _connectedPlayersApi
+            .Setup(x => x.ConsumeConnectedPlayerActivationCode(It.IsAny<XtremeIdiots.Portal.Repository.Abstractions.Models.V1.ConnectedPlayers.ConsumeConnectedPlayerActivationCodeDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new MX.Api.Abstractions.ApiResult<XtremeIdiots.Portal.Repository.Abstractions.Models.V1.ConnectedPlayers.ConnectedPlayerDto>(HttpStatusCode.Conflict));
+
+        var result = await _sut.ExecuteAsync(CreateContext());
+
+        Assert.True(result.Handled);
+        Assert.False(result.Success);
+        Assert.Equal("Player is already linked to a different profile", result.ResponseMessage);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WhenConsumeBadRequest_ReturnsFailed()
+    {
+        _connectedPlayersApi
+            .Setup(x => x.ConsumeConnectedPlayerActivationCode(It.IsAny<XtremeIdiots.Portal.Repository.Abstractions.Models.V1.ConnectedPlayers.ConsumeConnectedPlayerActivationCodeDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new MX.Api.Abstractions.ApiResult<XtremeIdiots.Portal.Repository.Abstractions.Models.V1.ConnectedPlayers.ConnectedPlayerDto>(HttpStatusCode.BadRequest));
+
+        var result = await _sut.ExecuteAsync(CreateContext());
+
+        Assert.True(result.Handled);
+        Assert.False(result.Success);
+        Assert.Equal("Activation code is invalid, expired, inactive, or exhausted", result.ResponseMessage);
+    }
+}

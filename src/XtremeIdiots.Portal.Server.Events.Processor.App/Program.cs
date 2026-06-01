@@ -125,6 +125,7 @@ var host = new HostBuilder()
         // Chat commands — add new commands here
         services.AddTransient<IChatCommand, MapVoteLikeCommand>();
         services.AddTransient<IChatCommand, MapVoteDislikeCommand>();
+        services.AddTransient<IChatCommand, RegisterCommand>();
 
         // Feature management
         services.AddFeatureManagement();
