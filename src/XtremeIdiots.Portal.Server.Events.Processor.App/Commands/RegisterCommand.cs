@@ -16,15 +16,18 @@ public sealed class RegisterCommand : IChatCommand
     private static readonly Regex ActivationCodeRegex = new("^[0-9A-Z]{6}$", RegexOptions.Compiled);
 
     private readonly IRepositoryApiClient _repositoryClient;
+    private readonly IRconResponseService _rconResponseService;
     private readonly IAuditLogger _auditLogger;
     private readonly ILogger<RegisterCommand> _logger;
 
     public RegisterCommand(
         IRepositoryApiClient repositoryClient,
+        IRconResponseService rconResponseService,
         IAuditLogger auditLogger,
         ILogger<RegisterCommand> logger)
     {
         _repositoryClient = repositoryClient;
+        _rconResponseService = rconResponseService;
         _auditLogger = auditLogger;
         _logger = logger;
     }
@@ -47,7 +50,7 @@ public sealed class RegisterCommand : IChatCommand
     {
         if (context.PlayerId is null)
         {
-            return Fail(context, "Player context unavailable");
+            return await FailAsync(context, "Player context unavailable", ct).ConfigureAwait(false);
         }
 
         var parts = context.Message
@@ -55,22 +58,34 @@ public sealed class RegisterCommand : IChatCommand
 
         if (parts.Length != 2 || !parts[0].Equals(Prefix, StringComparison.OrdinalIgnoreCase))
         {
-            return Fail(context, "Usage: !register CODE");
+            return await FailAsync(context, "Usage: !register CODE", ct).ConfigureAwait(false);
         }
 
         var code = parts[1].Trim().ToUpperInvariant();
         if (!ActivationCodeRegex.IsMatch(code))
         {
-            return Fail(context, "Activation code must be 6 characters [0-9A-Z]");
+            return await FailAsync(context, "Activation code must be 6 characters [0-9A-Z]", ct).ConfigureAwait(false);
         }
 
-        var consumeResult = await _repositoryClient.ConnectedPlayers.V1
-            .ConsumeConnectedPlayerActivationCode(new ConsumeConnectedPlayerActivationCodeDto
-            {
-                PlayerId = context.PlayerId.Value,
-                Code = code
-            }, ct)
-            .ConfigureAwait(false);
+        MX.Api.Abstractions.ApiResult<XtremeIdiots.Portal.Repository.Abstractions.Models.V1.ConnectedPlayers.ConnectedPlayerDto> consumeResult;
+        try
+        {
+            consumeResult = await _repositoryClient.ConnectedPlayers.V1
+                .ConsumeConnectedPlayerActivationCode(new ConsumeConnectedPlayerActivationCodeDto
+                {
+                    PlayerId = context.PlayerId.Value,
+                    Code = code
+                }, ct)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Connected player registration API threw for {Username} on server {ServerId}",
+                context.Username, context.ServerId);
+
+            return await FailAsync(context, "Registration failed due to a temporary error. Please try again.", ct)
+                .ConfigureAwait(false);
+        }
 
         if (consumeResult.StatusCode is HttpStatusCode.OK or HttpStatusCode.Created)
         {
@@ -83,6 +98,8 @@ public sealed class RegisterCommand : IChatCommand
             _logger.LogInformation("Connected player registration succeeded for {Username} on server {ServerId}",
                 context.Username, context.ServerId);
 
+            await TryTellAsync(context, "Registration successful. Your account is now linked.", ct).ConfigureAwait(false);
+
             return CommandResult.Ok();
         }
 
@@ -93,10 +110,10 @@ public sealed class RegisterCommand : IChatCommand
             _ => "Registration failed due to an unexpected API response"
         };
 
-        return Fail(context, failureReason);
+        return await FailAsync(context, failureReason, ct).ConfigureAwait(false);
     }
 
-    private CommandResult Fail(CommandContext context, string reason)
+    private async Task<CommandResult> FailAsync(CommandContext context, string reason, CancellationToken ct)
     {
         _auditLogger.LogAudit(AuditEvent.ServerAction("ConnectedPlayerRegisterFailed", AuditAction.Update)
             .WithGameContext(context.GameType, context.ServerId)
@@ -108,6 +125,28 @@ public sealed class RegisterCommand : IChatCommand
         _logger.LogInformation("Connected player registration failed for {Username} on server {ServerId}: {Reason}",
             context.Username, context.ServerId, reason);
 
+        await TryTellAsync(context, reason, ct).ConfigureAwait(false);
+
         return CommandResult.Failed(reason);
+    }
+
+    private async Task TryTellAsync(CommandContext context, string message, CancellationToken ct)
+    {
+        var sent = await _rconResponseService.TryTellAsync(
+            context.ServerId,
+            context.PlayerGuid,
+            message,
+            context.Username,
+            context.EventGeneratedUtc,
+            ct).ConfigureAwait(false);
+
+        if (!sent)
+        {
+            _logger.LogWarning(
+                "Private register response not delivered for {Username} on server {ServerId} (player {PlayerGuid})",
+                context.Username,
+                context.ServerId,
+                context.PlayerGuid);
+        }
     }
 }

@@ -72,17 +72,17 @@ public class ChatMessageProcessorTests
         string? chatMessage = null,
         ChatMessageType? type = null,
         Guid? serverId = null) => new()
-    {
-        EventGeneratedUtc = DateTime.UtcNow.AddSeconds(-10),
-        EventPublishedUtc = DateTime.UtcNow.AddSeconds(-5),
-        ServerId = serverId ?? TestServerId,
-        GameType = gameType ?? "CallOfDuty4",
-        SequenceId = 1,
-        PlayerGuid = playerGuid ?? "abc123guid",
-        Username = username ?? "TestPlayer",
-        Message = chatMessage ?? "Hello world",
-        Type = type ?? ChatMessageType.All
-    };
+        {
+            EventGeneratedUtc = DateTime.UtcNow.AddSeconds(-10),
+            EventPublishedUtc = DateTime.UtcNow.AddSeconds(-5),
+            ServerId = serverId ?? TestServerId,
+            GameType = gameType ?? "CallOfDuty4",
+            SequenceId = 1,
+            PlayerGuid = playerGuid ?? "abc123guid",
+            Username = username ?? "TestPlayer",
+            Message = chatMessage ?? "Hello world",
+            Type = type ?? ChatMessageType.All
+        };
 
     [Fact]
     public async Task ValidMessage_PersistsChatMessage()
