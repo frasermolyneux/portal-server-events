@@ -41,6 +41,17 @@ public class RegisterCommandTests
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(true);
 
+        _rconResponseService
+            .Setup(x => x.TryTellAsync(
+                It.IsAny<Guid>(),
+                It.IsAny<string>(),
+                It.IsAny<int>(),
+                It.IsAny<string>(),
+                It.IsAny<string?>(),
+                It.IsAny<DateTime>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+
         _sut = new RegisterCommand(_repoClient.Object, _rconResponseService.Object, _auditLogger.Object, _logger.Object);
     }
 
@@ -50,6 +61,7 @@ public class RegisterCommandTests
         GameType = "CallOfDuty4",
         PlayerGuid = "abc123",
         Username = "TestPlayer",
+        SlotId = 3,
         Message = message,
         EventGeneratedUtc = DateTime.UtcNow,
         EventPublishedUtc = DateTime.UtcNow,
@@ -80,6 +92,7 @@ public class RegisterCommandTests
         _rconResponseService.Verify(x => x.TryTellAsync(
             TestServerId,
             "abc123",
+            3,
             "Player context unavailable",
             "TestPlayer",
             It.IsAny<DateTime>(),
@@ -117,6 +130,7 @@ public class RegisterCommandTests
         _rconResponseService.Verify(x => x.TryTellAsync(
             TestServerId,
             "abc123",
+            3,
             "Registration successful. Your account is now linked.",
             "TestPlayer",
             It.IsAny<DateTime>(),
@@ -170,6 +184,7 @@ public class RegisterCommandTests
         _rconResponseService.Verify(x => x.TryTellAsync(
             TestServerId,
             "abc123",
+            3,
             "Player is already linked to a different profile",
             "TestPlayer",
             It.IsAny<DateTime>(),
@@ -192,6 +207,7 @@ public class RegisterCommandTests
         _rconResponseService.Verify(x => x.TryTellAsync(
             TestServerId,
             "abc123",
+            3,
             "Activation code is invalid, expired, inactive, or exhausted",
             "TestPlayer",
             It.IsAny<DateTime>(),
@@ -214,9 +230,40 @@ public class RegisterCommandTests
         _rconResponseService.Verify(x => x.TryTellAsync(
             TestServerId,
             "abc123",
+            3,
             "Registration failed due to a temporary error. Please try again.",
             "TestPlayer",
             It.IsAny<DateTime>(),
             It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WhenSlotMissing_UsesGuidLookupTellPath()
+    {
+        _connectedPlayersApi
+            .Setup(x => x.ConsumeConnectedPlayerActivationCode(It.IsAny<XtremeIdiots.Portal.Repository.Abstractions.Models.V1.ConnectedPlayers.ConsumeConnectedPlayerActivationCodeDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new MX.Api.Abstractions.ApiResult<XtremeIdiots.Portal.Repository.Abstractions.Models.V1.ConnectedPlayers.ConnectedPlayerDto>(HttpStatusCode.OK));
+
+        var result = await _sut.ExecuteAsync(CreateContext() with { SlotId = null });
+
+        Assert.True(result.Handled);
+        Assert.True(result.Success);
+
+        _rconResponseService.Verify(x => x.TryTellAsync(
+            TestServerId,
+            "abc123",
+            "Registration successful. Your account is now linked.",
+            "TestPlayer",
+            It.IsAny<DateTime>(),
+            It.IsAny<CancellationToken>()), Times.Once);
+
+        _rconResponseService.Verify(x => x.TryTellAsync(
+            It.IsAny<Guid>(),
+            It.IsAny<string>(),
+            It.IsAny<int>(),
+            It.IsAny<string>(),
+            It.IsAny<string?>(),
+            It.IsAny<DateTime>(),
+            It.IsAny<CancellationToken>()), Times.Never);
     }
 }

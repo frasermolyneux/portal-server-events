@@ -71,6 +71,12 @@ public class ChatMessageProcessor(
             return;
         }
 
+        if (chatEvent.SlotId.HasValue && chatEvent.SlotId.Value < 0)
+        {
+            logger.LogWarning("ChatMessage has invalid SlotId: {SlotId}. MessageId: {MessageId}", chatEvent.SlotId, message.MessageId);
+            return;
+        }
+
         if (!Enum.TryParse<GameType>(chatEvent.GameType, out var gameType))
         {
             logger.LogWarning("ChatMessage has invalid GameType: {GameType}", chatEvent.GameType);
@@ -129,6 +135,7 @@ public class ChatMessageProcessor(
             GameType = chatEvent.GameType,
             PlayerGuid = chatEvent.PlayerGuid,
             Username = chatEvent.Username,
+            SlotId = chatEvent.SlotId,
             Message = chatEvent.Message,
             EventGeneratedUtc = chatEvent.EventGeneratedUtc,
             EventPublishedUtc = chatEvent.EventPublishedUtc,

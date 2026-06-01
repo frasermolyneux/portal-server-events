@@ -70,6 +70,7 @@ public class ChatMessageProcessorTests
         string? playerGuid = null,
         string? username = null,
         string? chatMessage = null,
+        int? slotId = null,
         ChatMessageType? type = null,
         Guid? serverId = null) => new()
         {
@@ -80,6 +81,7 @@ public class ChatMessageProcessorTests
             SequenceId = 1,
             PlayerGuid = playerGuid ?? "abc123guid",
             Username = username ?? "TestPlayer",
+            SlotId = slotId ?? 3,
             Message = chatMessage ?? "Hello world",
             Type = type ?? ChatMessageType.All
         };
@@ -124,6 +126,69 @@ public class ChatMessageProcessorTests
 
         _chatApi.Verify(x => x.CreateChatMessage(It.Is<CreateChatMessageDto>(dto =>
             dto.ChatType == ChatType.Team), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task ValidMessage_PassesSlotToCommandContext()
+    {
+        var evt = CreateValidEvent(slotId: 9);
+        var message = CreateMessage(evt);
+
+        var playerDto = CreatePlayerDto(TestPlayerId);
+        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.Tags))
+            .ReturnsAsync(SuccessResult(playerDto));
+
+        _chatApi.Setup(x => x.CreateChatMessage(It.IsAny<CreateChatMessageDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(SuccessResult());
+
+        await _sut.ProcessChatMessage(message, _functionContext.Object);
+
+        _commandProcessor.Verify(x => x.ProcessAsync(
+            It.Is<CommandContext>(ctx => ctx.SlotId == 9),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task MessageWithoutSlotId_StillProcessesForBackwardCompatibility()
+    {
+        var legacyPayload = """
+            {
+              "eventGeneratedUtc": "2025-01-15T12:00:00Z",
+              "eventPublishedUtc": "2025-01-15T12:00:01Z",
+              "serverId": "11111111-1111-1111-1111-111111111111",
+              "gameType": "CallOfDuty4",
+              "sequenceId": 1,
+              "playerGuid": "abc123guid",
+              "username": "TestPlayer",
+              "message": "Hello world",
+              "type": "All"
+            }
+            """;
+
+        var playerDto = CreatePlayerDto(TestPlayerId);
+        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.Tags))
+            .ReturnsAsync(SuccessResult(playerDto));
+
+        _chatApi.Setup(x => x.CreateChatMessage(It.IsAny<CreateChatMessageDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(SuccessResult());
+
+        await _sut.ProcessChatMessage(CreateMessage(legacyPayload), _functionContext.Object);
+
+        _commandProcessor.Verify(x => x.ProcessAsync(
+            It.Is<CommandContext>(ctx => ctx.SlotId == null),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task NegativeSlotId_LogsWarningAndReturns()
+    {
+        var evt = CreateValidEvent(slotId: -1);
+        var message = CreateMessage(evt);
+
+        await _sut.ProcessChatMessage(message, _functionContext.Object);
+
+        _chatApi.Verify(x => x.CreateChatMessage(It.IsAny<CreateChatMessageDto>(), It.IsAny<CancellationToken>()), Times.Never);
+        _commandProcessor.Verify(x => x.ProcessAsync(It.IsAny<CommandContext>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]

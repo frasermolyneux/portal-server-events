@@ -92,6 +92,42 @@ public sealed class RconResponseService : IRconResponseService
         }
     }
 
+    public async Task<bool> TryTellAsync(
+        Guid serverId,
+        string playerGuid,
+        int slotId,
+        string message,
+        string? expectedPlayerName,
+        DateTime eventGeneratedUtc,
+        CancellationToken ct = default)
+    {
+        if (!IsFresh(serverId, eventGeneratedUtc))
+            return false;
+
+        try
+        {
+            var result = await _rconApi.TellPlayerWithVerification(serverId, slotId, message, expectedPlayerName);
+            if (result.IsSuccess)
+            {
+                _logger.LogInformation("RCON TellPlayerWithVerification sent to server {ServerId}, client {ClientId}", serverId, slotId);
+                return true;
+            }
+
+            _logger.LogWarning(
+                "RCON TellPlayerWithVerification failed for server {ServerId}, client {ClientId}: {StatusCode}. Falling back to guid lookup.",
+                serverId, slotId, result.StatusCode);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "RCON TellPlayerWithVerification threw for server {ServerId}, client {ClientId}. Falling back to guid lookup.",
+                serverId, slotId);
+        }
+
+        return await TryTellAsync(serverId, playerGuid, message, expectedPlayerName, eventGeneratedUtc, ct)
+            .ConfigureAwait(false);
+    }
+
     private bool IsFresh(Guid serverId, DateTime eventGeneratedUtc)
     {
         var age = DateTime.UtcNow - eventGeneratedUtc;

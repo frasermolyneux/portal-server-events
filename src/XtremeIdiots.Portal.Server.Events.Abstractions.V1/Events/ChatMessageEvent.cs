@@ -6,6 +6,7 @@ public class ChatMessageEvent : ServerEventBase
 {
     public required string PlayerGuid { get; init; }
     public required string Username { get; init; }
+    public int? SlotId { get; init; }
     public required string Message { get; init; }
     public required ChatMessageType Type { get; init; }
 }

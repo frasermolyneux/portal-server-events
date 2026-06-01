@@ -132,21 +132,31 @@ public sealed class RegisterCommand : IChatCommand
 
     private async Task TryTellAsync(CommandContext context, string message, CancellationToken ct)
     {
-        var sent = await _rconResponseService.TryTellAsync(
-            context.ServerId,
-            context.PlayerGuid,
-            message,
-            context.Username,
-            context.EventGeneratedUtc,
-            ct).ConfigureAwait(false);
+        var sent = context.SlotId.HasValue
+            ? await _rconResponseService.TryTellAsync(
+                context.ServerId,
+                context.PlayerGuid,
+                context.SlotId.Value,
+                message,
+                context.Username,
+                context.EventGeneratedUtc,
+                ct).ConfigureAwait(false)
+            : await _rconResponseService.TryTellAsync(
+                context.ServerId,
+                context.PlayerGuid,
+                message,
+                context.Username,
+                context.EventGeneratedUtc,
+                ct).ConfigureAwait(false);
 
         if (!sent)
         {
             _logger.LogWarning(
-                "Private register response not delivered for {Username} on server {ServerId} (player {PlayerGuid})",
+                "Private register response not delivered for {Username} on server {ServerId} (player {PlayerGuid}, slot {SlotId})",
                 context.Username,
                 context.ServerId,
-                context.PlayerGuid);
+                context.PlayerGuid,
+                context.SlotId);
         }
     }
 }

@@ -33,4 +33,17 @@ public interface IRconResponseService
         string? expectedPlayerName,
         DateTime eventGeneratedUtc,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// Send a private message to a specific player using a known slot id, but only if the event is fresh.
+    /// Implementations should gracefully fall back to guid-based lookup if slot delivery fails.
+    /// </summary>
+    Task<bool> TryTellAsync(
+        Guid serverId,
+        string playerGuid,
+        int slotId,
+        string message,
+        string? expectedPlayerName,
+        DateTime eventGeneratedUtc,
+        CancellationToken ct = default);
 }

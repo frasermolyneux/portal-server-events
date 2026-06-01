@@ -159,4 +159,53 @@ public class RconResponseServiceTests
 
         Assert.False(result);
     }
+
+    [Fact]
+    public async Task TryTellAsync_WithSlot_WhenFreshAndTellSucceeds_ReturnsTrue()
+    {
+        _rconApi.Setup(x => x.TellPlayerWithVerification(TestServerId, 5, "Hello", "PlayerOne"))
+            .ReturnsAsync(new ApiResult(System.Net.HttpStatusCode.OK));
+
+        var result = await _sut.TryTellAsync(TestServerId, "guid-1", 5, "Hello", "PlayerOne", DateTime.UtcNow);
+
+        Assert.True(result);
+        _rconApi.Verify(x => x.GetServerStatus(It.IsAny<Guid>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task TryTellAsync_WithSlot_WhenTellFails_FallsBackToGuidLookup()
+    {
+        _rconApi.Setup(x => x.TellPlayerWithVerification(TestServerId, 5, "Hello", "PlayerOne"))
+            .ReturnsAsync(new ApiResult(System.Net.HttpStatusCode.BadRequest));
+
+        _rconApi.Setup(x => x.GetServerStatus(TestServerId))
+            .ReturnsAsync(new ApiResult<ServerRconStatusResponseDto>(
+                System.Net.HttpStatusCode.OK,
+                new ApiResponse<ServerRconStatusResponseDto>(
+                    new ServerRconStatusResponseDto
+                    {
+                        Players = [new ServerRconPlayerDto { Num = 7, Guid = "guid-1", Name = "PlayerOne" }]
+                    })));
+
+        _rconApi.Setup(x => x.TellPlayerWithVerification(TestServerId, 7, "Hello", "PlayerOne"))
+            .ReturnsAsync(new ApiResult(System.Net.HttpStatusCode.OK));
+
+        var result = await _sut.TryTellAsync(TestServerId, "guid-1", 5, "Hello", "PlayerOne", DateTime.UtcNow);
+
+        Assert.True(result);
+        _rconApi.Verify(x => x.GetServerStatus(TestServerId), Times.Once);
+        _rconApi.Verify(x => x.TellPlayerWithVerification(TestServerId, 7, "Hello", "PlayerOne"), Times.Once);
+    }
+
+    [Fact]
+    public async Task TryTellAsync_WithSlot_WhenStale_SkipsWithoutCallingRcon()
+    {
+        var staleTime = DateTime.UtcNow.AddSeconds(-10);
+
+        var result = await _sut.TryTellAsync(TestServerId, "guid-1", 5, "Hello", "PlayerOne", staleTime);
+
+        Assert.False(result);
+        _rconApi.Verify(x => x.TellPlayerWithVerification(It.IsAny<Guid>(), It.IsAny<int>(), It.IsAny<string>(), It.IsAny<string?>()), Times.Never);
+        _rconApi.Verify(x => x.GetServerStatus(It.IsAny<Guid>()), Times.Never);
+    }
 }

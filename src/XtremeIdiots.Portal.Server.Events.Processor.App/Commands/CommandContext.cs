@@ -9,6 +9,7 @@ public sealed record CommandContext
     public required string GameType { get; init; }
     public required string PlayerGuid { get; init; }
     public required string Username { get; init; }
+    public int? SlotId { get; init; }
     public required string Message { get; init; }
     public required DateTime EventGeneratedUtc { get; init; }
     public required DateTime EventPublishedUtc { get; init; }
