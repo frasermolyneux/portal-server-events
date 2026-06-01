@@ -16,6 +16,7 @@ public class ChatCommandProcessorTests
         GameType = "CallOfDuty4",
         PlayerGuid = "abc123",
         Username = "TestPlayer",
+        SlotId = 3,
         Message = message,
         EventGeneratedUtc = DateTime.UtcNow,
         EventPublishedUtc = DateTime.UtcNow,

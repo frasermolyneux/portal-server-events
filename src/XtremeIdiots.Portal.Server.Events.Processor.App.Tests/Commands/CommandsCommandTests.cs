@@ -30,16 +30,6 @@ public class CommandsCommandTests
             .Setup(x => x.TryTellAsync(
                 It.IsAny<Guid>(),
                 It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<string?>(),
-                It.IsAny<DateTime>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(true);
-
-        _rconResponseService
-            .Setup(x => x.TryTellAsync(
-                It.IsAny<Guid>(),
-                It.IsAny<string>(),
                 It.IsAny<int>(),
                 It.IsAny<string>(),
                 It.IsAny<string?>(),
@@ -114,29 +104,4 @@ public class CommandsCommandTests
             It.IsAny<CancellationToken>()), Times.Once);
     }
 
-    [Fact]
-    public async Task ExecuteAsync_WhenSlotMissing_UsesGuidLookupTellPath()
-    {
-        var result = await _sut.ExecuteAsync(CreateContext() with { SlotId = null });
-
-        Assert.True(result.Handled);
-        Assert.True(result.Success);
-
-        _rconResponseService.Verify(x => x.TryTellAsync(
-            TestServerId,
-            "abc123",
-            "Available commands: !commands, !dislike, !like, !register",
-            "TestPlayer",
-            It.IsAny<DateTime>(),
-            It.IsAny<CancellationToken>()), Times.Once);
-
-        _rconResponseService.Verify(x => x.TryTellAsync(
-            It.IsAny<Guid>(),
-            It.IsAny<string>(),
-            It.IsAny<int>(),
-            It.IsAny<string>(),
-            It.IsAny<string?>(),
-            It.IsAny<DateTime>(),
-            It.IsAny<CancellationToken>()), Times.Never);
-    }
 }

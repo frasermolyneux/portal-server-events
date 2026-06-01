@@ -43,16 +43,6 @@ public class RegisterCommandTests
             .Setup(x => x.TryTellAsync(
                 It.IsAny<Guid>(),
                 It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<string?>(),
-                It.IsAny<DateTime>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(true);
-
-        _rconResponseService
-            .Setup(x => x.TryTellAsync(
-                It.IsAny<Guid>(),
-                It.IsAny<string>(),
                 It.IsAny<int>(),
                 It.IsAny<string>(),
                 It.IsAny<string?>(),
@@ -276,33 +266,4 @@ public class RegisterCommandTests
             It.IsAny<CancellationToken>()), Times.Once);
     }
 
-    [Fact]
-    public async Task ExecuteAsync_WhenSlotMissing_UsesGuidLookupTellPath()
-    {
-        _connectedPlayersApi
-            .Setup(x => x.ConsumeConnectedPlayerActivationCode(It.IsAny<XtremeIdiots.Portal.Repository.Abstractions.Models.V1.ConnectedPlayers.ConsumeConnectedPlayerActivationCodeDto>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new MX.Api.Abstractions.ApiResult<XtremeIdiots.Portal.Repository.Abstractions.Models.V1.ConnectedPlayers.ConnectedPlayerDto>(HttpStatusCode.OK));
-
-        var result = await _sut.ExecuteAsync(CreateContext() with { SlotId = null });
-
-        Assert.True(result.Handled);
-        Assert.True(result.Success);
-
-        _rconResponseService.Verify(x => x.TryTellAsync(
-            TestServerId,
-            "abc123",
-            "Registration successful. Your account is now linked.",
-            "TestPlayer",
-            It.IsAny<DateTime>(),
-            It.IsAny<CancellationToken>()), Times.Once);
-
-        _rconResponseService.Verify(x => x.TryTellAsync(
-            It.IsAny<Guid>(),
-            It.IsAny<string>(),
-            It.IsAny<int>(),
-            It.IsAny<string>(),
-            It.IsAny<string?>(),
-            It.IsAny<DateTime>(),
-            It.IsAny<CancellationToken>()), Times.Never);
-    }
 }

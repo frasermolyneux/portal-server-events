@@ -83,21 +83,13 @@ public sealed class CommandsCommand : IChatCommand
 
     private async Task<bool> TryTellAsync(CommandContext context, string message, CancellationToken ct)
     {
-        return context.SlotId.HasValue
-            ? await _rconResponseService.TryTellAsync(
-                context.ServerId,
-                context.PlayerGuid,
-                context.SlotId.Value,
-                message,
-                context.Username,
-                context.EventGeneratedUtc,
-                ct).ConfigureAwait(false)
-            : await _rconResponseService.TryTellAsync(
-                context.ServerId,
-                context.PlayerGuid,
-                message,
-                context.Username,
-                context.EventGeneratedUtc,
-                ct).ConfigureAwait(false);
+        return await _rconResponseService.TryTellAsync(
+            context.ServerId,
+            context.PlayerGuid,
+            context.SlotId,
+            message,
+            context.Username,
+            context.EventGeneratedUtc,
+            ct).ConfigureAwait(false);
     }
 }

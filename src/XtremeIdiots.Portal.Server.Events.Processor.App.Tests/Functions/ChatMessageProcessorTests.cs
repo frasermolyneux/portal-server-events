@@ -70,7 +70,7 @@ public class ChatMessageProcessorTests
         string? playerGuid = null,
         string? username = null,
         string? chatMessage = null,
-        int? slotId = null,
+        int slotId = 3,
         ChatMessageType? type = null,
         Guid? serverId = null) => new()
         {
@@ -81,7 +81,7 @@ public class ChatMessageProcessorTests
             SequenceId = 1,
             PlayerGuid = playerGuid ?? "abc123guid",
             Username = username ?? "TestPlayer",
-            SlotId = slotId ?? 3,
+            SlotId = slotId,
             Message = chatMessage ?? "Hello world",
             Type = type ?? ChatMessageType.All
         };
@@ -149,7 +149,7 @@ public class ChatMessageProcessorTests
     }
 
     [Fact]
-    public async Task MessageWithoutSlotId_StillProcessesForBackwardCompatibility()
+    public async Task MessageWithoutSlotId_DoesNotProcess()
     {
         var legacyPayload = """
             {
@@ -174,9 +174,35 @@ public class ChatMessageProcessorTests
 
         await _sut.ProcessChatMessage(CreateMessage(legacyPayload), _functionContext.Object);
 
-        _commandProcessor.Verify(x => x.ProcessAsync(
-            It.Is<CommandContext>(ctx => ctx.SlotId == null),
-            It.IsAny<CancellationToken>()), Times.Once);
+        _chatApi.Verify(x => x.CreateChatMessage(It.IsAny<CreateChatMessageDto>(), It.IsAny<CancellationToken>()), Times.Never);
+        _commandProcessor.Verify(x => x.ProcessAsync(It.IsAny<CommandContext>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task MessageWithNullSlotId_DoesNotProcess()
+    {
+        var legacyPayload = """
+            {
+              "eventGeneratedUtc": "2025-01-15T12:00:00Z",
+              "eventPublishedUtc": "2025-01-15T12:00:01Z",
+              "serverId": "11111111-1111-1111-1111-111111111111",
+              "gameType": "CallOfDuty4",
+              "sequenceId": 1,
+              "playerGuid": "abc123guid",
+              "username": "TestPlayer",
+              "slotId": null,
+              "message": "Hello world",
+              "type": "All"
+            }
+            """;
+
+        _chatApi.Setup(x => x.CreateChatMessage(It.IsAny<CreateChatMessageDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(SuccessResult());
+
+        await _sut.ProcessChatMessage(CreateMessage(legacyPayload), _functionContext.Object);
+
+        _chatApi.Verify(x => x.CreateChatMessage(It.IsAny<CreateChatMessageDto>(), It.IsAny<CancellationToken>()), Times.Never);
+        _commandProcessor.Verify(x => x.ProcessAsync(It.IsAny<CommandContext>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]

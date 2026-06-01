@@ -71,7 +71,7 @@ public class ChatMessageProcessor(
             return;
         }
 
-        if (chatEvent.SlotId.HasValue && chatEvent.SlotId.Value < 0)
+        if (chatEvent.SlotId < 0)
         {
             logger.LogWarning("ChatMessage has invalid SlotId: {SlotId}. MessageId: {MessageId}", chatEvent.SlotId, message.MessageId);
             return;
