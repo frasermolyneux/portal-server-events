@@ -118,6 +118,8 @@ var host = new HostBuilder()
         // Command framework
         services.AddTransient<IChatCommandProcessor, ChatCommandProcessor>();
         services.AddTransient<IRconResponseService, RconResponseService>();
+        services.AddSingleton<IFuMessageSettingsProvider, FuMessageSettingsProvider>();
+        services.AddSingleton<FuMessageTemplateRenderer>();
         services.AddSingleton<IRegisterCommandRateLimiter, RegisterCommandRateLimiter>();
         services.AddSingleton<IChatCommandCatalog, ChatCommandCatalog>();
 
@@ -129,6 +131,7 @@ var host = new HostBuilder()
         services.AddTransient<IChatCommand, MapVoteLikeCommand>();
         services.AddTransient<IChatCommand, MapVoteDislikeCommand>();
         services.AddTransient<IChatCommand, RegisterCommand>();
+        services.AddTransient<IChatCommand, FuCommand>();
 
         // Feature management
         services.AddFeatureManagement();

@@ -41,7 +41,7 @@ public sealed class CommandsCommand : IChatCommand
             return await FailAsync(context, "Usage: !commands", ct).ConfigureAwait(false);
         }
 
-        var commands = _catalog.GetAvailableCommands(context)
+        var commands = (await _catalog.GetAvailableCommandsAsync(context, ct).ConfigureAwait(false))
             .Select(x => x.Prefix)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)

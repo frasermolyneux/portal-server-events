@@ -18,7 +18,7 @@ public class CommandsCommandTests
 
     public CommandsCommandTests()
     {
-        _catalog.Setup(x => x.GetAvailableCommands(It.IsAny<CommandContext>())).Returns(
+        _catalog.Setup(x => x.GetAvailableCommandsAsync(It.IsAny<CommandContext>(), It.IsAny<CancellationToken>())).ReturnsAsync(
         [
             new ChatCommandDefinition { Prefix = "!register" },
             new ChatCommandDefinition { Prefix = "!commands" },
@@ -69,6 +69,61 @@ public class CommandsCommandTests
     [Fact]
     public async Task ExecuteAsync_WhenValid_ReturnsSuccessAndSendsPrivateCommandsList()
     {
+        var result = await _sut.ExecuteAsync(CreateContext());
+
+        Assert.True(result.Handled);
+        Assert.True(result.Success);
+        Assert.Equal("Available commands: !commands, !dislike, !like, !register", result.ResponseMessage);
+
+        _rconResponseService.Verify(x => x.TryTellAsync(
+            TestServerId,
+            "abc123",
+            3,
+            "Available commands: !commands, !dislike, !like, !register",
+            "TestPlayer",
+            It.IsAny<DateTime>(),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WhenFuEnabled_IncludesFuInCommandsList()
+    {
+        _catalog.Setup(x => x.GetAvailableCommandsAsync(It.IsAny<CommandContext>(), It.IsAny<CancellationToken>())).ReturnsAsync(
+        [
+            new ChatCommandDefinition { Prefix = "!register" },
+            new ChatCommandDefinition { Prefix = "!commands" },
+            new ChatCommandDefinition { Prefix = "!like" },
+            new ChatCommandDefinition { Prefix = "!dislike" },
+            new ChatCommandDefinition { Prefix = "!fu" }
+        ]);
+
+        var result = await _sut.ExecuteAsync(CreateContext());
+
+        Assert.True(result.Handled);
+        Assert.True(result.Success);
+        Assert.Equal("Available commands: !commands, !dislike, !fu, !like, !register", result.ResponseMessage);
+
+        _rconResponseService.Verify(x => x.TryTellAsync(
+            TestServerId,
+            "abc123",
+            3,
+            "Available commands: !commands, !dislike, !fu, !like, !register",
+            "TestPlayer",
+            It.IsAny<DateTime>(),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WhenFuDisabled_DoesNotIncludeFuInCommandsList()
+    {
+        _catalog.Setup(x => x.GetAvailableCommandsAsync(It.IsAny<CommandContext>(), It.IsAny<CancellationToken>())).ReturnsAsync(
+        [
+            new ChatCommandDefinition { Prefix = "!register" },
+            new ChatCommandDefinition { Prefix = "!commands" },
+            new ChatCommandDefinition { Prefix = "!like" },
+            new ChatCommandDefinition { Prefix = "!dislike" }
+        ]);
+
         var result = await _sut.ExecuteAsync(CreateContext());
 
         Assert.True(result.Handled);

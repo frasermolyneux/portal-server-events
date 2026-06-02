@@ -1,0 +1,256 @@
+using System.Text.Json;
+
+using Microsoft.Extensions.Logging;
+
+using XtremeIdiots.Portal.Integrations.Servers.Abstractions.Models.V1.Rcon;
+using XtremeIdiots.Portal.Integrations.Servers.Api.Client.V1;
+using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.Configurations;
+using XtremeIdiots.Portal.Repository.Api.Client.V1;
+
+namespace XtremeIdiots.Portal.Server.Events.Processor.App.Commands;
+
+public sealed class FuCommand : IChatCommand
+{
+    private const string AgentNamespace = "agent";
+    private const string AgentNameKey = "agentName";
+    private const string DefaultAgentNamePrefix = "^4[^1>XI< BOT^4]^7";
+
+    private readonly IFuMessageSettingsProvider _fuMessageSettingsProvider;
+    private readonly FuMessageTemplateRenderer _messageTemplateRenderer;
+    private readonly IServersApiClient _serversClient;
+    private readonly IRepositoryApiClient _repositoryClient;
+    private readonly IRconResponseService _rconResponseService;
+    private readonly ILogger<FuCommand> _logger;
+
+    public FuCommand(
+        IFuMessageSettingsProvider fuMessageSettingsProvider,
+        FuMessageTemplateRenderer messageTemplateRenderer,
+        IServersApiClient serversClient,
+        IRepositoryApiClient repositoryClient,
+        IRconResponseService rconResponseService,
+        ILogger<FuCommand> logger)
+    {
+        _fuMessageSettingsProvider = fuMessageSettingsProvider;
+        _messageTemplateRenderer = messageTemplateRenderer;
+        _serversClient = serversClient;
+        _repositoryClient = repositoryClient;
+        _rconResponseService = rconResponseService;
+        _logger = logger;
+    }
+
+    public string Prefix => "!fu";
+
+    public bool CanHandle(string message)
+    {
+        if (string.IsNullOrWhiteSpace(message))
+            return false;
+
+        var trimmed = message.TrimStart();
+        if (!trimmed.StartsWith(Prefix, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        return trimmed.Length == Prefix.Length || char.IsWhiteSpace(trimmed[Prefix.Length]);
+    }
+
+    public async Task<CommandResult> ExecuteAsync(CommandContext context, CancellationToken ct = default)
+    {
+        var messageParts = context.Message
+            .Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+        if (messageParts.Length < 2 || !messageParts[0].Equals(Prefix, StringComparison.OrdinalIgnoreCase))
+        {
+            return await FailAsync(context, "Usage: !fu <player name>", ct).ConfigureAwait(false);
+        }
+
+        if (!await _fuMessageSettingsProvider.IsEnabledAsync(context.ServerId, ct).ConfigureAwait(false))
+        {
+            return await FailAsync(context, "The !fu command is not enabled on this server.", ct).ConfigureAwait(false);
+        }
+
+        var playerQuery = string.Join(' ', messageParts.Skip(1));
+        MX.Api.Abstractions.ApiResult<ResolvePlayerResponseDto> resolveResult;
+        try
+        {
+            resolveResult = await _serversClient.Rcon.V1
+                .ResolvePlayer(context.ServerId, new ResolvePlayerRequestDto
+                {
+                    PlayerQuery = playerQuery,
+                    MaxSuggestions = 3
+                }, ct)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "ResolvePlayer failed for server {ServerId} and query {PlayerQuery}", context.ServerId, playerQuery);
+            return await FailAsync(context, "Unable to resolve player right now. Please try again.", ct).ConfigureAwait(false);
+        }
+
+        if (!resolveResult.IsSuccess || resolveResult.Result?.Data is null)
+        {
+            return await FailAsync(context, "Unable to resolve player right now. Please try again.", ct).ConfigureAwait(false);
+        }
+
+        var resolution = resolveResult.Result.Data;
+        if (resolution.Status == ResolvePlayerStatus.NotFound)
+        {
+            return await FailAsync(context, "No player found.", ct).ConfigureAwait(false);
+        }
+
+        if (resolution.Status == ResolvePlayerStatus.Ambiguous)
+        {
+            return await FailAsync(context, BuildAmbiguousMessage(resolution.Suggestions), ct).ConfigureAwait(false);
+        }
+
+        var resolvedName = resolution.ResolvedPlayer?.Name;
+        if (string.IsNullOrWhiteSpace(resolvedName))
+        {
+            return await FailAsync(context, "Unable to resolve player right now. Please try again.", ct).ConfigureAwait(false);
+        }
+
+        var effectiveMessages = await _fuMessageSettingsProvider.GetEffectiveMessagesAsync(context.ServerId, ct).ConfigureAwait(false);
+        if (effectiveMessages.Count == 0)
+        {
+            return await FailAsync(context, "The !fu command is not enabled on this server.", ct).ConfigureAwait(false);
+        }
+
+        var template = effectiveMessages[Random.Shared.Next(effectiveMessages.Count)];
+        var renderedMessage = _messageTemplateRenderer.Render(template, resolvedName);
+
+        var prefix = await ResolveAgentNamePrefixAsync(context.ServerId, ct).ConfigureAwait(false);
+        var response = BuildPrefixedMessage(prefix, renderedMessage);
+
+        var saySent = await _rconResponseService
+            .TrySayAsync(context.ServerId, response, context.EventGeneratedUtc, ct)
+            .ConfigureAwait(false);
+
+        if (!saySent)
+        {
+            return await FailAsync(context, "Unable to send !fu response right now. Please try again.", ct).ConfigureAwait(false);
+        }
+
+        return CommandResult.Ok(response);
+    }
+
+    private static string BuildAmbiguousMessage(IList<ResolvePlayerSuggestionDto>? suggestions)
+    {
+        if (suggestions is null || suggestions.Count == 0)
+        {
+            return "No exact player found. Please be more specific.";
+        }
+
+        var renderedSuggestions = suggestions
+            .Select(x => $"{x.Name} (slot {x.Slot})");
+
+        return $"No exact player found. Did you mean: {string.Join(", ", renderedSuggestions)}";
+    }
+
+    private async Task<CommandResult> FailAsync(CommandContext context, string reason, CancellationToken ct)
+    {
+        var sent = await _rconResponseService.TryTellAsync(
+            context.ServerId,
+            context.PlayerGuid,
+            context.SlotId,
+            reason,
+            context.Username,
+            context.EventGeneratedUtc,
+            ct).ConfigureAwait(false);
+
+        if (!sent)
+        {
+            _logger.LogWarning(
+                "Private fu response not delivered for {Username} on server {ServerId} (player {PlayerGuid}, slot {SlotId})",
+                context.Username,
+                context.ServerId,
+                context.PlayerGuid,
+                context.SlotId);
+        }
+
+        return CommandResult.Failed(reason);
+    }
+
+    private async Task<string> ResolveAgentNamePrefixAsync(Guid serverId, CancellationToken ct)
+    {
+        var globalPrefix = DefaultAgentNamePrefix;
+
+        try
+        {
+            var globalConfigs = await _repositoryClient.GlobalConfigurations.V1
+                .GetConfigurations(ct)
+                .ConfigureAwait(false);
+
+            var globalAgentConfig = globalConfigs.Result?.Data?.Items?
+                .FirstOrDefault(x => string.Equals(x.Namespace, AgentNamespace, StringComparison.OrdinalIgnoreCase));
+
+            if (TryReadAgentName(globalAgentConfig, out var parsedGlobalPrefix))
+            {
+                globalPrefix = parsedGlobalPrefix;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Unable to resolve global agent prefix for server {ServerId}; using default", serverId);
+        }
+
+        try
+        {
+            var serverConfigs = await _repositoryClient.GameServerConfigurations.V1
+                .GetConfigurations(serverId, ct)
+                .ConfigureAwait(false);
+
+            var serverAgentConfig = serverConfigs.Result?.Data?.Items?
+                .FirstOrDefault(x => string.Equals(x.Namespace, AgentNamespace, StringComparison.OrdinalIgnoreCase));
+
+            if (TryReadAgentName(serverAgentConfig, out var parsedServerPrefix))
+            {
+                return parsedServerPrefix;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Unable to resolve server agent prefix for server {ServerId}; using global/default", serverId);
+        }
+
+        return globalPrefix;
+    }
+
+    private static bool TryReadAgentName(ConfigurationDto? config, out string agentName)
+    {
+        agentName = string.Empty;
+
+        if (string.IsNullOrWhiteSpace(config?.Configuration))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(config.Configuration);
+            var root = document.RootElement;
+            if (root.ValueKind == JsonValueKind.Object &&
+                root.TryGetProperty(AgentNameKey, out var agentNameProperty) &&
+                agentNameProperty.ValueKind == JsonValueKind.String)
+            {
+                var parsed = agentNameProperty.GetString();
+                if (!string.IsNullOrWhiteSpace(parsed))
+                {
+                    agentName = parsed;
+                    return true;
+                }
+            }
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+
+        return false;
+    }
+
+    private static string BuildPrefixedMessage(string prefix, string message)
+    {
+        var trimmedPrefix = prefix?.Trim() ?? string.Empty;
+        return string.IsNullOrWhiteSpace(trimmedPrefix)
+            ? message
+            : $"{trimmedPrefix} {message}";
+    }
+}
