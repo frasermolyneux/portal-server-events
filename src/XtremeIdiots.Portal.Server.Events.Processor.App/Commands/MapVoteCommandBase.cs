@@ -21,6 +21,7 @@ public abstract class MapVoteCommandBase : IChatCommand
 
     private readonly IRepositoryApiClient _repositoryClient;
     private readonly IServersApiClient _serversClient;
+    private readonly ICommandSafetyService _commandSafetyService;
     private readonly IRconResponseService _rconService;
     private readonly IAuditLogger _auditLogger;
     private readonly ILogger _logger;
@@ -28,12 +29,14 @@ public abstract class MapVoteCommandBase : IChatCommand
     protected MapVoteCommandBase(
         IRepositoryApiClient repositoryClient,
         IServersApiClient serversClient,
+        ICommandSafetyService commandSafetyService,
         IRconResponseService rconService,
         IAuditLogger auditLogger,
         ILogger logger)
     {
         _repositoryClient = repositoryClient;
         _serversClient = serversClient;
+        _commandSafetyService = commandSafetyService;
         _rconService = rconService;
         _auditLogger = auditLogger;
         _logger = logger;
@@ -57,6 +60,15 @@ public abstract class MapVoteCommandBase : IChatCommand
 
         if (string.IsNullOrEmpty(currentMap))
             return CommandResult.Failed("Current map unknown");
+
+        var mapValidation = await _commandSafetyService
+            .ValidateMapTargetAsync(context.ServerId, currentMap, ct)
+            .ConfigureAwait(false);
+
+        if (!mapValidation.IsValid)
+        {
+            return CommandResult.Failed(mapValidation.Reason ?? "Map validation failed");
+        }
 
         if (!Enum.TryParse<GameType>(context.GameType, out var gameType))
             return CommandResult.Failed("Invalid game type");

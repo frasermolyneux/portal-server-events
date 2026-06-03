@@ -50,6 +50,7 @@ public class CommandsCommandTests
         Message = message,
         EventGeneratedUtc = DateTime.UtcNow,
         EventPublishedUtc = DateTime.UtcNow,
+        SequenceId = 1,
         PlayerId = Guid.Parse("22222222-2222-2222-2222-222222222222")
     };
 

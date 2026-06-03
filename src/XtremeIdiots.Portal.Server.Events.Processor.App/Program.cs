@@ -118,6 +118,8 @@ var host = new HostBuilder()
         // Command framework
         services.Configure<CommandAuthorizationOptions>(configuration.GetSection("Commands:Authorization"));
         services.AddSingleton<ICommandAuthorizationService, CommandAuthorizationService>();
+        services.AddSingleton<ICommandIdempotencyStore, InMemoryCommandIdempotencyStore>();
+        services.AddTransient<ICommandSafetyService, CommandSafetyService>();
         services.AddTransient<IChatCommandProcessor, ChatCommandProcessor>();
         services.AddSingleton<ICommandParser, ChatCommandParser>();
         services.AddTransient<IRconResponseService, RconResponseService>();

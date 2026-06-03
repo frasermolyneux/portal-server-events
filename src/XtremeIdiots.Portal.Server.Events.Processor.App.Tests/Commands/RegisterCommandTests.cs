@@ -63,6 +63,7 @@ public class RegisterCommandTests
         Message = message,
         EventGeneratedUtc = DateTime.UtcNow,
         EventPublishedUtc = DateTime.UtcNow,
+        SequenceId = 1,
         PlayerId = playerId ?? TestPlayerId
     };
 

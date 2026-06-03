@@ -12,10 +12,11 @@ public sealed class MapVoteDislikeCommand : MapVoteCommandBase
     public MapVoteDislikeCommand(
         IRepositoryApiClient repositoryClient,
         IServersApiClient serversClient,
+        ICommandSafetyService commandSafetyService,
         IRconResponseService rconService,
         IAuditLogger auditLogger,
         ILogger<MapVoteDislikeCommand> logger)
-        : base(repositoryClient, serversClient, rconService, auditLogger, logger) { }
+        : base(repositoryClient, serversClient, commandSafetyService, rconService, auditLogger, logger) { }
 
     public override string Prefix => "!dislike";
     public ChatCommandMetadata Metadata => new()
@@ -23,7 +24,8 @@ public sealed class MapVoteDislikeCommand : MapVoteCommandBase
         Name = "dislike",
         Prefix = Prefix,
         Usage = "!dislike",
-        Description = "Records a negative vote for the current map."
+        Description = "Records a negative vote for the current map.",
+        IsMutating = true
     };
 
     protected override bool IsLike => false;

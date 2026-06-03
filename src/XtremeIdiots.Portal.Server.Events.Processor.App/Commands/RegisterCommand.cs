@@ -41,7 +41,8 @@ public sealed class RegisterCommand : IChatCommand
         Name = "register",
         Prefix = Prefix,
         Usage = "!register CODE",
-        Description = "Links your in-game identity to a portal profile using an activation code."
+        Description = "Links your in-game identity to a portal profile using an activation code.",
+        IsMutating = true
     };
 
     public async Task<CommandResult> ExecuteAsync(CommandContext context, CancellationToken ct = default)

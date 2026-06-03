@@ -10,6 +10,7 @@ public sealed class ChatCommandProcessor : IChatCommandProcessor
     private readonly IReadOnlyDictionary<string, IChatCommand> _commandsByPrefix;
     private readonly ICommandParser _parser;
     private readonly ICommandAuthorizationService _authorizationService;
+    private readonly ICommandIdempotencyStore _idempotencyStore;
     private readonly IRconResponseService _rconResponseService;
     private readonly IAuditLogger _auditLogger;
     private readonly ILogger<ChatCommandProcessor> _logger;
@@ -18,12 +19,14 @@ public sealed class ChatCommandProcessor : IChatCommandProcessor
         IEnumerable<IChatCommand> commands,
         ICommandParser parser,
         ICommandAuthorizationService authorizationService,
+        ICommandIdempotencyStore idempotencyStore,
         IRconResponseService rconResponseService,
         IAuditLogger auditLogger,
         ILogger<ChatCommandProcessor> logger)
     {
         _parser = parser;
         _authorizationService = authorizationService;
+        _idempotencyStore = idempotencyStore;
         _rconResponseService = rconResponseService;
         _auditLogger = auditLogger;
         _logger = logger;
@@ -105,15 +108,73 @@ public sealed class ChatCommandProcessor : IChatCommandProcessor
             return CommandResult.DeniedByPolicy(denialMessage);
         }
 
+        CommandIdempotencyKey? idempotencyKey = null;
+        if (command.Metadata.IsMutating)
+        {
+            if (context.SequenceId <= 0)
+            {
+                _logger.LogWarning(
+                    "Mutating command {CommandPrefix} rejected because source sequence is missing or invalid for {Username} on server {ServerId}",
+                    command.Prefix,
+                    context.Username,
+                    context.ServerId);
+
+                return CommandResult.Failed("Command cannot be processed right now.");
+            }
+
+            idempotencyKey = BuildIdempotencyKey(context, parseResult.Command);
+            var decision = await _idempotencyStore
+                .TryBeginAsync(idempotencyKey, DateTime.UtcNow, ct)
+                .ConfigureAwait(false);
+
+            if (decision.State is CommandIdempotencyState.InProgress)
+            {
+                return CommandResult.Failed("Command is already being processed. Please try again.");
+            }
+
+            if (decision.State is CommandIdempotencyState.Completed && decision.ExistingResult is not null)
+            {
+                return decision.ExistingResult;
+            }
+        }
+
+        CommandResult result;
         try
         {
-            return await command.ExecuteAsync(context with { ParsedCommand = parseResult.Command }, ct).ConfigureAwait(false);
+            result = await command.ExecuteAsync(context with { ParsedCommand = parseResult.Command }, ct).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Command {CommandPrefix} failed for player {Username}",
                 command.Prefix, context.Username);
-            return CommandResult.Failed($"Command failed: {ex.Message}");
+            result = CommandResult.Failed($"Command failed: {ex.Message}");
         }
+
+        if (idempotencyKey is not null)
+        {
+            await _idempotencyStore
+                .CompleteAsync(idempotencyKey, result, DateTime.UtcNow, ct)
+                .ConfigureAwait(false);
+        }
+
+        return result;
+    }
+
+    private static CommandIdempotencyKey BuildIdempotencyKey(CommandContext context, ChatCommandEnvelope command)
+    {
+        var normalizedArguments = command.Arguments.Select(arg => arg.Trim().ToLowerInvariant());
+        var argumentKey = string.Join("|", normalizedArguments);
+        var playerIdentity = context.PlayerId?.ToString() ?? context.PlayerGuid;
+
+        var key = string.Join(
+            ":",
+            context.ServerId,
+            context.SequenceId,
+            command.PrefixToken,
+            command.Verb,
+            argumentKey,
+            playerIdentity);
+
+        return new CommandIdempotencyKey(key);
     }
 }

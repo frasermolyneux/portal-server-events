@@ -31,6 +31,7 @@ public class MapVoteDislikeCommandTests
     private readonly Mock<IGlobalConfigurationsApi> _globalConfigsApi = new();
     private readonly Mock<IVersionedGameServerConfigurationsApi> _versionedServerConfigs = new();
     private readonly Mock<IGameServerConfigurationsApi> _serverConfigsApi = new();
+    private readonly Mock<ICommandSafetyService> _commandSafetyService = new();
     private readonly Mock<IRconResponseService> _rconService = new();
     private readonly Mock<IAuditLogger> _auditLogger = new();
     private readonly Mock<ILogger<MapVoteDislikeCommand>> _logger = new();
@@ -70,7 +71,11 @@ public class MapVoteDislikeCommandTests
                     CreateConfigurationDto("agent", "{\"agentName\":\"^1[ServerBot]^7\"}")
                 }))));
 
-        _sut = new MapVoteDislikeCommand(_repoClient.Object, _serversClient.Object, _rconService.Object, _auditLogger.Object, _logger.Object);
+        _commandSafetyService
+            .Setup(x => x.ValidateMapTargetAsync(TestServerId, It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new MapValidationResult(true));
+
+        _sut = new MapVoteDislikeCommand(_repoClient.Object, _serversClient.Object, _commandSafetyService.Object, _rconService.Object, _auditLogger.Object, _logger.Object);
     }
 
     private static CommandContext CreateContext(Guid? playerId = null, string message = "!dislike") => new()
@@ -83,6 +88,7 @@ public class MapVoteDislikeCommandTests
         Message = message,
         EventGeneratedUtc = DateTime.UtcNow,
         EventPublishedUtc = DateTime.UtcNow,
+        SequenceId = 1,
         PlayerId = playerId ?? TestPlayerId
     };
 
@@ -146,6 +152,26 @@ public class MapVoteDislikeCommandTests
         Assert.True(result.Handled);
         Assert.False(result.Success);
         Assert.Equal("Map not found", result.ResponseMessage);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WhenLiveMapValidationFails_ReturnsFailedAndDoesNotCreateVote()
+    {
+        _rconApi.Setup(x => x.GetCurrentMap(TestServerId))
+            .ReturnsAsync(new ApiResult<RconCurrentMapDto>(HttpStatusCode.OK,
+                new ApiResponse<RconCurrentMapDto>(new RconCurrentMapDto("mp_crash"))));
+
+        _commandSafetyService
+            .Setup(x => x.ValidateMapTargetAsync(TestServerId, "mp_crash", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new MapValidationResult(false, "Map was not found in the live server map list."));
+
+        var result = await _sut.ExecuteAsync(CreateContext());
+
+        Assert.True(result.Handled);
+        Assert.False(result.Success);
+        Assert.Equal("Map was not found in the live server map list.", result.ResponseMessage);
+        _mapsApi.Verify(x => x.UpsertMapVote(It.IsAny<UpsertMapVoteDto>(), It.IsAny<CancellationToken>()), Times.Never);
+        _rconService.Verify(x => x.TrySayAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]

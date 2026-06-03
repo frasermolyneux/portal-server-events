@@ -12,10 +12,11 @@ public sealed class MapVoteLikeCommand : MapVoteCommandBase
     public MapVoteLikeCommand(
         IRepositoryApiClient repositoryClient,
         IServersApiClient serversClient,
+        ICommandSafetyService commandSafetyService,
         IRconResponseService rconService,
         IAuditLogger auditLogger,
         ILogger<MapVoteLikeCommand> logger)
-        : base(repositoryClient, serversClient, rconService, auditLogger, logger) { }
+        : base(repositoryClient, serversClient, commandSafetyService, rconService, auditLogger, logger) { }
 
     public override string Prefix => "!like";
     public ChatCommandMetadata Metadata => new()
@@ -23,7 +24,8 @@ public sealed class MapVoteLikeCommand : MapVoteCommandBase
         Name = "like",
         Prefix = Prefix,
         Usage = "!like",
-        Description = "Records a positive vote for the current map."
+        Description = "Records a positive vote for the current map.",
+        IsMutating = true
     };
 
     protected override bool IsLike => true;
