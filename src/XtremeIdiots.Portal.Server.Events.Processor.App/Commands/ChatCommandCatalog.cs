@@ -6,20 +6,17 @@ namespace XtremeIdiots.Portal.Server.Events.Processor.App.Commands;
 public sealed class ChatCommandCatalog : IChatCommandCatalog
 {
     private readonly IServiceProvider _serviceProvider;
-    private readonly IFuMessageSettingsProvider _fuMessageSettingsProvider;
     private readonly IChatCommandSettingsProvider _settingsProvider;
     private readonly ICommandAuthorizationService _authorizationService;
     private readonly ILogger<ChatCommandCatalog> _logger;
 
     public ChatCommandCatalog(
         IServiceProvider serviceProvider,
-        IFuMessageSettingsProvider fuMessageSettingsProvider,
         IChatCommandSettingsProvider settingsProvider,
         ICommandAuthorizationService authorizationService,
         ILogger<ChatCommandCatalog> logger)
     {
         _serviceProvider = serviceProvider;
-        _fuMessageSettingsProvider = fuMessageSettingsProvider;
         _settingsProvider = settingsProvider;
         _authorizationService = authorizationService;
         _logger = logger;
@@ -48,7 +45,13 @@ public sealed class ChatCommandCatalog : IChatCommandCatalog
                 continue;
             }
 
-            if (!await IsFeatureEnabledAsync(command.FeatureFlag, context.ServerId, ct).ConfigureAwait(false))
+            if (string.Equals(command.Name, "fu", StringComparison.OrdinalIgnoreCase) &&
+                FuCommand.ResolveMessagesFromSettings(commandSettings.Settings).Count == 0)
+            {
+                continue;
+            }
+
+            if (!IsFeatureEnabled(command.FeatureFlag))
             {
                 continue;
             }
@@ -83,19 +86,14 @@ public sealed class ChatCommandCatalog : IChatCommandCatalog
         return enabled;
     }
 
-    private async Task<bool> IsFeatureEnabledAsync(string? featureFlag, Guid serverId, CancellationToken ct)
+    private bool IsFeatureEnabled(string? featureFlag)
     {
         if (string.IsNullOrWhiteSpace(featureFlag))
         {
             return true;
         }
 
-        if (string.Equals(featureFlag, "fu", StringComparison.OrdinalIgnoreCase))
-        {
-            return await _fuMessageSettingsProvider.IsEnabledAsync(serverId, ct).ConfigureAwait(false);
-        }
-
-        _logger.LogWarning("Unknown chat command feature flag {FeatureFlag} for server {ServerId}; command will be hidden.", featureFlag, serverId);
+        _logger.LogWarning("Unknown chat command feature flag {FeatureFlag}; command will be hidden.", featureFlag);
         return false;
     }
 }

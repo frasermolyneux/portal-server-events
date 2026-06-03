@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using System.Text.Json;
 
 using Moq;
 
@@ -26,23 +27,45 @@ public class ChatCommandCatalogTests
     [Fact]
     public async Task GetAvailableCommandsAsync_WhenFuEnabled_IncludesFu()
     {
-        var provider = new Mock<IFuMessageSettingsProvider>();
-        provider.Setup(x => x.IsEnabledAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>())).ReturnsAsync(true);
         var settingsProvider = new Mock<IChatCommandSettingsProvider>();
         settingsProvider
             .Setup(x => x.GetEffectiveSettingsAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync((Guid _, string commandName, bool _, CancellationToken _) => new EffectiveChatCommandSettings
+            .ReturnsAsync((Guid _, string commandName, bool _, CancellationToken _) =>
             {
-                CommandName = commandName,
-                Enabled = true,
-                FreshnessSeconds = 5,
-                EnabledSource = SettingsValueSource.Hardcoded,
-                FreshnessSource = SettingsValueSource.Hardcoded,
-                AuthorizationSource = SettingsValueSource.Hardcoded,
-                PayloadSource = SettingsValueSource.Hardcoded
+                if (string.Equals(commandName, "fu", StringComparison.OrdinalIgnoreCase))
+                {
+                    return new EffectiveChatCommandSettings
+                    {
+                        CommandName = commandName,
+                        Enabled = true,
+                        FreshnessSeconds = 5,
+                        Settings = JsonSerializer.SerializeToElement(new
+                        {
+                            messages = new object[]
+                            {
+                                new { message = "fu-{name}", enabled = true }
+                            }
+                        }),
+                        EnabledSource = SettingsValueSource.ServerCommand,
+                        FreshnessSource = SettingsValueSource.ServerCommand,
+                        AuthorizationSource = SettingsValueSource.ServerCommand,
+                        PayloadSource = SettingsValueSource.ServerCommand
+                    };
+                }
+
+                return new EffectiveChatCommandSettings
+                {
+                    CommandName = commandName,
+                    Enabled = true,
+                    FreshnessSeconds = 5,
+                    EnabledSource = SettingsValueSource.Hardcoded,
+                    FreshnessSource = SettingsValueSource.Hardcoded,
+                    AuthorizationSource = SettingsValueSource.Hardcoded,
+                    PayloadSource = SettingsValueSource.Hardcoded
+                };
             });
 
-        var sut = CreateSut(provider.Object, settingsProvider.Object);
+        var sut = CreateSut(settingsProvider.Object);
 
         var result = await sut.GetAvailableCommandsAsync(CreateContext());
 
@@ -52,8 +75,6 @@ public class ChatCommandCatalogTests
     [Fact]
     public async Task GetAvailableCommandsAsync_WhenFuDisabled_ExcludesFu()
     {
-        var provider = new Mock<IFuMessageSettingsProvider>();
-        provider.Setup(x => x.IsEnabledAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>())).ReturnsAsync(false);
         var settingsProvider = new Mock<IChatCommandSettingsProvider>();
         settingsProvider
             .Setup(x => x.GetEffectiveSettingsAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
@@ -68,7 +89,20 @@ public class ChatCommandCatalogTests
                 PayloadSource = SettingsValueSource.Hardcoded
             });
 
-        var sut = CreateSut(provider.Object, settingsProvider.Object);
+        settingsProvider
+            .Setup(x => x.GetEffectiveSettingsAsync(It.IsAny<Guid>(), "fu", It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new EffectiveChatCommandSettings
+            {
+                CommandName = "fu",
+                Enabled = false,
+                FreshnessSeconds = 5,
+                EnabledSource = SettingsValueSource.ServerCommand,
+                FreshnessSource = SettingsValueSource.ServerCommand,
+                AuthorizationSource = SettingsValueSource.ServerCommand,
+                PayloadSource = SettingsValueSource.ServerCommand
+            });
+
+        var sut = CreateSut(settingsProvider.Object);
 
         var result = await sut.GetAvailableCommandsAsync(CreateContext());
 
@@ -78,8 +112,6 @@ public class ChatCommandCatalogTests
     [Fact]
     public async Task GetAvailableCommandsAsync_WhenUnknownFeatureFlag_HidesCommand()
     {
-        var provider = new Mock<IFuMessageSettingsProvider>();
-        provider.Setup(x => x.IsEnabledAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>())).ReturnsAsync(true);
         var settingsProvider = new Mock<IChatCommandSettingsProvider>();
         settingsProvider
             .Setup(x => x.GetEffectiveSettingsAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
@@ -95,7 +127,6 @@ public class ChatCommandCatalogTests
             });
 
         var services = new ServiceCollection();
-        services.AddSingleton(provider.Object);
         services.AddTransient<IChatCommand>(_ => new TestChatCommand("commands", "!commands", "!commands"));
         services.AddTransient<IChatCommand>(_ => new TestChatCommand("beta", "!beta", "!beta", "unknown-flag"));
 
@@ -105,7 +136,7 @@ public class ChatCommandCatalogTests
             .ReturnsAsync(CommandAuthorizationResult.Allow());
 
         var logger = new Mock<ILogger<ChatCommandCatalog>>();
-        var sut = new ChatCommandCatalog(services.BuildServiceProvider(), provider.Object, settingsProvider.Object, authorizationService.Object, logger.Object);
+        var sut = new ChatCommandCatalog(services.BuildServiceProvider(), settingsProvider.Object, authorizationService.Object, logger.Object);
 
         var result = await sut.GetAvailableCommandsAsync(CreateContext());
 
@@ -116,8 +147,6 @@ public class ChatCommandCatalogTests
     [Fact]
     public async Task GetAvailableCommandsAsync_WhenUnauthorized_HidesCommand()
     {
-        var provider = new Mock<IFuMessageSettingsProvider>();
-        provider.Setup(x => x.IsEnabledAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>())).ReturnsAsync(true);
         var settingsProvider = new Mock<IChatCommandSettingsProvider>();
         settingsProvider
             .Setup(x => x.GetEffectiveSettingsAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
@@ -133,7 +162,6 @@ public class ChatCommandCatalogTests
             });
 
         var services = new ServiceCollection();
-        services.AddSingleton(provider.Object);
         services.AddTransient<IChatCommand>(_ => new TestChatCommand("commands", "!commands", "!commands"));
         services.AddTransient<IChatCommand>(_ => new TestChatCommand("admin", "!admin", "!admin", requiredPolicy: "admin"));
 
@@ -146,7 +174,7 @@ public class ChatCommandCatalogTests
             .ReturnsAsync(CommandAuthorizationResult.Deny("denied"));
 
         var logger = new Mock<ILogger<ChatCommandCatalog>>();
-        var sut = new ChatCommandCatalog(services.BuildServiceProvider(), provider.Object, settingsProvider.Object, authorizationService.Object, logger.Object);
+        var sut = new ChatCommandCatalog(services.BuildServiceProvider(), settingsProvider.Object, authorizationService.Object, logger.Object);
 
         var result = await sut.GetAvailableCommandsAsync(CreateContext());
 
@@ -157,9 +185,6 @@ public class ChatCommandCatalogTests
     [Fact]
     public async Task GetAvailableCommandsAsync_WhenCommandDisabledInSettings_HidesCommand()
     {
-        var provider = new Mock<IFuMessageSettingsProvider>();
-        provider.Setup(x => x.IsEnabledAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>())).ReturnsAsync(true);
-
         var settingsProvider = new Mock<IChatCommandSettingsProvider>();
         settingsProvider
             .Setup(x => x.GetEffectiveSettingsAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
@@ -174,7 +199,7 @@ public class ChatCommandCatalogTests
                 PayloadSource = SettingsValueSource.Hardcoded
             });
 
-        var sut = CreateSut(provider.Object, settingsProvider.Object);
+        var sut = CreateSut(settingsProvider.Object);
 
         var result = await sut.GetAvailableCommandsAsync(CreateContext());
 
@@ -182,11 +207,57 @@ public class ChatCommandCatalogTests
     }
 
     [Fact]
+    public async Task GetAvailableCommandsAsync_WhenFuHasNoUsableMessages_HidesFu()
+    {
+        var settingsProvider = new Mock<IChatCommandSettingsProvider>();
+        settingsProvider
+            .Setup(x => x.GetEffectiveSettingsAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Guid _, string commandName, bool _, CancellationToken _) =>
+            {
+                if (string.Equals(commandName, "fu", StringComparison.OrdinalIgnoreCase))
+                {
+                    return new EffectiveChatCommandSettings
+                    {
+                        CommandName = commandName,
+                        Enabled = true,
+                        FreshnessSeconds = 5,
+                        Settings = JsonSerializer.SerializeToElement(new
+                        {
+                            messages = new object[]
+                            {
+                                new { message = "", enabled = true },
+                                new { message = "disabled", enabled = false }
+                            }
+                        }),
+                        EnabledSource = SettingsValueSource.ServerCommand,
+                        FreshnessSource = SettingsValueSource.ServerCommand,
+                        AuthorizationSource = SettingsValueSource.ServerCommand,
+                        PayloadSource = SettingsValueSource.ServerCommand
+                    };
+                }
+
+                return new EffectiveChatCommandSettings
+                {
+                    CommandName = commandName,
+                    Enabled = true,
+                    FreshnessSeconds = 5,
+                    EnabledSource = SettingsValueSource.Hardcoded,
+                    FreshnessSource = SettingsValueSource.Hardcoded,
+                    AuthorizationSource = SettingsValueSource.Hardcoded,
+                    PayloadSource = SettingsValueSource.Hardcoded
+                };
+            });
+
+        var sut = CreateSut(settingsProvider.Object);
+
+        var result = await sut.GetAvailableCommandsAsync(CreateContext());
+
+        Assert.DoesNotContain(result, x => x.Prefix == "!fu");
+    }
+
+    [Fact]
     public async Task GetAvailableCommandsAsync_PassesSettingsRequirementsToAuthorizationContext()
     {
-        var provider = new Mock<IFuMessageSettingsProvider>();
-        provider.Setup(x => x.IsEnabledAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>())).ReturnsAsync(true);
-
         var settingsProvider = new Mock<IChatCommandSettingsProvider>();
         settingsProvider
             .Setup(x => x.GetEffectiveSettingsAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
@@ -204,7 +275,6 @@ public class ChatCommandCatalogTests
             });
 
         var services = new ServiceCollection();
-        services.AddSingleton(provider.Object);
         services.AddTransient<IChatCommand>(_ => new TestChatCommand("register", "!register", "!register CODE", requiredPolicy: "register-policy"));
 
         var authorizationService = new Mock<ICommandAuthorizationService>();
@@ -213,7 +283,7 @@ public class ChatCommandCatalogTests
             .ReturnsAsync(CommandAuthorizationResult.Allow());
 
         var logger = new Mock<ILogger<ChatCommandCatalog>>();
-        var sut = new ChatCommandCatalog(services.BuildServiceProvider(), provider.Object, settingsProvider.Object, authorizationService.Object, logger.Object);
+        var sut = new ChatCommandCatalog(services.BuildServiceProvider(), settingsProvider.Object, authorizationService.Object, logger.Object);
 
         await sut.GetAvailableCommandsAsync(CreateContext());
 
@@ -226,15 +296,14 @@ public class ChatCommandCatalogTests
             It.IsAny<CancellationToken>()), Times.Once);
     }
 
-    private static ChatCommandCatalog CreateSut(IFuMessageSettingsProvider provider, IChatCommandSettingsProvider settingsProvider)
+    private static ChatCommandCatalog CreateSut(IChatCommandSettingsProvider settingsProvider)
     {
         var services = new ServiceCollection();
-        services.AddSingleton(provider);
         services.AddTransient<IChatCommand>(_ => new TestChatCommand("commands", "!commands", "!commands"));
         services.AddTransient<IChatCommand>(_ => new TestChatCommand("register", "!register", "!register CODE"));
         services.AddTransient<IChatCommand>(_ => new TestChatCommand("like", "!like", "!like"));
         services.AddTransient<IChatCommand>(_ => new TestChatCommand("dislike", "!dislike", "!dislike"));
-        services.AddTransient<IChatCommand>(_ => new TestChatCommand("fu", "!fu", "!fu <player name>", "fu"));
+        services.AddTransient<IChatCommand>(_ => new TestChatCommand("fu", "!fu", "!fu <player name>"));
 
         var authorizationService = new Mock<ICommandAuthorizationService>();
         authorizationService
@@ -242,7 +311,7 @@ public class ChatCommandCatalogTests
             .ReturnsAsync(CommandAuthorizationResult.Allow());
 
         var logger = new Mock<ILogger<ChatCommandCatalog>>();
-        return new ChatCommandCatalog(services.BuildServiceProvider(), provider, settingsProvider, authorizationService.Object, logger.Object);
+        return new ChatCommandCatalog(services.BuildServiceProvider(), settingsProvider, authorizationService.Object, logger.Object);
     }
 
     private sealed class TestChatCommand(string name, string prefix, string usage, string? featureFlag = null, string? requiredPolicy = null) : IChatCommand

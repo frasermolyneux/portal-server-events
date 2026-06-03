@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text.Json;
 
 using Microsoft.Extensions.Logging;
 
@@ -20,7 +21,7 @@ public class FuCommandTests
 {
     private static readonly Guid TestServerId = Guid.Parse("11111111-1111-1111-1111-111111111111");
 
-    private readonly Mock<IFuMessageSettingsProvider> _fuMessageSettingsProvider = new();
+    private readonly Mock<IChatCommandSettingsProvider> _settingsProvider = new();
     private readonly FuMessageTemplateRenderer _templateRenderer = new();
     private readonly Mock<IServersApiClient> _serversClient = new();
     private readonly Mock<IVersionedRconApi> _versionedRcon = new();
@@ -60,13 +61,9 @@ public class FuCommandTests
                 CreateConfigurationDto("agent", "{\"agentName\":\"^2[ServerBot]^7\"}")
             ])));
 
-        _fuMessageSettingsProvider
-            .Setup(x => x.IsEnabledAsync(TestServerId, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(true);
-
-        _fuMessageSettingsProvider
-            .Setup(x => x.GetEffectiveMessagesAsync(TestServerId, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(["^1FU^7 {name}"]);
+        _settingsProvider
+            .Setup(x => x.GetEffectiveSettingsAsync(TestServerId, "fu", false, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(CreateEnabledFuSettings(["^1FU^7 {name}"]));
 
         _rconResponseService
             .Setup(x => x.TryTellAsync(
@@ -88,7 +85,7 @@ public class FuCommandTests
             .ReturnsAsync(true);
 
         _sut = new FuCommand(
-            _fuMessageSettingsProvider.Object,
+            _settingsProvider.Object,
             _templateRenderer,
             _serversClient.Object,
             _repositoryClient.Object,
@@ -118,28 +115,74 @@ public class FuCommandTests
     }
 
     [Fact]
-    public async Task ExecuteAsync_WhenDisabled_ReturnsNotEnabledAndSendsPrivateTell()
+    public async Task ExecuteAsync_WhenSettingsHaveNoUsableMessages_ReturnsNotHandled()
     {
-        _fuMessageSettingsProvider
-            .Setup(x => x.IsEnabledAsync(TestServerId, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(false);
+        _settingsProvider
+            .Setup(x => x.GetEffectiveSettingsAsync(TestServerId, "fu", false, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new EffectiveChatCommandSettings
+            {
+                CommandName = "fu",
+                Enabled = true,
+                FreshnessSeconds = 5,
+                Settings = JsonSerializer.SerializeToElement(new { messages = Array.Empty<object>() }),
+                EnabledSource = SettingsValueSource.ServerCommand,
+                FreshnessSource = SettingsValueSource.ServerCommand,
+                AuthorizationSource = SettingsValueSource.ServerCommand,
+                PayloadSource = SettingsValueSource.ServerCommand
+            });
 
         var result = await _sut.ExecuteAsync(CreateContext("!fu target"));
 
-        Assert.True(result.Handled);
-        Assert.False(result.Success);
-        Assert.Equal("The !fu command is not enabled on this server.", result.ResponseMessage);
-
-        _rconResponseService.Verify(x => x.TryTellAsync(
-            TestServerId,
-            "abc123",
-            3,
-            "The !fu command is not enabled on this server.",
-            "Issuer",
-            It.IsAny<DateTime>(),
-            It.IsAny<CancellationToken>()), Times.Once);
+        Assert.False(result.Handled);
 
         _rconResponseService.Verify(x => x.TrySayAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()), Times.Never);
+        _rconResponseService.Verify(x => x.TryTellAsync(
+            It.IsAny<Guid>(),
+            It.IsAny<string>(),
+            It.IsAny<int>(),
+            It.IsAny<string>(),
+            It.IsAny<string?>(),
+            It.IsAny<DateTime>(),
+            It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WhenMessagesInvalidOrDisabled_ReturnsNotHandled()
+    {
+        _settingsProvider
+            .Setup(x => x.GetEffectiveSettingsAsync(TestServerId, "fu", false, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new EffectiveChatCommandSettings
+            {
+                CommandName = "fu",
+                Enabled = true,
+                FreshnessSeconds = 5,
+                Settings = JsonSerializer.SerializeToElement(new
+                {
+                    messages = new object[]
+                    {
+                        new { message = "", enabled = true },
+                        new { message = "valid-but-disabled", enabled = false },
+                        new { message = "invalid-enabled", enabled = "nope" }
+                    }
+                }),
+                EnabledSource = SettingsValueSource.ServerCommand,
+                FreshnessSource = SettingsValueSource.ServerCommand,
+                AuthorizationSource = SettingsValueSource.ServerCommand,
+                PayloadSource = SettingsValueSource.ServerCommand
+            });
+
+        var result = await _sut.ExecuteAsync(CreateContext("!fu target"));
+
+        Assert.False(result.Handled);
+        _rconResponseService.Verify(x => x.TrySayAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()), Times.Never);
+        _rconResponseService.Verify(x => x.TryTellAsync(
+            It.IsAny<Guid>(),
+            It.IsAny<string>(),
+            It.IsAny<int>(),
+            It.IsAny<string>(),
+            It.IsAny<string?>(),
+            It.IsAny<DateTime>(),
+            It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -184,9 +227,9 @@ public class FuCommandTests
     [Fact]
     public async Task ExecuteAsync_WhenTemplateHasNoToken_LeavesTemplateUnchanged()
     {
-        _fuMessageSettingsProvider
-            .Setup(x => x.GetEffectiveMessagesAsync(TestServerId, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(["owned"]);
+        _settingsProvider
+            .Setup(x => x.GetEffectiveSettingsAsync(TestServerId, "fu", false, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(CreateEnabledFuSettings(["owned"]));
 
         _rconApi
             .Setup(x => x.ResolvePlayer(TestServerId, It.IsAny<ResolvePlayerRequestDto>(), It.IsAny<CancellationToken>()))
@@ -321,4 +364,24 @@ public class FuCommandTests
 
     private static void SetConfigProperty(ConfigurationDto dto, string propertyName, object? value) =>
         typeof(ConfigurationDto).GetProperty(propertyName)!.SetValue(dto, value);
+
+    private static EffectiveChatCommandSettings CreateEnabledFuSettings(IReadOnlyList<string> messages)
+    {
+        var payload = JsonSerializer.SerializeToElement(new
+        {
+            messages = messages.Select(m => new { message = m, enabled = true }).ToArray()
+        });
+
+        return new EffectiveChatCommandSettings
+        {
+            CommandName = "fu",
+            Enabled = true,
+            FreshnessSeconds = 5,
+            Settings = payload,
+            EnabledSource = SettingsValueSource.ServerCommand,
+            FreshnessSource = SettingsValueSource.ServerCommand,
+            AuthorizationSource = SettingsValueSource.ServerCommand,
+            PayloadSource = SettingsValueSource.ServerCommand
+        };
+    }
 }

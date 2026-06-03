@@ -12,12 +12,13 @@ namespace XtremeIdiots.Portal.Server.Events.Processor.App.Commands;
 public sealed class FuCommand : IChatCommand
 {
     public const string CommandPrefix = "!fu";
+    private const string CommandName = "fu";
 
     private const string AgentNamespace = "agent";
     private const string AgentNameKey = "agentName";
     private const string DefaultAgentNamePrefix = "^4[^1>XI< BOT^4]^7";
 
-    private readonly IFuMessageSettingsProvider _fuMessageSettingsProvider;
+    private readonly IChatCommandSettingsProvider _settingsProvider;
     private readonly FuMessageTemplateRenderer _messageTemplateRenderer;
     private readonly IServersApiClient _serversClient;
     private readonly IRepositoryApiClient _repositoryClient;
@@ -25,14 +26,14 @@ public sealed class FuCommand : IChatCommand
     private readonly ILogger<FuCommand> _logger;
 
     public FuCommand(
-        IFuMessageSettingsProvider fuMessageSettingsProvider,
+        IChatCommandSettingsProvider settingsProvider,
         FuMessageTemplateRenderer messageTemplateRenderer,
         IServersApiClient serversClient,
         IRepositoryApiClient repositoryClient,
         IRconResponseService rconResponseService,
         ILogger<FuCommand> logger)
     {
-        _fuMessageSettingsProvider = fuMessageSettingsProvider;
+        _settingsProvider = settingsProvider;
         _messageTemplateRenderer = messageTemplateRenderer;
         _serversClient = serversClient;
         _repositoryClient = repositoryClient;
@@ -43,11 +44,10 @@ public sealed class FuCommand : IChatCommand
     public string Prefix => CommandPrefix;
     public ChatCommandMetadata Metadata => new()
     {
-        Name = "fu",
+        Name = CommandName,
         Prefix = Prefix,
         Usage = "!fu <player name>",
-        Description = "Sends a playful server-wide message to a resolved player target.",
-        FeatureFlag = "fu"
+        Description = "Sends a playful server-wide message to a resolved player target."
     };
 
     public async Task<CommandResult> ExecuteAsync(CommandContext context, CancellationToken ct = default)
@@ -77,9 +77,14 @@ public sealed class FuCommand : IChatCommand
             playerQuery = string.Join(' ', messageParts.Skip(1));
         }
 
-        if (!await _fuMessageSettingsProvider.IsEnabledAsync(context.ServerId, ct).ConfigureAwait(false))
+        var commandSettings = await _settingsProvider
+            .GetEffectiveSettingsAsync(context.ServerId, CommandName, isMutating: false, ct)
+            .ConfigureAwait(false);
+
+        var effectiveMessages = ResolveMessagesFromSettings(commandSettings.Settings);
+        if (effectiveMessages.Count == 0)
         {
-            return await FailAsync(context, "The !fu command is not enabled on this server.", ct).ConfigureAwait(false);
+            return CommandResult.NotHandled;
         }
 
         MX.Api.Abstractions.ApiResult<ResolvePlayerResponseDto> resolveResult;
@@ -119,12 +124,6 @@ public sealed class FuCommand : IChatCommand
         if (string.IsNullOrWhiteSpace(resolvedName))
         {
             return await FailAsync(context, "Unable to resolve player right now. Please try again.", ct).ConfigureAwait(false);
-        }
-
-        var effectiveMessages = await _fuMessageSettingsProvider.GetEffectiveMessagesAsync(context.ServerId, ct).ConfigureAwait(false);
-        if (effectiveMessages.Count == 0)
-        {
-            return await FailAsync(context, "The !fu command is not enabled on this server.", ct).ConfigureAwait(false);
         }
 
         var template = effectiveMessages[Random.Shared.Next(effectiveMessages.Count)];
@@ -266,5 +265,62 @@ public sealed class FuCommand : IChatCommand
         return string.IsNullOrWhiteSpace(trimmedPrefix)
             ? message
             : $"{trimmedPrefix} {message}";
+    }
+
+    internal static IReadOnlyList<string> ResolveMessagesFromSettings(JsonElement? settings)
+    {
+        if (!settings.HasValue || settings.Value.ValueKind != JsonValueKind.Object)
+        {
+            return [];
+        }
+
+        if (!settings.Value.TryGetProperty("messages", out var messagesElement) || messagesElement.ValueKind != JsonValueKind.Array)
+        {
+            return [];
+        }
+
+        var messages = new List<string>();
+        foreach (var item in messagesElement.EnumerateArray())
+        {
+            if (item.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
+            if (!item.TryGetProperty("message", out var messageElement) || messageElement.ValueKind != JsonValueKind.String)
+            {
+                continue;
+            }
+
+            var isEnabled = true;
+            if (item.TryGetProperty("enabled", out var enabledElement))
+            {
+                if (enabledElement.ValueKind == JsonValueKind.True)
+                {
+                    isEnabled = true;
+                }
+                else if (enabledElement.ValueKind == JsonValueKind.False)
+                {
+                    isEnabled = false;
+                }
+                else
+                {
+                    continue;
+                }
+            }
+
+            if (!isEnabled)
+            {
+                continue;
+            }
+
+            var template = messageElement.GetString();
+            if (!string.IsNullOrWhiteSpace(template))
+            {
+                messages.Add(template);
+            }
+        }
+
+        return messages;
     }
 }

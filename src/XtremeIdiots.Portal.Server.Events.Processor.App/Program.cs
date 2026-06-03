@@ -128,7 +128,6 @@ var host = new HostBuilder()
         services.AddSingleton<ChatCommandSettingsValidator>();
         services.AddSingleton<ChatCommandSettingsMerger>();
         services.AddSingleton<IChatCommandSettingsProvider, ChatCommandSettingsProvider>();
-        services.AddSingleton<IFuMessageSettingsProvider, FuMessageSettingsProvider>();
         services.AddSingleton<FuMessageTemplateRenderer>();
         services.AddSingleton<IRegisterCommandRateLimiter, RegisterCommandRateLimiter>();
         services.AddSingleton<IChatCommandCatalog, ChatCommandCatalog>();
