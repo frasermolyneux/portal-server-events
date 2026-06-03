@@ -18,6 +18,14 @@ public sealed class MapVoteLikeCommand : MapVoteCommandBase
         : base(repositoryClient, serversClient, rconService, auditLogger, logger) { }
 
     public override string Prefix => "!like";
+    public ChatCommandMetadata Metadata => new()
+    {
+        Name = "like",
+        Prefix = Prefix,
+        Usage = "!like",
+        Description = "Records a positive vote for the current map."
+    };
+
     protected override bool IsLike => true;
     protected override string FormatRconMessage(string username) =>
         $"^2{username} ^7voted to ^2LIKE ^7the current map";

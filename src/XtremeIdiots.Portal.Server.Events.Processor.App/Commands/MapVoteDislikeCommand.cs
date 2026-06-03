@@ -18,6 +18,14 @@ public sealed class MapVoteDislikeCommand : MapVoteCommandBase
         : base(repositoryClient, serversClient, rconService, auditLogger, logger) { }
 
     public override string Prefix => "!dislike";
+    public ChatCommandMetadata Metadata => new()
+    {
+        Name = "dislike",
+        Prefix = Prefix,
+        Usage = "!dislike",
+        Description = "Records a negative vote for the current map."
+    };
+
     protected override bool IsLike => false;
     protected override string FormatRconMessage(string username) =>
         $"^1{username} ^7voted to ^1DISLIKE ^7the current map";

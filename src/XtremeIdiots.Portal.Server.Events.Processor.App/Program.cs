@@ -117,6 +117,7 @@ var host = new HostBuilder()
 
         // Command framework
         services.AddTransient<IChatCommandProcessor, ChatCommandProcessor>();
+        services.AddSingleton<ICommandParser, ChatCommandParser>();
         services.AddTransient<IRconResponseService, RconResponseService>();
         services.AddSingleton<IFuMessageSettingsProvider, FuMessageSettingsProvider>();
         services.AddSingleton<FuMessageTemplateRenderer>();

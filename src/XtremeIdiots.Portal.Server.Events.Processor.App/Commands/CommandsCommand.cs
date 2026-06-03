@@ -19,6 +19,13 @@ public sealed class CommandsCommand : IChatCommand
     }
 
     public string Prefix => "!commands";
+    public ChatCommandMetadata Metadata => new()
+    {
+        Name = "commands",
+        Prefix = Prefix,
+        Usage = "!commands",
+        Description = "Lists available chat commands."
+    };
 
     public bool CanHandle(string message)
     {
@@ -33,12 +40,24 @@ public sealed class CommandsCommand : IChatCommand
 
     public async Task<CommandResult> ExecuteAsync(CommandContext context, CancellationToken ct = default)
     {
-        var parts = context.Message
-            .Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-
-        if (parts.Length != 1 || !parts[0].Equals(Prefix, StringComparison.OrdinalIgnoreCase))
+        var parsed = context.ParsedCommand;
+        if (parsed is not null)
         {
-            return await FailAsync(context, "Usage: !commands", ct).ConfigureAwait(false);
+            if (!parsed.PrefixToken.Equals(Prefix, StringComparison.OrdinalIgnoreCase) ||
+                parsed.Arguments.Count != 0)
+            {
+                return await FailAsync(context, "Usage: !commands", ct).ConfigureAwait(false);
+            }
+        }
+        else
+        {
+            var parts = context.Message
+                .Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+            if (parts.Length != 1 || !parts[0].Equals(Prefix, StringComparison.OrdinalIgnoreCase))
+            {
+                return await FailAsync(context, "Usage: !commands", ct).ConfigureAwait(false);
+            }
         }
 
         var commands = (await _catalog.GetAvailableCommandsAsync(context, ct).ConfigureAwait(false))

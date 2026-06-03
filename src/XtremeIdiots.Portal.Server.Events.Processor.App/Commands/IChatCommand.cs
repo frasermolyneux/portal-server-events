@@ -13,6 +13,17 @@ public interface IChatCommand
     string Prefix { get; }
 
     /// <summary>
+    /// Metadata used for command discovery/help output.
+    /// </summary>
+    ChatCommandMetadata Metadata => new()
+    {
+        Name = Prefix.TrimStart('!'),
+        Prefix = Prefix,
+        Usage = Prefix,
+        Description = string.Empty
+    };
+
+    /// <summary>
     /// Whether this command should be executed for the given message.
     /// Default implementation checks if message starts with Prefix.
     /// Override for more complex matching (e.g. "!ban PlayerName").

@@ -9,6 +9,7 @@ namespace XtremeIdiots.Portal.Server.Events.Processor.App.Tests.Commands;
 public class ChatCommandProcessorTests
 {
     private readonly Mock<ILogger<ChatCommandProcessor>> _logger = new();
+    private readonly ICommandParser _parser = new ChatCommandParser();
 
     private static CommandContext CreateContext(string message = "!test") => new()
     {
@@ -29,7 +30,7 @@ public class ChatCommandProcessorTests
     [InlineData("")]
     public async Task ProcessAsync_MessageWithNoPrefix_ReturnsNotHandled(string message)
     {
-        var sut = new ChatCommandProcessor([], _logger.Object);
+        var sut = new ChatCommandProcessor([], _parser, _logger.Object);
 
         var result = await sut.ProcessAsync(CreateContext(message));
 
@@ -41,9 +42,14 @@ public class ChatCommandProcessorTests
     {
         var command = new Mock<IChatCommand>();
         command.Setup(c => c.Prefix).Returns("!other");
-        command.Setup(c => c.CanHandle("!unknown")).Returns(false);
+        command.Setup(c => c.Metadata).Returns(new ChatCommandMetadata
+        {
+            Name = "other",
+            Prefix = "!other",
+            Usage = "!other"
+        });
 
-        var sut = new ChatCommandProcessor([command.Object], _logger.Object);
+        var sut = new ChatCommandProcessor([command.Object], _parser, _logger.Object);
 
         var result = await sut.ProcessAsync(CreateContext("!unknown"));
 
@@ -54,18 +60,28 @@ public class ChatCommandProcessorTests
     public async Task ProcessAsync_MatchingCommand_ExecutesAndReturnsResult()
     {
         var command = new Mock<IChatCommand>();
+        CommandContext? capturedContext = null;
+
         command.Setup(c => c.Prefix).Returns("!test");
-        command.Setup(c => c.CanHandle("!test")).Returns(true);
+        command.Setup(c => c.Metadata).Returns(new ChatCommandMetadata
+        {
+            Name = "test",
+            Prefix = "!test",
+            Usage = "!test"
+        });
         command.Setup(c => c.ExecuteAsync(It.IsAny<CommandContext>(), It.IsAny<CancellationToken>()))
+            .Callback<CommandContext, CancellationToken>((ctx, _) => capturedContext = ctx)
             .ReturnsAsync(CommandResult.Ok("done"));
 
-        var sut = new ChatCommandProcessor([command.Object], _logger.Object);
+        var sut = new ChatCommandProcessor([command.Object], _parser, _logger.Object);
 
         var result = await sut.ProcessAsync(CreateContext("!test"));
 
         Assert.True(result.Handled);
         Assert.True(result.Success);
         Assert.Equal("done", result.ResponseMessage);
+        Assert.NotNull(capturedContext?.ParsedCommand);
+        Assert.Equal("!test", capturedContext?.ParsedCommand?.PrefixToken);
     }
 
     [Fact]
@@ -73,11 +89,16 @@ public class ChatCommandProcessorTests
     {
         var command = new Mock<IChatCommand>();
         command.Setup(c => c.Prefix).Returns("!boom");
-        command.Setup(c => c.CanHandle("!boom")).Returns(true);
+        command.Setup(c => c.Metadata).Returns(new ChatCommandMetadata
+        {
+            Name = "boom",
+            Prefix = "!boom",
+            Usage = "!boom"
+        });
         command.Setup(c => c.ExecuteAsync(It.IsAny<CommandContext>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new InvalidOperationException("kaboom"));
 
-        var sut = new ChatCommandProcessor([command.Object], _logger.Object);
+        var sut = new ChatCommandProcessor([command.Object], _parser, _logger.Object);
 
         var result = await sut.ProcessAsync(CreateContext("!boom"));
 
@@ -87,25 +108,52 @@ public class ChatCommandProcessorTests
     }
 
     [Fact]
-    public async Task ProcessAsync_MultipleCommands_FirstMatchWins()
+    public async Task ProcessAsync_MultipleCommands_FirstRegistrationWins()
     {
         var first = new Mock<IChatCommand>();
         first.Setup(c => c.Prefix).Returns("!test");
-        first.Setup(c => c.CanHandle("!test")).Returns(true);
+        first.Setup(c => c.Metadata).Returns(new ChatCommandMetadata
+        {
+            Name = "test",
+            Prefix = "!test",
+            Usage = "!test"
+        });
         first.Setup(c => c.ExecuteAsync(It.IsAny<CommandContext>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(CommandResult.Ok("first"));
 
         var second = new Mock<IChatCommand>();
         second.Setup(c => c.Prefix).Returns("!test");
-        second.Setup(c => c.CanHandle("!test")).Returns(true);
+        second.Setup(c => c.Metadata).Returns(new ChatCommandMetadata
+        {
+            Name = "test-duplicate",
+            Prefix = "!test",
+            Usage = "!test"
+        });
         second.Setup(c => c.ExecuteAsync(It.IsAny<CommandContext>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(CommandResult.Ok("second"));
 
-        var sut = new ChatCommandProcessor([first.Object, second.Object], _logger.Object);
+        var sut = new ChatCommandProcessor([first.Object, second.Object], _parser, _logger.Object);
 
         var result = await sut.ProcessAsync(CreateContext("!test"));
 
         Assert.Equal("first", result.ResponseMessage);
         second.Verify(c => c.ExecuteAsync(It.IsAny<CommandContext>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public void Ctor_WhenMetadataPrefixDiffersFromCommandPrefix_Throws()
+    {
+        var command = new Mock<IChatCommand>();
+        command.Setup(c => c.Prefix).Returns("!test");
+        command.Setup(c => c.Metadata).Returns(new ChatCommandMetadata
+        {
+            Name = "test",
+            Prefix = "!different",
+            Usage = "!test"
+        });
+
+        var action = () => new ChatCommandProcessor([command.Object], _parser, _logger.Object);
+
+        Assert.Throws<InvalidOperationException>(action);
     }
 }

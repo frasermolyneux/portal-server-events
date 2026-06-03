@@ -19,4 +19,10 @@ public sealed record CommandContext
     /// May be null if player lookup failed.
     /// </summary>
     public Guid? PlayerId { get; init; }
+
+    /// <summary>
+    /// Parsed command envelope produced by the centralized parser.
+    /// Null when the message is not a command.
+    /// </summary>
+    public ChatCommandEnvelope? ParsedCommand { get; init; }
 }

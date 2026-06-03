@@ -11,6 +11,8 @@ namespace XtremeIdiots.Portal.Server.Events.Processor.App.Commands;
 
 public sealed class FuCommand : IChatCommand
 {
+    public const string CommandPrefix = "!fu";
+
     private const string AgentNamespace = "agent";
     private const string AgentNameKey = "agentName";
     private const string DefaultAgentNamePrefix = "^4[^1>XI< BOT^4]^7";
@@ -38,7 +40,15 @@ public sealed class FuCommand : IChatCommand
         _logger = logger;
     }
 
-    public string Prefix => "!fu";
+    public string Prefix => CommandPrefix;
+    public ChatCommandMetadata Metadata => new()
+    {
+        Name = "fu",
+        Prefix = Prefix,
+        Usage = "!fu <player name>",
+        Description = "Sends a playful server-wide message to a resolved player target.",
+        FeatureFlag = "fu"
+    };
 
     public bool CanHandle(string message)
     {
@@ -54,12 +64,29 @@ public sealed class FuCommand : IChatCommand
 
     public async Task<CommandResult> ExecuteAsync(CommandContext context, CancellationToken ct = default)
     {
-        var messageParts = context.Message
-            .Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-
-        if (messageParts.Length < 2 || !messageParts[0].Equals(Prefix, StringComparison.OrdinalIgnoreCase))
+        string playerQuery;
+        var parsed = context.ParsedCommand;
+        if (parsed is not null)
         {
-            return await FailAsync(context, "Usage: !fu <player name>", ct).ConfigureAwait(false);
+            if (!parsed.PrefixToken.Equals(Prefix, StringComparison.OrdinalIgnoreCase) ||
+                parsed.Arguments.Count < 1)
+            {
+                return await FailAsync(context, "Usage: !fu <player name>", ct).ConfigureAwait(false);
+            }
+
+            playerQuery = string.Join(' ', parsed.Arguments);
+        }
+        else
+        {
+            var messageParts = context.Message
+                .Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+            if (messageParts.Length < 2 || !messageParts[0].Equals(Prefix, StringComparison.OrdinalIgnoreCase))
+            {
+                return await FailAsync(context, "Usage: !fu <player name>", ct).ConfigureAwait(false);
+            }
+
+            playerQuery = string.Join(' ', messageParts.Skip(1));
         }
 
         if (!await _fuMessageSettingsProvider.IsEnabledAsync(context.ServerId, ct).ConfigureAwait(false))
@@ -67,7 +94,6 @@ public sealed class FuCommand : IChatCommand
             return await FailAsync(context, "The !fu command is not enabled on this server.", ct).ConfigureAwait(false);
         }
 
-        var playerQuery = string.Join(' ', messageParts.Skip(1));
         MX.Api.Abstractions.ApiResult<ResolvePlayerResponseDto> resolveResult;
         try
         {

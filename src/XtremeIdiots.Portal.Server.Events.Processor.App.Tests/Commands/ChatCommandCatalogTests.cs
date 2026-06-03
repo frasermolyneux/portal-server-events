@@ -1,3 +1,5 @@
+using Microsoft.Extensions.DependencyInjection;
+
 using Moq;
 
 using XtremeIdiots.Portal.Server.Events.Processor.App.Commands;
@@ -25,7 +27,7 @@ public class ChatCommandCatalogTests
         var provider = new Mock<IFuMessageSettingsProvider>();
         provider.Setup(x => x.IsEnabledAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>())).ReturnsAsync(true);
 
-        var sut = new ChatCommandCatalog(provider.Object);
+        var sut = CreateSut(provider.Object);
 
         var result = await sut.GetAvailableCommandsAsync(CreateContext());
 
@@ -38,10 +40,39 @@ public class ChatCommandCatalogTests
         var provider = new Mock<IFuMessageSettingsProvider>();
         provider.Setup(x => x.IsEnabledAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>())).ReturnsAsync(false);
 
-        var sut = new ChatCommandCatalog(provider.Object);
+        var sut = CreateSut(provider.Object);
 
         var result = await sut.GetAvailableCommandsAsync(CreateContext());
 
         Assert.DoesNotContain(result, x => x.Prefix == "!fu");
+    }
+
+    private static ChatCommandCatalog CreateSut(IFuMessageSettingsProvider provider)
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton(provider);
+        services.AddTransient<IChatCommand>(_ => new TestChatCommand("commands", "!commands", "!commands"));
+        services.AddTransient<IChatCommand>(_ => new TestChatCommand("register", "!register", "!register CODE"));
+        services.AddTransient<IChatCommand>(_ => new TestChatCommand("like", "!like", "!like"));
+        services.AddTransient<IChatCommand>(_ => new TestChatCommand("dislike", "!dislike", "!dislike"));
+        services.AddTransient<IChatCommand>(_ => new TestChatCommand("fu", "!fu", "!fu <player name>", "fu"));
+
+        return new ChatCommandCatalog(services.BuildServiceProvider(), provider);
+    }
+
+    private sealed class TestChatCommand(string name, string prefix, string usage, string? featureFlag = null) : IChatCommand
+    {
+        public string Prefix => prefix;
+
+        public ChatCommandMetadata Metadata => new()
+        {
+            Name = name,
+            Prefix = prefix,
+            Usage = usage,
+            FeatureFlag = featureFlag
+        };
+
+        public Task<CommandResult> ExecuteAsync(CommandContext context, CancellationToken ct = default)
+            => Task.FromResult(CommandResult.Ok());
     }
 }

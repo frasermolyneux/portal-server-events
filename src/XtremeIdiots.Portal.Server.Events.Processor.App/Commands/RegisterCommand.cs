@@ -36,6 +36,13 @@ public sealed class RegisterCommand : IChatCommand
     }
 
     public string Prefix => "!register";
+    public ChatCommandMetadata Metadata => new()
+    {
+        Name = "register",
+        Prefix = Prefix,
+        Usage = "!register CODE",
+        Description = "Links your in-game identity to a portal profile using an activation code."
+    };
 
     public bool CanHandle(string message)
     {
@@ -63,15 +70,30 @@ public sealed class RegisterCommand : IChatCommand
                 .ConfigureAwait(false);
         }
 
-        var parts = context.Message
-            .Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-
-        if (parts.Length != 2 || !parts[0].Equals(Prefix, StringComparison.OrdinalIgnoreCase))
+        string code;
+        var parsed = context.ParsedCommand;
+        if (parsed is not null)
         {
-            return await FailAsync(context, "Usage: !register CODE", ct).ConfigureAwait(false);
-        }
+            if (!parsed.PrefixToken.Equals(Prefix, StringComparison.OrdinalIgnoreCase) ||
+                parsed.Arguments.Count != 1)
+            {
+                return await FailAsync(context, "Usage: !register CODE", ct).ConfigureAwait(false);
+            }
 
-        var code = parts[1].Trim().ToUpperInvariant();
+            code = parsed.Arguments[0].Trim().ToUpperInvariant();
+        }
+        else
+        {
+            var parts = context.Message
+                .Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+            if (parts.Length != 2 || !parts[0].Equals(Prefix, StringComparison.OrdinalIgnoreCase))
+            {
+                return await FailAsync(context, "Usage: !register CODE", ct).ConfigureAwait(false);
+            }
+
+            code = parts[1].Trim().ToUpperInvariant();
+        }
         if (!ActivationCodeRegex.IsMatch(code))
         {
             return await FailAsync(context, "Activation code must be 6 characters [0-9A-Z]", ct).ConfigureAwait(false);
