@@ -66,18 +66,6 @@ public class RegisterCommandTests
         PlayerId = playerId ?? TestPlayerId
     };
 
-    [Theory]
-    [InlineData("!register AB12CD", true)]
-    [InlineData("!REGISTER AB12CD", true)]
-    [InlineData(" !register AB12CD", true)]
-    [InlineData("!registering AB12CD", false)]
-    [InlineData("!like", false)]
-    public void CanHandle_ReturnsExpected(string message, bool expected)
-    {
-        var result = _sut.CanHandle(message);
-        Assert.Equal(expected, result);
-    }
-
     [Fact]
     public async Task ExecuteAsync_WhenPlayerIdMissing_ReturnsFailed()
     {

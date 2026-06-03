@@ -8,7 +8,7 @@ public interface IChatCommand
 {
     /// <summary>
     /// The command prefix (e.g. "!like", "!dislike", "!help").
-    /// Matched case-insensitively against the start of the message.
+    /// Used as the canonical routing token in command metadata.
     /// </summary>
     string Prefix { get; }
 
@@ -22,13 +22,6 @@ public interface IChatCommand
         Usage = Prefix,
         Description = string.Empty
     };
-
-    /// <summary>
-    /// Whether this command should be executed for the given message.
-    /// Default implementation checks if message starts with Prefix.
-    /// Override for more complex matching (e.g. "!ban PlayerName").
-    /// </summary>
-    bool CanHandle(string message) => message.StartsWith(Prefix, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Execute the command. Called after the chat message has been persisted.

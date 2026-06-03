@@ -13,7 +13,10 @@ public sealed class ChatCommandParser : ICommandParser
         if (!normalized.StartsWith('!'))
             return CommandParseResult.NotACommand("Message is not a command");
 
-        var tokens = Tokenize(normalized);
+        var tokens = Tokenize(normalized, out var hasUnbalancedQuotes);
+        if (hasUnbalancedQuotes)
+            return CommandParseResult.NotACommand("Command has unbalanced quotes");
+
         if (tokens.Count == 0)
             return CommandParseResult.NotACommand("Command has no tokens");
 
@@ -42,7 +45,7 @@ public sealed class ChatCommandParser : ICommandParser
         return normalized[prefixToken.Length..].TrimStart();
     }
 
-    private static List<string> Tokenize(string input)
+    private static List<string> Tokenize(string input, out bool hasUnbalancedQuotes)
     {
         var tokens = new List<string>();
         var buffer = new StringBuilder();
@@ -66,6 +69,7 @@ public sealed class ChatCommandParser : ICommandParser
         }
 
         Flush();
+        hasUnbalancedQuotes = inQuotes;
         return tokens;
 
         void Flush()

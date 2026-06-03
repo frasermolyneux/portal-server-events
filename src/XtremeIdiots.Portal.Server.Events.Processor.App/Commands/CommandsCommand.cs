@@ -27,17 +27,6 @@ public sealed class CommandsCommand : IChatCommand
         Description = "Lists available chat commands."
     };
 
-    public bool CanHandle(string message)
-    {
-        if (string.IsNullOrWhiteSpace(message))
-            return false;
-
-        if (!message.StartsWith(Prefix, StringComparison.OrdinalIgnoreCase))
-            return false;
-
-        return message.Length == Prefix.Length || char.IsWhiteSpace(message[Prefix.Length]);
-    }
-
     public async Task<CommandResult> ExecuteAsync(CommandContext context, CancellationToken ct = default)
     {
         var parsed = context.ParsedCommand;

@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 namespace XtremeIdiots.Portal.Server.Events.Processor.App.Commands;
 
@@ -6,13 +7,16 @@ public sealed class ChatCommandCatalog : IChatCommandCatalog
 {
     private readonly IServiceProvider _serviceProvider;
     private readonly IFuMessageSettingsProvider _fuMessageSettingsProvider;
+    private readonly ILogger<ChatCommandCatalog> _logger;
 
     public ChatCommandCatalog(
         IServiceProvider serviceProvider,
-        IFuMessageSettingsProvider fuMessageSettingsProvider)
+        IFuMessageSettingsProvider fuMessageSettingsProvider,
+        ILogger<ChatCommandCatalog> logger)
     {
         _serviceProvider = serviceProvider;
         _fuMessageSettingsProvider = fuMessageSettingsProvider;
+        _logger = logger;
     }
 
     public async Task<IReadOnlyList<ChatCommandDefinition>> GetAvailableCommandsAsync(CommandContext context, CancellationToken ct = default)
@@ -58,6 +62,7 @@ public sealed class ChatCommandCatalog : IChatCommandCatalog
             return await _fuMessageSettingsProvider.IsEnabledAsync(serverId, ct).ConfigureAwait(false);
         }
 
-        return true;
+        _logger.LogWarning("Unknown chat command feature flag {FeatureFlag} for server {ServerId}; command will be hidden.", featureFlag, serverId);
+        return false;
     }
 }

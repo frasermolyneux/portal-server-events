@@ -42,4 +42,14 @@ public class ChatCommandParserTests
         Assert.Equal(["John Doe", "please"], result.Command.Arguments);
         Assert.Equal("\"John Doe\" please", result.Command.ArgumentText);
     }
+
+    [Fact]
+    public void Parse_WhenQuotesUnbalanced_ReturnsNotACommand()
+    {
+        var result = _sut.Parse("!fu \"John Doe");
+
+        Assert.False(result.IsCommand);
+        Assert.Null(result.Command);
+        Assert.Equal("Command has unbalanced quotes", result.Reason);
+    }
 }

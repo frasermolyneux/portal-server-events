@@ -53,19 +53,6 @@ public class CommandsCommandTests
         PlayerId = Guid.Parse("22222222-2222-2222-2222-222222222222")
     };
 
-    [Theory]
-    [InlineData("!commands", true)]
-    [InlineData("!COMMANDS", true)]
-    [InlineData(" !commands", false)]
-    [InlineData("!commands now", true)]
-    [InlineData("!command", false)]
-    [InlineData("!register", false)]
-    public void CanHandle_ReturnsExpected(string message, bool expected)
-    {
-        var result = _sut.CanHandle(message);
-        Assert.Equal(expected, result);
-    }
-
     [Fact]
     public async Task ExecuteAsync_WhenValid_ReturnsSuccessAndSendsPrivateCommandsList()
     {

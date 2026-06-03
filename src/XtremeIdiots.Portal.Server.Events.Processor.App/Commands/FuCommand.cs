@@ -50,18 +50,6 @@ public sealed class FuCommand : IChatCommand
         FeatureFlag = "fu"
     };
 
-    public bool CanHandle(string message)
-    {
-        if (string.IsNullOrWhiteSpace(message))
-            return false;
-
-        var trimmed = message.TrimStart();
-        if (!trimmed.StartsWith(Prefix, StringComparison.OrdinalIgnoreCase))
-            return false;
-
-        return trimmed.Length == Prefix.Length || char.IsWhiteSpace(trimmed[Prefix.Length]);
-    }
-
     public async Task<CommandResult> ExecuteAsync(CommandContext context, CancellationToken ct = default)
     {
         string playerQuery;

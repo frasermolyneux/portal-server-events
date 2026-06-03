@@ -96,18 +96,6 @@ public class FuCommandTests
             _logger.Object);
     }
 
-    [Theory]
-    [InlineData("!fu player", true)]
-    [InlineData("!FU player", true)]
-    [InlineData("!f player", false)]
-    [InlineData("!fu", true)]
-    public void CanHandle_ReturnsExpected(string message, bool expected)
-    {
-        var result = _sut.CanHandle(message);
-
-        Assert.Equal(expected, result);
-    }
-
     [Fact]
     public async Task ExecuteAsync_WhenNoArgument_ReturnsUsageAndSendsPrivateTell()
     {
