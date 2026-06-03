@@ -13,6 +13,7 @@ using MX.Observability.ApplicationInsights.Auditing.Models;
 using XtremeIdiots.Portal.Repository.Api.Client.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Constants.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.ChatMessages;
+using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.ConnectedPlayers;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.GameServers;
 using XtremeIdiots.Portal.Server.Events.Abstractions.V1;
 using XtremeIdiots.Portal.Server.Events.Abstractions.V1.Events;
@@ -34,6 +35,7 @@ public class ChatMessageProcessor(
     private static readonly TimeSpan DelayWarningThreshold = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan PlayerCacheExpiration = TimeSpan.FromMinutes(15);
     private const string ChatCommandExecutionEventType = "ChatCommandExecution";
+    private const string ChatCommandDeniedEventType = "ChatCommandDenied";
 
     [Function(nameof(ProcessChatMessage))]
     public async Task ProcessChatMessage(
@@ -141,7 +143,8 @@ public class ChatMessageProcessor(
             Message = chatEvent.Message,
             EventGeneratedUtc = chatEvent.EventGeneratedUtc,
             EventPublishedUtc = chatEvent.EventPublishedUtc,
-            PlayerId = playerId
+            PlayerId = playerId,
+            AuthorizationSnapshot = playerContext.Value.AuthorizationSnapshot
         };
 
         var commandResult = await chatCommandProcessor.ProcessAsync(commandContext, context.CancellationToken).ConfigureAwait(false);
@@ -187,6 +190,7 @@ public class ChatMessageProcessor(
         {
             CommandPrefix = commandPrefix,
             commandResult.Success,
+            commandResult.Denied,
             commandResult.ResponseMessage,
             commandContext.PlayerGuid,
             commandContext.Username,
@@ -199,7 +203,10 @@ public class ChatMessageProcessor(
         {
             await repositoryApiClient.GameServersEvents.V1
                 .CreateGameServerEvent(
-                    new CreateGameServerEventDto(chatEvent.ServerId, ChatCommandExecutionEventType, eventData),
+                    new CreateGameServerEventDto(
+                        chatEvent.ServerId,
+                        commandResult.Denied ? ChatCommandDeniedEventType : ChatCommandExecutionEventType,
+                        eventData),
                     cancellationToken)
                 .ConfigureAwait(false);
         }
@@ -247,12 +254,86 @@ public class ChatMessageProcessor(
         var hasTag = player.Tags.Any(t =>
             string.Equals(t.Tag?.Name, moderateTagName, StringComparison.OrdinalIgnoreCase));
 
-        var ctx = new PlayerContextInfo(player.PlayerId, player.FirstSeen, hasTag);
-        memoryCache.Set(cacheKey, ctx,
-            new MemoryCacheEntryOptions().SetSlidingExpiration(PlayerCacheExpiration));
+        var tagNames = player.Tags
+            .Select(t => t.Tag?.Name)
+            .Where(t => !string.IsNullOrWhiteSpace(t))
+            .Select(t => t!)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var (claimNames, claimsResolved) = await GetAuthorizationClaimsAsync(gameType, player.PlayerId).ConfigureAwait(false);
+        var authorizationSnapshot = new CommandAuthorizationSnapshot
+        {
+            Tags = tagNames,
+            Claims = claimNames,
+            TagsResolved = true,
+            ClaimsResolved = claimsResolved
+        };
+
+        var ctx = new PlayerContextInfo(player.PlayerId, player.FirstSeen, hasTag, authorizationSnapshot);
+        if (authorizationSnapshot.ClaimsResolved)
+        {
+            memoryCache.Set(cacheKey, ctx,
+                new MemoryCacheEntryOptions().SetSlidingExpiration(PlayerCacheExpiration));
+        }
 
         return ctx;
     }
 
-    private readonly record struct PlayerContextInfo(Guid PlayerId, DateTime FirstSeen, bool HasModerateChatTag);
+    private async Task<(IReadOnlySet<string> Claims, bool ClaimsResolved)> GetAuthorizationClaimsAsync(GameType gameType, Guid playerId)
+    {
+        try
+        {
+            var connectedPlayers = await repositoryApiClient.ConnectedPlayers.V1
+                .GetConnectedPlayers(playerId, null, gameType, true, 0, 1)
+                .ConfigureAwait(false);
+
+            if (!connectedPlayers.IsSuccess)
+            {
+                return (new HashSet<string>(StringComparer.OrdinalIgnoreCase), false);
+            }
+
+            var connectedPlayer = connectedPlayers.Result?.Data?.Items?.FirstOrDefault();
+            if (connectedPlayer is null)
+            {
+                return (new HashSet<string>(StringComparer.OrdinalIgnoreCase), true);
+            }
+
+            var userProfile = await repositoryApiClient.UserProfiles.V1
+                .GetUserProfile(connectedPlayer.UserProfileId)
+                .ConfigureAwait(false);
+
+            if (!userProfile.IsSuccess || userProfile.Result?.Data is null)
+            {
+                return (new HashSet<string>(StringComparer.OrdinalIgnoreCase), false);
+            }
+
+            var claims = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var claim in userProfile.Result.Data.UserProfileClaims)
+            {
+                if (string.IsNullOrWhiteSpace(claim.ClaimType))
+                {
+                    continue;
+                }
+
+                claims.Add(claim.ClaimType);
+                if (!string.IsNullOrWhiteSpace(claim.ClaimValue))
+                {
+                    claims.Add($"{claim.ClaimType}:{claim.ClaimValue}");
+                }
+            }
+
+            return (claims, true);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Failed to resolve authorization claims for player {PlayerId}", playerId);
+            return (new HashSet<string>(StringComparer.OrdinalIgnoreCase), false);
+        }
+    }
+
+    private readonly record struct PlayerContextInfo(
+        Guid PlayerId,
+        DateTime FirstSeen,
+        bool HasModerateChatTag,
+        CommandAuthorizationSnapshot AuthorizationSnapshot);
 }

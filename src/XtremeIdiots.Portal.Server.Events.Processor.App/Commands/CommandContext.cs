@@ -25,4 +25,9 @@ public sealed record CommandContext
     /// Null when the message is not a command.
     /// </summary>
     public ChatCommandEnvelope? ParsedCommand { get; init; }
+
+    /// <summary>
+    /// Authorization snapshot used for policy checks and command visibility filtering.
+    /// </summary>
+    public CommandAuthorizationSnapshot? AuthorizationSnapshot { get; init; }
 }

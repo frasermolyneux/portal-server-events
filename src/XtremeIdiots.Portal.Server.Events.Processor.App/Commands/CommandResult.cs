@@ -4,6 +4,7 @@ public sealed record CommandResult
 {
     public bool Handled { get; init; }
     public bool Success { get; init; }
+    public bool Denied { get; init; }
     public string? ResponseMessage { get; init; }
 
     public static CommandResult NotHandled => new() { Handled = false, Success = false };
@@ -13,4 +14,7 @@ public sealed record CommandResult
 
     public static CommandResult Failed(string? reason = null) =>
         new() { Handled = true, Success = false, ResponseMessage = reason };
+
+    public static CommandResult DeniedByPolicy(string reason) =>
+        new() { Handled = true, Success = false, Denied = true, ResponseMessage = reason };
 }

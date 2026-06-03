@@ -8,11 +8,15 @@ using Microsoft.Extensions.Options;
 
 using Moq;
 
+using MX.Api.Abstractions;
+
 using XtremeIdiots.Portal.Repository.Abstractions.Constants.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Interfaces.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.ChatMessages;
+using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.ConnectedPlayers;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.GameServers;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.Players;
+using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.UserProfiles;
 using XtremeIdiots.Portal.Repository.Api.Client.V1;
 using XtremeIdiots.Portal.Server.Events.Abstractions.V1.Events;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Functions;
@@ -34,6 +38,10 @@ public class ChatMessageProcessorTests
     private readonly Mock<IChatMessagesApi> _chatApi = new();
     private readonly Mock<IVersionedGameServersEventsApi> _versionedEvents = new();
     private readonly Mock<IGameServersEventsApi> _eventsApi = new();
+    private readonly Mock<IVersionedConnectedPlayersApi> _versionedConnectedPlayers = new();
+    private readonly Mock<IConnectedPlayersApi> _connectedPlayersApi = new();
+    private readonly Mock<IVersionedUserProfileApi> _versionedUserProfiles = new();
+    private readonly Mock<IUserProfileApi> _userProfilesApi = new();
     private readonly IMemoryCache _cache;
     private readonly Mock<IAuditLogger> _auditLogger = new();
     private readonly Mock<FunctionContext> _functionContext = new();
@@ -55,6 +63,23 @@ public class ChatMessageProcessorTests
 
         _versionedEvents.Setup(x => x.V1).Returns(_eventsApi.Object);
         _repoClient.Setup(x => x.GameServersEvents).Returns(_versionedEvents.Object);
+
+        _versionedConnectedPlayers.Setup(x => x.V1).Returns(_connectedPlayersApi.Object);
+        _repoClient.Setup(x => x.ConnectedPlayers).Returns(_versionedConnectedPlayers.Object);
+
+        _versionedUserProfiles.Setup(x => x.V1).Returns(_userProfilesApi.Object);
+        _repoClient.Setup(x => x.UserProfiles).Returns(_versionedUserProfiles.Object);
+
+        _connectedPlayersApi
+            .Setup(x => x.GetConnectedPlayers(
+                It.IsAny<Guid?>(),
+                It.IsAny<Guid?>(),
+                It.IsAny<GameType?>(),
+                It.IsAny<bool?>(),
+                It.IsAny<int>(),
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(SuccessResult(new CollectionModel<ConnectedPlayerDto>([])));
 
         _commandProcessor.Setup(x => x.ProcessAsync(It.IsAny<CommandContext>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(CommandResult.NotHandled);
@@ -325,6 +350,57 @@ public class ChatMessageProcessorTests
                 dto.EventType == "ChatCommandExecution" &&
                 dto.EventData != null &&
                 dto.EventData.Contains("\"commandPrefix\":\"!commands\"", StringComparison.Ordinal)),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task DeniedCommand_PersistsChatCommandDeniedEvent()
+    {
+        var evt = CreateValidEvent(chatMessage: "!admin");
+        var message = CreateMessage(evt);
+
+        var playerDto = CreatePlayerDto(TestPlayerId);
+        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.Tags))
+            .ReturnsAsync(SuccessResult(playerDto));
+
+        _chatApi.Setup(x => x.CreateChatMessage(It.IsAny<CreateChatMessageDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(SuccessResult());
+
+        _eventsApi.Setup(x => x.CreateGameServerEvent(It.IsAny<CreateGameServerEventDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(SuccessResult());
+
+        _commandProcessor.Setup(x => x.ProcessAsync(It.IsAny<CommandContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(CommandResult.DeniedByPolicy("You are not authorized to use this command."));
+
+        await _sut.ProcessChatMessage(message, _functionContext.Object);
+
+        _eventsApi.Verify(x => x.CreateGameServerEvent(
+            It.Is<CreateGameServerEventDto>(dto =>
+                dto.GameServerId == TestServerId &&
+                dto.EventType == "ChatCommandDenied"),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task ValidMessage_EnrichesAuthorizationSnapshotInCommandContext()
+    {
+        var evt = CreateValidEvent(chatMessage: "!commands");
+        var message = CreateMessage(evt);
+
+        var playerDto = CreatePlayerDto(TestPlayerId);
+        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.Tags))
+            .ReturnsAsync(SuccessResult(playerDto));
+
+        _chatApi.Setup(x => x.CreateChatMessage(It.IsAny<CreateChatMessageDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(SuccessResult());
+
+        await _sut.ProcessChatMessage(message, _functionContext.Object);
+
+        _commandProcessor.Verify(x => x.ProcessAsync(
+            It.Is<CommandContext>(ctx =>
+                ctx.AuthorizationSnapshot != null &&
+                ctx.AuthorizationSnapshot.TagsResolved == true &&
+                ctx.AuthorizationSnapshot.ClaimsResolved == true),
             It.IsAny<CancellationToken>()), Times.Once);
     }
 

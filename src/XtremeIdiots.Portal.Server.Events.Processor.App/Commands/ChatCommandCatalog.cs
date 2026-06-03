@@ -7,15 +7,18 @@ public sealed class ChatCommandCatalog : IChatCommandCatalog
 {
     private readonly IServiceProvider _serviceProvider;
     private readonly IFuMessageSettingsProvider _fuMessageSettingsProvider;
+    private readonly ICommandAuthorizationService _authorizationService;
     private readonly ILogger<ChatCommandCatalog> _logger;
 
     public ChatCommandCatalog(
         IServiceProvider serviceProvider,
         IFuMessageSettingsProvider fuMessageSettingsProvider,
+        ICommandAuthorizationService authorizationService,
         ILogger<ChatCommandCatalog> logger)
     {
         _serviceProvider = serviceProvider;
         _fuMessageSettingsProvider = fuMessageSettingsProvider;
+        _authorizationService = authorizationService;
         _logger = logger;
     }
 
@@ -34,6 +37,21 @@ public sealed class ChatCommandCatalog : IChatCommandCatalog
         foreach (var command in metadata)
         {
             if (!await IsFeatureEnabledAsync(command.FeatureFlag, context.ServerId, ct).ConfigureAwait(false))
+            {
+                continue;
+            }
+
+            var authorizationResult = await _authorizationService.AuthorizeAsync(new CommandAuthorizationContext
+            {
+                CommandPrefix = command.Prefix,
+                RequiredPolicy = command.RequiredPolicy,
+                GameType = context.GameType,
+                ServerId = context.ServerId,
+                PlayerId = context.PlayerId,
+                Snapshot = context.AuthorizationSnapshot
+            }, ct).ConfigureAwait(false);
+
+            if (!authorizationResult.Allowed)
             {
                 continue;
             }

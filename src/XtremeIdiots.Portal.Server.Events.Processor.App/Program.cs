@@ -116,6 +116,8 @@ var host = new HostBuilder()
         services.AddTransient<IAdminActionTopics, AdminActionTopics>();
 
         // Command framework
+        services.Configure<CommandAuthorizationOptions>(configuration.GetSection("Commands:Authorization"));
+        services.AddSingleton<ICommandAuthorizationService, CommandAuthorizationService>();
         services.AddTransient<IChatCommandProcessor, ChatCommandProcessor>();
         services.AddSingleton<ICommandParser, ChatCommandParser>();
         services.AddTransient<IRconResponseService, RconResponseService>();
