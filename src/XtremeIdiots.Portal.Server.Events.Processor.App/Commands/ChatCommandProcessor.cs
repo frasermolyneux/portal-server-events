@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 using MX.Observability.ApplicationInsights.Auditing;
 using MX.Observability.ApplicationInsights.Auditing.Models;
@@ -11,6 +12,8 @@ public sealed class ChatCommandProcessor : IChatCommandProcessor
     private readonly ICommandParser _parser;
     private readonly ICommandAuthorizationService _authorizationService;
     private readonly ICommandIdempotencyStore _idempotencyStore;
+    private readonly ISystemClock _clock;
+    private readonly CommandFreshnessOptions _freshnessOptions;
     private readonly IRconResponseService _rconResponseService;
     private readonly IAuditLogger _auditLogger;
     private readonly ILogger<ChatCommandProcessor> _logger;
@@ -20,6 +23,8 @@ public sealed class ChatCommandProcessor : IChatCommandProcessor
         ICommandParser parser,
         ICommandAuthorizationService authorizationService,
         ICommandIdempotencyStore idempotencyStore,
+        ISystemClock clock,
+        IOptions<CommandFreshnessOptions> freshnessOptions,
         IRconResponseService rconResponseService,
         IAuditLogger auditLogger,
         ILogger<ChatCommandProcessor> logger)
@@ -27,6 +32,8 @@ public sealed class ChatCommandProcessor : IChatCommandProcessor
         _parser = parser;
         _authorizationService = authorizationService;
         _idempotencyStore = idempotencyStore;
+        _clock = clock;
+        _freshnessOptions = freshnessOptions.Value;
         _rconResponseService = rconResponseService;
         _auditLogger = auditLogger;
         _logger = logger;
@@ -64,6 +71,31 @@ public sealed class ChatCommandProcessor : IChatCommandProcessor
 
         _logger.LogInformation("Command {CommandPrefix} matched for player {Username} on server {ServerId}",
             command.Prefix, context.Username, context.ServerId);
+
+        var threshold = ResolveFreshnessThreshold(command.Metadata);
+        var age = _clock.UtcNow - context.EventGeneratedUtc;
+        if (age > threshold)
+        {
+            _logger.LogInformation(
+                "Skipping stale command {CommandPrefix} for player {Username}. Category={Category}, AgeMs={AgeMs}, ThresholdMs={ThresholdMs}",
+                command.Prefix,
+                context.Username,
+                command.Metadata.IsMutating ? "Mutating" : "ReadOnly",
+                (long)age.TotalMilliseconds,
+                (long)threshold.TotalMilliseconds);
+
+            _auditLogger.LogAudit(AuditEvent.ServerAction("ChatCommandSkippedStale", AuditAction.Update)
+                .WithGameContext(context.GameType, context.ServerId)
+                .WithPlayer(context.PlayerGuid, context.Username)
+                .WithSource("ChatCommandProcessor")
+                .WithProperty("CommandPrefix", command.Prefix)
+                .WithProperty("CommandCategory", command.Metadata.IsMutating ? "Mutating" : "ReadOnly")
+                .WithProperty("AgeMs", ((long)age.TotalMilliseconds).ToString())
+                .WithProperty("ThresholdMs", ((long)threshold.TotalMilliseconds).ToString())
+                .Build());
+
+            return CommandResult.Failed("Command expired. Please run it again.");
+        }
 
         var authorizationResult = await _authorizationService.AuthorizeAsync(new CommandAuthorizationContext
         {
@@ -124,7 +156,7 @@ public sealed class ChatCommandProcessor : IChatCommandProcessor
 
             idempotencyKey = BuildIdempotencyKey(context, parseResult.Command);
             var decision = await _idempotencyStore
-                .TryBeginAsync(idempotencyKey, DateTime.UtcNow, ct)
+                .TryBeginAsync(idempotencyKey, _clock.UtcNow, ct)
                 .ConfigureAwait(false);
 
             if (decision.State is CommandIdempotencyState.InProgress)
@@ -153,11 +185,38 @@ public sealed class ChatCommandProcessor : IChatCommandProcessor
         if (idempotencyKey is not null)
         {
             await _idempotencyStore
-                .CompleteAsync(idempotencyKey, result, DateTime.UtcNow, ct)
+                .CompleteAsync(idempotencyKey, result, _clock.UtcNow, ct)
                 .ConfigureAwait(false);
         }
 
         return result;
+    }
+
+    private TimeSpan ResolveFreshnessThreshold(ChatCommandMetadata metadata)
+    {
+        if (!string.IsNullOrWhiteSpace(metadata.Name) &&
+            _freshnessOptions.CommandSeconds.TryGetValue(metadata.Name, out var commandSeconds) &&
+            commandSeconds >= 0)
+        {
+            return TimeSpan.FromSeconds(commandSeconds);
+        }
+
+        if (metadata.IsMutating)
+        {
+            if (_freshnessOptions.MutatingSeconds >= 0)
+            {
+                return TimeSpan.FromSeconds(_freshnessOptions.MutatingSeconds);
+            }
+
+            return TimeSpan.FromSeconds(Math.Max(0, _freshnessOptions.DefaultSeconds));
+        }
+
+        if (_freshnessOptions.ReadOnlySeconds >= 0)
+        {
+            return TimeSpan.FromSeconds(_freshnessOptions.ReadOnlySeconds);
+        }
+
+        return TimeSpan.FromSeconds(Math.Max(0, _freshnessOptions.DefaultSeconds));
     }
 
     private static CommandIdempotencyKey BuildIdempotencyKey(CommandContext context, ChatCommandEnvelope command)

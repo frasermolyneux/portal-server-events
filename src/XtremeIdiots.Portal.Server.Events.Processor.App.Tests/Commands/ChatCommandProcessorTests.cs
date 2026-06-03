@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 using Moq;
 
@@ -13,9 +14,16 @@ public class ChatCommandProcessorTests
     private readonly Mock<ILogger<ChatCommandProcessor>> _logger = new();
     private readonly Mock<ICommandAuthorizationService> _authorizationService = new();
     private readonly Mock<ICommandIdempotencyStore> _idempotencyStore = new();
+    private readonly Mock<ISystemClock> _clock = new();
     private readonly Mock<IRconResponseService> _rconResponseService = new();
     private readonly Mock<IAuditLogger> _auditLogger = new();
     private readonly ICommandParser _parser = new ChatCommandParser();
+    private readonly IOptions<CommandFreshnessOptions> _freshnessOptions = Options.Create(new CommandFreshnessOptions
+    {
+        DefaultSeconds = 5,
+        ReadOnlySeconds = 5,
+        MutatingSeconds = 3
+    });
 
     public ChatCommandProcessorTests()
     {
@@ -41,6 +49,8 @@ public class ChatCommandProcessorTests
         _idempotencyStore
             .Setup(x => x.CompleteAsync(It.IsAny<CommandIdempotencyKey>(), It.IsAny<CommandResult>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
             .Returns(Task.CompletedTask);
+
+        _clock.SetupGet(x => x.UtcNow).Returns(DateTime.UtcNow);
     }
 
     private static CommandContext CreateContext(string message = "!test") => new()
@@ -63,7 +73,7 @@ public class ChatCommandProcessorTests
     [InlineData("")]
     public async Task ProcessAsync_MessageWithNoPrefix_ReturnsNotHandled(string message)
     {
-        var sut = new ChatCommandProcessor([], _parser, _authorizationService.Object, _idempotencyStore.Object, _rconResponseService.Object, _auditLogger.Object, _logger.Object);
+        var sut = new ChatCommandProcessor([], _parser, _authorizationService.Object, _idempotencyStore.Object, _clock.Object, _freshnessOptions, _rconResponseService.Object, _auditLogger.Object, _logger.Object);
 
         var result = await sut.ProcessAsync(CreateContext(message));
 
@@ -82,7 +92,7 @@ public class ChatCommandProcessorTests
             Usage = "!other"
         });
 
-        var sut = new ChatCommandProcessor([command.Object], _parser, _authorizationService.Object, _idempotencyStore.Object, _rconResponseService.Object, _auditLogger.Object, _logger.Object);
+        var sut = new ChatCommandProcessor([command.Object], _parser, _authorizationService.Object, _idempotencyStore.Object, _clock.Object, _freshnessOptions, _rconResponseService.Object, _auditLogger.Object, _logger.Object);
 
         var result = await sut.ProcessAsync(CreateContext("!unknown"));
 
@@ -106,7 +116,7 @@ public class ChatCommandProcessorTests
             .Callback<CommandContext, CancellationToken>((ctx, _) => capturedContext = ctx)
             .ReturnsAsync(CommandResult.Ok("done"));
 
-        var sut = new ChatCommandProcessor([command.Object], _parser, _authorizationService.Object, _idempotencyStore.Object, _rconResponseService.Object, _auditLogger.Object, _logger.Object);
+        var sut = new ChatCommandProcessor([command.Object], _parser, _authorizationService.Object, _idempotencyStore.Object, _clock.Object, _freshnessOptions, _rconResponseService.Object, _auditLogger.Object, _logger.Object);
 
         var result = await sut.ProcessAsync(CreateContext("!test"));
 
@@ -131,7 +141,7 @@ public class ChatCommandProcessorTests
         command.Setup(c => c.ExecuteAsync(It.IsAny<CommandContext>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new InvalidOperationException("kaboom"));
 
-        var sut = new ChatCommandProcessor([command.Object], _parser, _authorizationService.Object, _idempotencyStore.Object, _rconResponseService.Object, _auditLogger.Object, _logger.Object);
+        var sut = new ChatCommandProcessor([command.Object], _parser, _authorizationService.Object, _idempotencyStore.Object, _clock.Object, _freshnessOptions, _rconResponseService.Object, _auditLogger.Object, _logger.Object);
 
         var result = await sut.ProcessAsync(CreateContext("!boom"));
 
@@ -165,7 +175,7 @@ public class ChatCommandProcessorTests
         second.Setup(c => c.ExecuteAsync(It.IsAny<CommandContext>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(CommandResult.Ok("second"));
 
-        var sut = new ChatCommandProcessor([first.Object, second.Object], _parser, _authorizationService.Object, _idempotencyStore.Object, _rconResponseService.Object, _auditLogger.Object, _logger.Object);
+        var sut = new ChatCommandProcessor([first.Object, second.Object], _parser, _authorizationService.Object, _idempotencyStore.Object, _clock.Object, _freshnessOptions, _rconResponseService.Object, _auditLogger.Object, _logger.Object);
 
         var result = await sut.ProcessAsync(CreateContext("!test"));
 
@@ -185,7 +195,7 @@ public class ChatCommandProcessorTests
             Usage = "!test"
         });
 
-        var action = () => new ChatCommandProcessor([command.Object], _parser, _authorizationService.Object, _idempotencyStore.Object, _rconResponseService.Object, _auditLogger.Object, _logger.Object);
+        var action = () => new ChatCommandProcessor([command.Object], _parser, _authorizationService.Object, _idempotencyStore.Object, _clock.Object, _freshnessOptions, _rconResponseService.Object, _auditLogger.Object, _logger.Object);
 
         Assert.Throws<InvalidOperationException>(action);
     }
@@ -207,7 +217,7 @@ public class ChatCommandProcessorTests
             .Setup(x => x.AuthorizeAsync(It.IsAny<CommandAuthorizationContext>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(CommandAuthorizationResult.Deny("not allowed"));
 
-        var sut = new ChatCommandProcessor([command.Object], _parser, _authorizationService.Object, _idempotencyStore.Object, _rconResponseService.Object, _auditLogger.Object, _logger.Object);
+        var sut = new ChatCommandProcessor([command.Object], _parser, _authorizationService.Object, _idempotencyStore.Object, _clock.Object, _freshnessOptions, _rconResponseService.Object, _auditLogger.Object, _logger.Object);
 
         var result = await sut.ProcessAsync(CreateContext("!test"));
 
@@ -238,7 +248,7 @@ public class ChatCommandProcessorTests
             IsMutating = true
         });
 
-        var sut = new ChatCommandProcessor([command.Object], _parser, _authorizationService.Object, _idempotencyStore.Object, _rconResponseService.Object, _auditLogger.Object, _logger.Object);
+        var sut = new ChatCommandProcessor([command.Object], _parser, _authorizationService.Object, _idempotencyStore.Object, _clock.Object, _freshnessOptions, _rconResponseService.Object, _auditLogger.Object, _logger.Object);
 
         var result = await sut.ProcessAsync(CreateContext("!test") with { SequenceId = 0 });
 
@@ -264,7 +274,7 @@ public class ChatCommandProcessorTests
             .Setup(x => x.TryBeginAsync(It.IsAny<CommandIdempotencyKey>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(CommandIdempotencyDecision.InProgress());
 
-        var sut = new ChatCommandProcessor([command.Object], _parser, _authorizationService.Object, _idempotencyStore.Object, _rconResponseService.Object, _auditLogger.Object, _logger.Object);
+        var sut = new ChatCommandProcessor([command.Object], _parser, _authorizationService.Object, _idempotencyStore.Object, _clock.Object, _freshnessOptions, _rconResponseService.Object, _auditLogger.Object, _logger.Object);
 
         var result = await sut.ProcessAsync(CreateContext("!test"));
 
@@ -290,7 +300,7 @@ public class ChatCommandProcessorTests
             .Setup(x => x.TryBeginAsync(It.IsAny<CommandIdempotencyKey>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(CommandIdempotencyDecision.Completed(CommandResult.Ok("replayed")));
 
-        var sut = new ChatCommandProcessor([command.Object], _parser, _authorizationService.Object, _idempotencyStore.Object, _rconResponseService.Object, _auditLogger.Object, _logger.Object);
+        var sut = new ChatCommandProcessor([command.Object], _parser, _authorizationService.Object, _idempotencyStore.Object, _clock.Object, _freshnessOptions, _rconResponseService.Object, _auditLogger.Object, _logger.Object);
 
         var result = await sut.ProcessAsync(CreateContext("!test"));
 
@@ -298,5 +308,152 @@ public class ChatCommandProcessorTests
         Assert.True(result.Success);
         Assert.Equal("replayed", result.ResponseMessage);
         command.Verify(c => c.ExecuteAsync(It.IsAny<CommandContext>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task ProcessAsync_WhenReadOnlyCommandIsStale_ReturnsExpired()
+    {
+        var now = new DateTime(2026, 6, 3, 10, 0, 0, DateTimeKind.Utc);
+        _clock.SetupGet(x => x.UtcNow).Returns(now);
+
+        var command = new Mock<IChatCommand>();
+        command.Setup(c => c.Prefix).Returns("!test");
+        command.Setup(c => c.Metadata).Returns(new ChatCommandMetadata
+        {
+            Name = "test",
+            Prefix = "!test",
+            Usage = "!test",
+            IsMutating = false
+        });
+
+        var sut = new ChatCommandProcessor([command.Object], _parser, _authorizationService.Object, _idempotencyStore.Object, _clock.Object, _freshnessOptions, _rconResponseService.Object, _auditLogger.Object, _logger.Object);
+
+        var result = await sut.ProcessAsync(CreateContext("!test") with { EventGeneratedUtc = now.AddSeconds(-6) });
+
+        Assert.True(result.Handled);
+        Assert.False(result.Success);
+        Assert.Equal("Command expired. Please run it again.", result.ResponseMessage);
+        command.Verify(c => c.ExecuteAsync(It.IsAny<CommandContext>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task ProcessAsync_WhenMutatingCommandIsStale_ReturnsExpired()
+    {
+        var now = new DateTime(2026, 6, 3, 10, 0, 0, DateTimeKind.Utc);
+        _clock.SetupGet(x => x.UtcNow).Returns(now);
+
+        var command = new Mock<IChatCommand>();
+        command.Setup(c => c.Prefix).Returns("!test");
+        command.Setup(c => c.Metadata).Returns(new ChatCommandMetadata
+        {
+            Name = "test",
+            Prefix = "!test",
+            Usage = "!test",
+            IsMutating = true
+        });
+
+        var sut = new ChatCommandProcessor([command.Object], _parser, _authorizationService.Object, _idempotencyStore.Object, _clock.Object, _freshnessOptions, _rconResponseService.Object, _auditLogger.Object, _logger.Object);
+
+        var result = await sut.ProcessAsync(CreateContext("!test") with { EventGeneratedUtc = now.AddSeconds(-4) });
+
+        Assert.True(result.Handled);
+        Assert.False(result.Success);
+        Assert.Equal("Command expired. Please run it again.", result.ResponseMessage);
+        command.Verify(c => c.ExecuteAsync(It.IsAny<CommandContext>(), It.IsAny<CancellationToken>()), Times.Never);
+        _idempotencyStore.Verify(x => x.TryBeginAsync(It.IsAny<CommandIdempotencyKey>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task ProcessAsync_WhenCommandAgeEqualsThreshold_Executes()
+    {
+        var now = new DateTime(2026, 6, 3, 10, 0, 0, DateTimeKind.Utc);
+        _clock.SetupGet(x => x.UtcNow).Returns(now);
+
+        var command = new Mock<IChatCommand>();
+        command.Setup(c => c.Prefix).Returns("!test");
+        command.Setup(c => c.Metadata).Returns(new ChatCommandMetadata
+        {
+            Name = "test",
+            Prefix = "!test",
+            Usage = "!test"
+        });
+        command.Setup(c => c.ExecuteAsync(It.IsAny<CommandContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(CommandResult.Ok("ok"));
+
+        var sut = new ChatCommandProcessor([command.Object], _parser, _authorizationService.Object, _idempotencyStore.Object, _clock.Object, _freshnessOptions, _rconResponseService.Object, _auditLogger.Object, _logger.Object);
+
+        var result = await sut.ProcessAsync(CreateContext("!test") with { EventGeneratedUtc = now.AddSeconds(-5) });
+
+        Assert.True(result.Success);
+        Assert.Equal("ok", result.ResponseMessage);
+        command.Verify(c => c.ExecuteAsync(It.IsAny<CommandContext>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task ProcessAsync_WhenCommandSpecificOverrideConfigured_UsesOverrideThreshold()
+    {
+        var now = new DateTime(2026, 6, 3, 10, 0, 0, DateTimeKind.Utc);
+        _clock.SetupGet(x => x.UtcNow).Returns(now);
+
+        var overrideOptions = Options.Create(new CommandFreshnessOptions
+        {
+            ReadOnlySeconds = 5,
+            MutatingSeconds = 3,
+            CommandSeconds = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["test"] = 10
+            }
+        });
+
+        var command = new Mock<IChatCommand>();
+        command.Setup(c => c.Prefix).Returns("!test");
+        command.Setup(c => c.Metadata).Returns(new ChatCommandMetadata
+        {
+            Name = "test",
+            Prefix = "!test",
+            Usage = "!test"
+        });
+        command.Setup(c => c.ExecuteAsync(It.IsAny<CommandContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(CommandResult.Ok("ok"));
+
+        var sut = new ChatCommandProcessor([command.Object], _parser, _authorizationService.Object, _idempotencyStore.Object, _clock.Object, overrideOptions, _rconResponseService.Object, _auditLogger.Object, _logger.Object);
+
+        var result = await sut.ProcessAsync(CreateContext("!test") with { EventGeneratedUtc = now.AddSeconds(-8) });
+
+        Assert.True(result.Success);
+        command.Verify(c => c.ExecuteAsync(It.IsAny<CommandContext>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task ProcessAsync_WhenMutatingThresholdIsNegative_FallsBackToDefaultThreshold()
+    {
+        var now = new DateTime(2026, 6, 3, 10, 0, 0, DateTimeKind.Utc);
+        _clock.SetupGet(x => x.UtcNow).Returns(now);
+
+        var options = Options.Create(new CommandFreshnessOptions
+        {
+            DefaultSeconds = 7,
+            ReadOnlySeconds = 5,
+            MutatingSeconds = -1
+        });
+
+        var command = new Mock<IChatCommand>();
+        command.Setup(c => c.Prefix).Returns("!test");
+        command.Setup(c => c.Metadata).Returns(new ChatCommandMetadata
+        {
+            Name = "test",
+            Prefix = "!test",
+            Usage = "!test",
+            IsMutating = true
+        });
+        command.Setup(c => c.ExecuteAsync(It.IsAny<CommandContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(CommandResult.Ok("ok"));
+
+        var sut = new ChatCommandProcessor([command.Object], _parser, _authorizationService.Object, _idempotencyStore.Object, _clock.Object, options, _rconResponseService.Object, _auditLogger.Object, _logger.Object);
+
+        var result = await sut.ProcessAsync(CreateContext("!test") with { EventGeneratedUtc = now.AddSeconds(-6) });
+
+        Assert.True(result.Success);
+        command.Verify(c => c.ExecuteAsync(It.IsAny<CommandContext>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 }

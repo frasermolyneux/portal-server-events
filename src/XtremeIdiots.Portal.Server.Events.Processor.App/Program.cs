@@ -117,8 +117,10 @@ var host = new HostBuilder()
 
         // Command framework
         services.Configure<CommandAuthorizationOptions>(configuration.GetSection("Commands:Authorization"));
+        services.Configure<CommandFreshnessOptions>(configuration.GetSection("Commands:Freshness"));
         services.AddSingleton<ICommandAuthorizationService, CommandAuthorizationService>();
         services.AddSingleton<ICommandIdempotencyStore, InMemoryCommandIdempotencyStore>();
+        services.AddSingleton<ISystemClock, SystemClock>();
         services.AddTransient<ICommandSafetyService, CommandSafetyService>();
         services.AddTransient<IChatCommandProcessor, ChatCommandProcessor>();
         services.AddSingleton<ICommandParser, ChatCommandParser>();
