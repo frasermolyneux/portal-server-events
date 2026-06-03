@@ -17,7 +17,10 @@ public sealed class CommandPolicyOptions
 public sealed record CommandAuthorizationContext
 {
     public required string CommandPrefix { get; init; }
-    public required string? RequiredPolicy { get; init; }
+    public string? RequiredPolicy { get; init; }
+    public string[] RequiredTags { get; init; } = [];
+    public string[] RequiredClaims { get; init; } = [];
+    public bool Privileged { get; init; } = true;
     public required string GameType { get; init; }
     public required Guid ServerId { get; init; }
     public required Guid? PlayerId { get; init; }

@@ -18,23 +18,48 @@ public sealed class CommandAuthorizationService : ICommandAuthorizationService
 
     public Task<CommandAuthorizationResult> AuthorizeAsync(CommandAuthorizationContext context, CancellationToken ct = default)
     {
-        if (string.IsNullOrWhiteSpace(context.RequiredPolicy))
+        var hasInlineRequirements = context.RequiredTags.Length > 0 || context.RequiredClaims.Length > 0;
+
+        CommandPolicyOptions? configuredPolicy = null;
+        if (!string.IsNullOrWhiteSpace(context.RequiredPolicy))
+        {
+            var policies = _options.CurrentValue.Policies;
+            if (!policies.TryGetValue(context.RequiredPolicy, out configuredPolicy))
+            {
+                _logger.LogWarning("Authorization policy {Policy} not configured for command {CommandPrefix}; denying by default.",
+                    context.RequiredPolicy,
+                    context.CommandPrefix);
+                return Task.FromResult(CommandAuthorizationResult.Deny("Authorization policy is not configured for this command."));
+            }
+        }
+
+        if (hasInlineRequirements)
+        {
+            var inlinePolicy = new CommandPolicyOptions
+            {
+                RequiredTags = context.RequiredTags,
+                RequiredClaims = context.RequiredClaims,
+                AllowedGameTypes = configuredPolicy?.AllowedGameTypes ?? [],
+                AllowedServerIds = configuredPolicy?.AllowedServerIds ?? [],
+                Privileged = context.Privileged
+            };
+
+            return Task.FromResult(EvaluatePolicy(inlinePolicy, context));
+        }
+
+        if (configuredPolicy is null)
         {
             return Task.FromResult(CommandAuthorizationResult.Allow());
         }
 
-        var policies = _options.CurrentValue.Policies;
-        if (!policies.TryGetValue(context.RequiredPolicy, out var policy))
-        {
-            _logger.LogWarning("Authorization policy {Policy} not configured for command {CommandPrefix}; denying by default.",
-                context.RequiredPolicy,
-                context.CommandPrefix);
-            return Task.FromResult(CommandAuthorizationResult.Deny("Authorization policy is not configured for this command."));
-        }
+        return Task.FromResult(EvaluatePolicy(configuredPolicy, context));
+    }
 
+    private static CommandAuthorizationResult EvaluatePolicy(CommandPolicyOptions policy, CommandAuthorizationContext context)
+    {
         if (!ScopeMatches(policy, context))
         {
-            return Task.FromResult(CommandAuthorizationResult.Deny("You are not authorized to use this command in this scope."));
+            return CommandAuthorizationResult.Deny("You are not authorized to use this command in this scope.");
         }
 
         var snapshot = context.Snapshot;
@@ -42,19 +67,19 @@ public sealed class CommandAuthorizationService : ICommandAuthorizationService
         {
             if (snapshot is null)
             {
-                return Task.FromResult(CommandAuthorizationResult.Deny("Authorization dependencies are unavailable."));
+                return CommandAuthorizationResult.Deny("Authorization dependencies are unavailable.");
             }
 
             if ((!snapshot.TagsResolved && policy.RequiredTags.Length > 0) ||
                 (!snapshot.ClaimsResolved && policy.RequiredClaims.Length > 0))
             {
-                return Task.FromResult(CommandAuthorizationResult.Deny("Authorization dependencies are unavailable."));
+                return CommandAuthorizationResult.Deny("Authorization dependencies are unavailable.");
             }
         }
 
         if (snapshot is null)
         {
-            return Task.FromResult(CommandAuthorizationResult.Deny("Authorization context is unavailable."));
+            return CommandAuthorizationResult.Deny("Authorization context is unavailable.");
         }
 
         var tagMatch = MatchesAny(policy.RequiredTags, snapshot.Tags);
@@ -64,28 +89,28 @@ public sealed class CommandAuthorizationService : ICommandAuthorizationService
         {
             if (tagMatch && claimMatch)
             {
-                return Task.FromResult(CommandAuthorizationResult.Allow());
+                return CommandAuthorizationResult.Allow();
             }
 
             if (policy.Privileged && tagMatch != claimMatch)
             {
-                return Task.FromResult(CommandAuthorizationResult.Deny("Your authorization sources are inconsistent for this command."));
+                return CommandAuthorizationResult.Deny("Your authorization sources are inconsistent for this command.");
             }
 
-            return Task.FromResult(CommandAuthorizationResult.Deny("You are not authorized to use this command."));
+            return CommandAuthorizationResult.Deny("You are not authorized to use this command.");
         }
 
         if (policy.RequiredTags.Length > 0 && !tagMatch)
         {
-            return Task.FromResult(CommandAuthorizationResult.Deny("You are not authorized to use this command."));
+            return CommandAuthorizationResult.Deny("You are not authorized to use this command.");
         }
 
         if (policy.RequiredClaims.Length > 0 && !claimMatch)
         {
-            return Task.FromResult(CommandAuthorizationResult.Deny("You are not authorized to use this command."));
+            return CommandAuthorizationResult.Deny("You are not authorized to use this command.");
         }
 
-        return Task.FromResult(CommandAuthorizationResult.Allow());
+        return CommandAuthorizationResult.Allow();
     }
 
     private static bool ScopeMatches(CommandPolicyOptions policy, CommandAuthorizationContext context)

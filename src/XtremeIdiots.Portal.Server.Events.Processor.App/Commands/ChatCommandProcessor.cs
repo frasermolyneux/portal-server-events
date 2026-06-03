@@ -1,5 +1,4 @@
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 
 using MX.Observability.ApplicationInsights.Auditing;
 using MX.Observability.ApplicationInsights.Auditing.Models;
@@ -13,7 +12,7 @@ public sealed class ChatCommandProcessor : IChatCommandProcessor
     private readonly ICommandAuthorizationService _authorizationService;
     private readonly ICommandIdempotencyStore _idempotencyStore;
     private readonly ISystemClock _clock;
-    private readonly CommandFreshnessOptions _freshnessOptions;
+    private readonly IChatCommandSettingsProvider _settingsProvider;
     private readonly IRconResponseService _rconResponseService;
     private readonly IAuditLogger _auditLogger;
     private readonly ILogger<ChatCommandProcessor> _logger;
@@ -24,7 +23,7 @@ public sealed class ChatCommandProcessor : IChatCommandProcessor
         ICommandAuthorizationService authorizationService,
         ICommandIdempotencyStore idempotencyStore,
         ISystemClock clock,
-        IOptions<CommandFreshnessOptions> freshnessOptions,
+        IChatCommandSettingsProvider settingsProvider,
         IRconResponseService rconResponseService,
         IAuditLogger auditLogger,
         ILogger<ChatCommandProcessor> logger)
@@ -33,7 +32,7 @@ public sealed class ChatCommandProcessor : IChatCommandProcessor
         _authorizationService = authorizationService;
         _idempotencyStore = idempotencyStore;
         _clock = clock;
-        _freshnessOptions = freshnessOptions.Value;
+        _settingsProvider = settingsProvider;
         _rconResponseService = rconResponseService;
         _auditLogger = auditLogger;
         _logger = logger;
@@ -72,8 +71,23 @@ public sealed class ChatCommandProcessor : IChatCommandProcessor
         _logger.LogInformation("Command {CommandPrefix} matched for player {Username} on server {ServerId}",
             command.Prefix, context.Username, context.ServerId);
 
-        var threshold = ResolveFreshnessThreshold(command.Metadata);
-        var age = _clock.UtcNow - context.EventGeneratedUtc;
+        var dispatchTimestamp = _clock.UtcNow;
+        var commandSettings = await _settingsProvider
+            .GetEffectiveSettingsAsync(context.ServerId, command.Metadata.Name, command.Metadata.IsMutating, ct)
+            .ConfigureAwait(false);
+
+        if (!commandSettings.Enabled)
+        {
+            _logger.LogInformation(
+                "Command {CommandPrefix} is disabled for server {ServerId}; skipping execution.",
+                command.Prefix,
+                context.ServerId);
+
+            return CommandResult.NotHandled;
+        }
+
+        var threshold = TimeSpan.FromSeconds(Math.Max(0, commandSettings.FreshnessSeconds));
+        var age = dispatchTimestamp - context.EventGeneratedUtc;
         if (age > threshold)
         {
             _logger.LogInformation(
@@ -101,6 +115,9 @@ public sealed class ChatCommandProcessor : IChatCommandProcessor
         {
             CommandPrefix = command.Prefix,
             RequiredPolicy = command.Metadata.RequiredPolicy,
+            RequiredTags = commandSettings.RequiredTags,
+            RequiredClaims = commandSettings.RequiredClaims,
+            Privileged = true,
             GameType = context.GameType,
             ServerId = context.ServerId,
             PlayerId = context.PlayerId,
@@ -190,33 +207,6 @@ public sealed class ChatCommandProcessor : IChatCommandProcessor
         }
 
         return result;
-    }
-
-    private TimeSpan ResolveFreshnessThreshold(ChatCommandMetadata metadata)
-    {
-        if (!string.IsNullOrWhiteSpace(metadata.Name) &&
-            _freshnessOptions.CommandSeconds.TryGetValue(metadata.Name, out var commandSeconds) &&
-            commandSeconds >= 0)
-        {
-            return TimeSpan.FromSeconds(commandSeconds);
-        }
-
-        if (metadata.IsMutating)
-        {
-            if (_freshnessOptions.MutatingSeconds >= 0)
-            {
-                return TimeSpan.FromSeconds(_freshnessOptions.MutatingSeconds);
-            }
-
-            return TimeSpan.FromSeconds(Math.Max(0, _freshnessOptions.DefaultSeconds));
-        }
-
-        if (_freshnessOptions.ReadOnlySeconds >= 0)
-        {
-            return TimeSpan.FromSeconds(_freshnessOptions.ReadOnlySeconds);
-        }
-
-        return TimeSpan.FromSeconds(Math.Max(0, _freshnessOptions.DefaultSeconds));
     }
 
     private static CommandIdempotencyKey BuildIdempotencyKey(CommandContext context, ChatCommandEnvelope command)
