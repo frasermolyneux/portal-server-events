@@ -13,6 +13,7 @@ using MX.Observability.ApplicationInsights.Auditing.Models;
 using XtremeIdiots.Portal.Repository.Api.Client.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Constants.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.ChatMessages;
+using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.GameServers;
 using XtremeIdiots.Portal.Server.Events.Abstractions.V1;
 using XtremeIdiots.Portal.Server.Events.Abstractions.V1.Events;
 
@@ -32,6 +33,7 @@ public class ChatMessageProcessor(
 {
     private static readonly TimeSpan DelayWarningThreshold = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan PlayerCacheExpiration = TimeSpan.FromMinutes(15);
+    private const string ChatCommandExecutionEventType = "ChatCommandExecution";
 
     [Function(nameof(ProcessChatMessage))]
     public async Task ProcessChatMessage(
@@ -148,6 +150,9 @@ public class ChatMessageProcessor(
         {
             logger.LogInformation("Command processed for {Username}: Success={Success}",
                 chatEvent.Username, commandResult.Success);
+
+            await TryPersistChatCommandExecutionEventAsync(chatEvent, commandContext, commandResult, context.CancellationToken)
+                .ConfigureAwait(false);
         }
 
         // Run moderation pipeline (never throws)
@@ -164,6 +169,63 @@ public class ChatMessageProcessor(
         };
 
         await moderationPipeline.RunAsync(moderationContext, context.CancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task TryPersistChatCommandExecutionEventAsync(
+        ChatMessageEvent chatEvent,
+        CommandContext commandContext,
+        CommandResult commandResult,
+        CancellationToken cancellationToken)
+    {
+        var commandPrefix = ExtractCommandPrefix(chatEvent.Message);
+        if (string.IsNullOrWhiteSpace(commandPrefix))
+        {
+            return;
+        }
+
+        var eventData = JsonSerializer.Serialize(new
+        {
+            CommandPrefix = commandPrefix,
+            commandResult.Success,
+            commandResult.ResponseMessage,
+            commandContext.PlayerGuid,
+            commandContext.Username,
+            commandContext.SlotId,
+            commandContext.EventGeneratedUtc,
+            commandContext.EventPublishedUtc
+        }, JsonOptions.Default);
+
+        try
+        {
+            await repositoryApiClient.GameServersEvents.V1
+                .CreateGameServerEvent(
+                    new CreateGameServerEventDto(chatEvent.ServerId, ChatCommandExecutionEventType, eventData),
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        {
+            logger.LogWarning(ex,
+                "Failed to persist ChatCommandExecution event for {CommandPrefix} on server {ServerId}",
+                commandPrefix,
+                chatEvent.ServerId);
+        }
+    }
+
+    private static string? ExtractCommandPrefix(string message)
+    {
+        if (string.IsNullOrWhiteSpace(message))
+            return null;
+
+        var trimmed = message.TrimStart();
+        if (!trimmed.StartsWith('!'))
+            return null;
+
+        var firstToken = trimmed
+            .Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .FirstOrDefault();
+
+        return string.IsNullOrWhiteSpace(firstToken) ? null : firstToken;
     }
 
     private async Task<PlayerContextInfo?> GetPlayerContext(GameType gameType, string guid)

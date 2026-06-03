@@ -11,6 +11,7 @@ using Moq;
 using XtremeIdiots.Portal.Repository.Abstractions.Constants.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Interfaces.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.ChatMessages;
+using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.GameServers;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.Players;
 using XtremeIdiots.Portal.Repository.Api.Client.V1;
 using XtremeIdiots.Portal.Server.Events.Abstractions.V1.Events;
@@ -31,6 +32,8 @@ public class ChatMessageProcessorTests
     private readonly Mock<IPlayersApi> _playersApi = new();
     private readonly Mock<IVersionedChatMessagesApi> _versionedChat = new();
     private readonly Mock<IChatMessagesApi> _chatApi = new();
+    private readonly Mock<IVersionedGameServersEventsApi> _versionedEvents = new();
+    private readonly Mock<IGameServersEventsApi> _eventsApi = new();
     private readonly IMemoryCache _cache;
     private readonly Mock<IAuditLogger> _auditLogger = new();
     private readonly Mock<FunctionContext> _functionContext = new();
@@ -49,6 +52,9 @@ public class ChatMessageProcessorTests
 
         _versionedChat.Setup(x => x.V1).Returns(_chatApi.Object);
         _repoClient.Setup(x => x.ChatMessages).Returns(_versionedChat.Object);
+
+        _versionedEvents.Setup(x => x.V1).Returns(_eventsApi.Object);
+        _repoClient.Setup(x => x.GameServersEvents).Returns(_versionedEvents.Object);
 
         _commandProcessor.Setup(x => x.ProcessAsync(It.IsAny<CommandContext>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(CommandResult.NotHandled);
@@ -290,5 +296,81 @@ public class ChatMessageProcessorTests
         // GetPlayerByGameType should only be called once (second call uses cache)
         _playersApi.Verify(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.Tags), Times.Once);
         _chatApi.Verify(x => x.CreateChatMessage(It.IsAny<CreateChatMessageDto>(), It.IsAny<CancellationToken>()), Times.Exactly(2));
+    }
+
+    [Fact]
+    public async Task HandledCommand_PersistsChatCommandExecutionEvent()
+    {
+        var evt = CreateValidEvent(chatMessage: "!commands");
+        var message = CreateMessage(evt);
+
+        var playerDto = CreatePlayerDto(TestPlayerId);
+        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.Tags))
+            .ReturnsAsync(SuccessResult(playerDto));
+
+        _chatApi.Setup(x => x.CreateChatMessage(It.IsAny<CreateChatMessageDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(SuccessResult());
+
+        _eventsApi.Setup(x => x.CreateGameServerEvent(It.IsAny<CreateGameServerEventDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(SuccessResult());
+
+        _commandProcessor.Setup(x => x.ProcessAsync(It.IsAny<CommandContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(CommandResult.Ok("ok"));
+
+        await _sut.ProcessChatMessage(message, _functionContext.Object);
+
+        _eventsApi.Verify(x => x.CreateGameServerEvent(
+            It.Is<CreateGameServerEventDto>(dto =>
+                dto.GameServerId == TestServerId &&
+                dto.EventType == "ChatCommandExecution" &&
+                dto.EventData != null &&
+                dto.EventData.Contains("\"commandPrefix\":\"!commands\"", StringComparison.Ordinal)),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task NotHandledCommand_DoesNotPersistChatCommandExecutionEvent()
+    {
+        var evt = CreateValidEvent(chatMessage: "!unknown");
+        var message = CreateMessage(evt);
+
+        var playerDto = CreatePlayerDto(TestPlayerId);
+        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.Tags))
+            .ReturnsAsync(SuccessResult(playerDto));
+
+        _chatApi.Setup(x => x.CreateChatMessage(It.IsAny<CreateChatMessageDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(SuccessResult());
+
+        _commandProcessor.Setup(x => x.ProcessAsync(It.IsAny<CommandContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(CommandResult.NotHandled);
+
+        await _sut.ProcessChatMessage(message, _functionContext.Object);
+
+        _eventsApi.Verify(x => x.CreateGameServerEvent(It.IsAny<CreateGameServerEventDto>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task HandledCommand_WhenEventWriteFails_ContinuesPipeline()
+    {
+        var evt = CreateValidEvent(chatMessage: "!commands");
+        var message = CreateMessage(evt);
+
+        var playerDto = CreatePlayerDto(TestPlayerId);
+        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.Tags))
+            .ReturnsAsync(SuccessResult(playerDto));
+
+        _chatApi.Setup(x => x.CreateChatMessage(It.IsAny<CreateChatMessageDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(SuccessResult());
+
+        _eventsApi
+            .Setup(x => x.CreateGameServerEvent(It.IsAny<CreateGameServerEventDto>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("event write failed"));
+
+        _commandProcessor.Setup(x => x.ProcessAsync(It.IsAny<CommandContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(CommandResult.Ok("ok"));
+
+        await _sut.ProcessChatMessage(message, _functionContext.Object);
+
+        _moderationPipeline.Verify(x => x.RunAsync(It.IsAny<ModerationContext>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 }
