@@ -140,6 +140,7 @@ var host = new HostBuilder()
         services.AddTransient<IChatCommand, MapVoteLikeCommand>();
         services.AddTransient<IChatCommand, MapVoteDislikeCommand>();
         services.AddTransient<IChatCommand, RegisterCommand>();
+        services.AddTransient<IChatCommand, WhoAmICommand>();
         services.AddTransient<IChatCommand, FuCommand>();
 
         // Feature management

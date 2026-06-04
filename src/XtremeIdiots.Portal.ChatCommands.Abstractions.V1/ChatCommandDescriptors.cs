@@ -41,6 +41,16 @@ public static class ChatCommandDescriptorCatalog
         IsMutating: true);
 
     /// <summary>
+    /// <c>!whoami</c> command descriptor.
+    /// </summary>
+    public static ChatCommandDescriptor WhoAmI { get; } = new(
+        Name: "whoami",
+        Prefix: "!whoami",
+        Usage: "!whoami",
+        Description: "Shows your current name, IP, location, and role tags in a private response.",
+        IsMutating: false);
+
+    /// <summary>
     /// <c>!fu</c> command descriptor.
     /// </summary>
     public static ChatCommandDescriptor Fu { get; } = new(
@@ -77,6 +87,7 @@ public static class ChatCommandDescriptorCatalog
     [
         Commands,
         Register,
+        WhoAmI,
         Like,
         Dislike,
         Fu
