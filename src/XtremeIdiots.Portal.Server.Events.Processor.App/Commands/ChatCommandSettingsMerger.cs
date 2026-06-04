@@ -67,27 +67,23 @@ public sealed class ChatCommandSettingsMerger
         }
 
         var requiredTags = Array.Empty<string>();
-        var requiredClaims = Array.Empty<string>();
         var authorizationSource = SettingsValueSource.Hardcoded;
 
-        if (globalDefaults?.RequiredTags is not null || globalDefaults?.RequiredClaims is not null)
+        if (globalDefaults?.RequiredTags is not null)
         {
             requiredTags = Normalize(globalDefaults?.RequiredTags);
-            requiredClaims = Normalize(globalDefaults?.RequiredClaims);
             authorizationSource = SettingsValueSource.GlobalDefaults;
         }
 
-        if (globalCommand?.RequiredTags is not null || globalCommand?.RequiredClaims is not null)
+        if (globalCommand?.RequiredTags is not null)
         {
             requiredTags = Normalize(globalCommand.RequiredTags);
-            requiredClaims = Normalize(globalCommand.RequiredClaims);
             authorizationSource = SettingsValueSource.GlobalCommand;
         }
 
-        if (serverCommand?.RequiredTags is not null || serverCommand?.RequiredClaims is not null)
+        if (serverCommand?.RequiredTags is not null)
         {
             requiredTags = Normalize(serverCommand.RequiredTags);
-            requiredClaims = Normalize(serverCommand.RequiredClaims);
             authorizationSource = SettingsValueSource.ServerCommand;
         }
 
@@ -112,7 +108,6 @@ public sealed class ChatCommandSettingsMerger
             Enabled = enabled,
             FreshnessSeconds = freshness,
             RequiredTags = requiredTags,
-            RequiredClaims = requiredClaims,
             Settings = payload,
             EnabledSource = enabledSource,
             FreshnessSource = freshnessSource,

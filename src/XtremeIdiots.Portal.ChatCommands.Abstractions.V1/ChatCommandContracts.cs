@@ -73,11 +73,6 @@ public sealed class ChatCommandSettingsDefaults
     /// Default required authorization tags.
     /// </summary>
     public string[]? RequiredTags { get; set; }
-
-    /// <summary>
-    /// Default required authorization claims.
-    /// </summary>
-    public string[]? RequiredClaims { get; set; }
 }
 
 /// <summary>
@@ -120,11 +115,6 @@ public sealed class ChatCommandSettingsEntry
     /// Optional required authorization tags override.
     /// </summary>
     public string[]? RequiredTags { get; set; }
-
-    /// <summary>
-    /// Optional required authorization claims override.
-    /// </summary>
-    public string[]? RequiredClaims { get; set; }
 
     /// <summary>
     /// Optional command-specific payload.
@@ -187,11 +177,6 @@ public sealed record EffectiveChatCommandSettings
     /// Effective required tags.
     /// </summary>
     public string[] RequiredTags { get; init; } = [];
-
-    /// <summary>
-    /// Effective required claims.
-    /// </summary>
-    public string[] RequiredClaims { get; init; } = [];
 
     /// <summary>
     /// Effective command-specific payload.

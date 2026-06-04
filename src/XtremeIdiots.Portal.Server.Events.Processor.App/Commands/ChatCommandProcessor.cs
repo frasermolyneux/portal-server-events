@@ -116,7 +116,6 @@ public sealed class ChatCommandProcessor : IChatCommandProcessor
             CommandPrefix = command.Prefix,
             RequiredPolicy = command.Metadata.RequiredPolicy,
             RequiredTags = commandSettings.RequiredTags,
-            RequiredClaims = commandSettings.RequiredClaims,
             Privileged = true,
             GameType = context.GameType,
             ServerId = context.ServerId,

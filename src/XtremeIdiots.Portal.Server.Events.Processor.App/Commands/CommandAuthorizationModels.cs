@@ -8,7 +8,6 @@ public sealed class CommandAuthorizationOptions
 public sealed class CommandPolicyOptions
 {
     public string[] RequiredTags { get; init; } = [];
-    public string[] RequiredClaims { get; init; } = [];
     public string[] AllowedGameTypes { get; init; } = [];
     public Guid[] AllowedServerIds { get; init; } = [];
     public bool Privileged { get; init; } = true;
@@ -19,7 +18,6 @@ public sealed record CommandAuthorizationContext
     public required string CommandPrefix { get; init; }
     public string? RequiredPolicy { get; init; }
     public string[] RequiredTags { get; init; } = [];
-    public string[] RequiredClaims { get; init; } = [];
     public bool Privileged { get; init; } = true;
     public required string GameType { get; init; }
     public required Guid ServerId { get; init; }

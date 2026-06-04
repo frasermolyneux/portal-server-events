@@ -61,7 +61,6 @@ public sealed class ChatCommandCatalog : IChatCommandCatalog
                 CommandPrefix = command.Prefix,
                 RequiredPolicy = command.RequiredPolicy,
                 RequiredTags = commandSettings.RequiredTags,
-                RequiredClaims = commandSettings.RequiredClaims,
                 Privileged = true,
                 GameType = context.GameType,
                 ServerId = context.ServerId,

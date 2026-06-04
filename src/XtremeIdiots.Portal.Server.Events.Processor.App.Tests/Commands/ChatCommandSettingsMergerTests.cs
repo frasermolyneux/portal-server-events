@@ -18,7 +18,6 @@ public class ChatCommandSettingsMergerTests
         Assert.Equal(SettingsValueSource.Hardcoded, result.EnabledSource);
         Assert.Equal(SettingsValueSource.Hardcoded, result.FreshnessSource);
         Assert.Empty(result.RequiredTags);
-        Assert.Empty(result.RequiredClaims);
     }
 
     [Fact]
@@ -35,8 +34,7 @@ public class ChatCommandSettingsMergerTests
                     ReadOnly = 7,
                     Mutating = 4
                 },
-                RequiredTags = ["TagA"],
-                RequiredClaims = ["ClaimA"]
+                RequiredTags = ["TagA"]
             }
         };
 
@@ -45,7 +43,6 @@ public class ChatCommandSettingsMergerTests
         Assert.False(result.Enabled);
         Assert.Equal(7, result.FreshnessSeconds);
         Assert.Equal(["TagA"], result.RequiredTags);
-        Assert.Equal(["ClaimA"], result.RequiredClaims);
         Assert.Equal(SettingsValueSource.GlobalDefaults, result.EnabledSource);
         Assert.Equal(SettingsValueSource.GlobalDefaults, result.FreshnessSource);
         Assert.Equal(SettingsValueSource.GlobalDefaults, result.AuthorizationSource);
@@ -63,8 +60,7 @@ public class ChatCommandSettingsMergerTests
                 {
                     ReadOnly = 7
                 },
-                RequiredTags = ["TagA"],
-                RequiredClaims = ["ClaimA"]
+                RequiredTags = ["TagA"]
             },
             Commands = new Dictionary<string, ChatCommandSettingsEntry>(StringComparer.OrdinalIgnoreCase)
             {
@@ -73,7 +69,6 @@ public class ChatCommandSettingsMergerTests
                     Enabled = true,
                     FreshnessSeconds = 6,
                     RequiredTags = ["TagB"],
-                    RequiredClaims = ["ClaimB"],
                     Settings = JsonSerializer.SerializeToElement(new { mode = "global" })
                 }
             }
@@ -88,7 +83,6 @@ public class ChatCommandSettingsMergerTests
                     Enabled = false,
                     FreshnessSeconds = 2,
                     RequiredTags = ["TagC", "TagC", ""],
-                    RequiredClaims = ["ClaimC"],
                     Settings = JsonSerializer.SerializeToElement(new { mode = "server" })
                 }
             }
@@ -99,7 +93,6 @@ public class ChatCommandSettingsMergerTests
         Assert.False(result.Enabled);
         Assert.Equal(2, result.FreshnessSeconds);
         Assert.Equal(["TagC"], result.RequiredTags);
-        Assert.Equal(["ClaimC"], result.RequiredClaims);
         Assert.Equal("server", result.Settings?.GetProperty("mode").GetString());
         Assert.Equal(SettingsValueSource.ServerCommand, result.EnabledSource);
         Assert.Equal(SettingsValueSource.ServerCommand, result.FreshnessSource);

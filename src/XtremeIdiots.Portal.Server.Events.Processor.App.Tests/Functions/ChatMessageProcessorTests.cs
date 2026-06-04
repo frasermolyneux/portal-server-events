@@ -399,8 +399,7 @@ public class ChatMessageProcessorTests
         _commandProcessor.Verify(x => x.ProcessAsync(
             It.Is<CommandContext>(ctx =>
                 ctx.AuthorizationSnapshot != null &&
-                ctx.AuthorizationSnapshot.TagsResolved == true &&
-                ctx.AuthorizationSnapshot.ClaimsResolved == true),
+                ctx.AuthorizationSnapshot.TagsResolved == true),
             It.IsAny<CancellationToken>()), Times.Once);
     }
 

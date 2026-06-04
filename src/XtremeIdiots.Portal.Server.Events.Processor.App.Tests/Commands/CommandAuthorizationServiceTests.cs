@@ -51,7 +51,7 @@ public class CommandAuthorizationServiceTests
     }
 
     [Fact]
-    public async Task AuthorizeAsync_WhenOnlyClaimPolicyConfigured_Denies()
+    public async Task AuthorizeAsync_WhenTagPolicyMissingMatch_Denies()
     {
         var sut = CreateSut(new CommandAuthorizationOptions
         {
@@ -59,19 +59,19 @@ public class CommandAuthorizationServiceTests
             {
                 ["admin"] = new CommandPolicyOptions
                 {
-                    RequiredClaims = ["AdminActions.Create"]
+                    RequiredTags = ["game-admin"]
                 }
             }
         });
 
-        var result = await sut.AuthorizeAsync(CreateContext(requiredPolicy: "admin", claims: ["AdminActions.Create"]));
+        var result = await sut.AuthorizeAsync(CreateContext(requiredPolicy: "admin", tags: ["moderator"]));
 
         Assert.False(result.Allowed);
-        Assert.Contains("no longer supported", result.Reason ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("not authorized", result.Reason ?? string.Empty, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
-    public async Task AuthorizeAsync_WhenHybridPolicyConfigured_Denies()
+    public async Task AuthorizeAsync_WhenHybridScopeAndTagPolicyConfigured_AllowsWithTagMatch()
     {
         var sut = CreateSut(new CommandAuthorizationOptions
         {
@@ -80,16 +80,15 @@ public class CommandAuthorizationServiceTests
                 ["admin"] = new CommandPolicyOptions
                 {
                     RequiredTags = ["game-admin"],
-                    RequiredClaims = ["AdminActions.Create"],
-                    Privileged = true
+                    AllowedGameTypes = ["CallOfDuty4"],
+                    Privileged = true,
                 }
             }
         });
 
-        var result = await sut.AuthorizeAsync(CreateContext(requiredPolicy: "admin", tags: ["game-admin"], claims: ["AdminActions.Create"]));
+        var result = await sut.AuthorizeAsync(CreateContext(requiredPolicy: "admin", tags: ["game-admin"]));
 
-        Assert.False(result.Allowed);
-        Assert.Contains("no longer supported", result.Reason ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+        Assert.True(result.Allowed);
     }
 
     [Fact]
@@ -152,9 +151,7 @@ public class CommandAuthorizationServiceTests
 
         var snapshot = new CommandAuthorizationSnapshot
         {
-            ClaimsResolved = true,
             TagsResolved = false,
-            Claims = new HashSet<string>(StringComparer.OrdinalIgnoreCase),
             Tags = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         };
 
@@ -177,15 +174,12 @@ public class CommandAuthorizationServiceTests
         string gameType = "CallOfDuty4",
         Guid? serverId = null,
         string[]? tags = null,
-        string[]? claims = null,
         CommandAuthorizationSnapshot? snapshot = null)
     {
         snapshot ??= new CommandAuthorizationSnapshot
         {
             TagsResolved = true,
-            ClaimsResolved = true,
-            Tags = (tags ?? []).ToHashSet(StringComparer.OrdinalIgnoreCase),
-            Claims = (claims ?? []).ToHashSet(StringComparer.OrdinalIgnoreCase)
+            Tags = (tags ?? []).ToHashSet(StringComparer.OrdinalIgnoreCase)
         };
 
         return new CommandAuthorizationContext

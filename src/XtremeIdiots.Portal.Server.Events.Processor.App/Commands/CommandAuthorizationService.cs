@@ -18,7 +18,7 @@ public sealed class CommandAuthorizationService : ICommandAuthorizationService
 
     public Task<CommandAuthorizationResult> AuthorizeAsync(CommandAuthorizationContext context, CancellationToken ct = default)
     {
-        var hasInlineRequirements = context.RequiredTags.Length > 0 || context.RequiredClaims.Length > 0;
+        var hasInlineRequirements = context.RequiredTags.Length > 0;
 
         CommandPolicyOptions? configuredPolicy = null;
         if (!string.IsNullOrWhiteSpace(context.RequiredPolicy))
@@ -38,7 +38,6 @@ public sealed class CommandAuthorizationService : ICommandAuthorizationService
             var inlinePolicy = new CommandPolicyOptions
             {
                 RequiredTags = context.RequiredTags,
-                RequiredClaims = context.RequiredClaims,
                 AllowedGameTypes = configuredPolicy?.AllowedGameTypes ?? [],
                 AllowedServerIds = configuredPolicy?.AllowedServerIds ?? [],
                 Privileged = context.Privileged
@@ -79,11 +78,6 @@ public sealed class CommandAuthorizationService : ICommandAuthorizationService
         if (snapshot is null)
         {
             return CommandAuthorizationResult.Deny("Authorization context is unavailable.");
-        }
-
-        if (policy.RequiredClaims.Length > 0)
-        {
-            return CommandAuthorizationResult.Deny("Claim-based authorization is no longer supported. Configure required tags only.");
         }
 
         var tagMatch = MatchesAny(policy.RequiredTags, snapshot.Tags);

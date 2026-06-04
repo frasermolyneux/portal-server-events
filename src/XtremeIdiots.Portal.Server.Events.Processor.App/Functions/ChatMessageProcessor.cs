@@ -263,8 +263,7 @@ public class ChatMessageProcessor(
         var authorizationSnapshot = new CommandAuthorizationSnapshot
         {
             Tags = tagNames,
-            TagsResolved = true,
-            ClaimsResolved = true
+            TagsResolved = true
         };
 
         var ctx = new PlayerContextInfo(player.PlayerId, player.FirstSeen, hasTag, authorizationSnapshot);

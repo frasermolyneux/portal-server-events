@@ -267,7 +267,6 @@ public class ChatCommandCatalogTests
                 Enabled = true,
                 FreshnessSeconds = 5,
                 RequiredTags = string.Equals(commandName, "register", StringComparison.OrdinalIgnoreCase) ? ["tag-r"] : [],
-                RequiredClaims = string.Equals(commandName, "register", StringComparison.OrdinalIgnoreCase) ? ["claim-r"] : [],
                 EnabledSource = SettingsValueSource.ServerCommand,
                 FreshnessSource = SettingsValueSource.ServerCommand,
                 AuthorizationSource = SettingsValueSource.ServerCommand,
@@ -291,7 +290,6 @@ public class ChatCommandCatalogTests
             It.Is<CommandAuthorizationContext>(c =>
                 c.RequiredPolicy == "register-policy" &&
                 c.RequiredTags.SequenceEqual(new[] { "tag-r" }) &&
-                c.RequiredClaims.SequenceEqual(new[] { "claim-r" }) &&
                 c.Privileged),
             It.IsAny<CancellationToken>()), Times.Once);
     }

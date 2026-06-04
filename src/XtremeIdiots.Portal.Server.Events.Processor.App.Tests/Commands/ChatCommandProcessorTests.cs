@@ -490,7 +490,6 @@ public class ChatCommandProcessorTests
                 Enabled = true,
                 FreshnessSeconds = 5,
                 RequiredTags = ["tag-a"],
-                RequiredClaims = ["claim-a"],
                 EnabledSource = SettingsValueSource.ServerCommand,
                 FreshnessSource = SettingsValueSource.ServerCommand,
                 AuthorizationSource = SettingsValueSource.ServerCommand,
@@ -505,7 +504,6 @@ public class ChatCommandProcessorTests
             It.Is<CommandAuthorizationContext>(c =>
                 c.RequiredPolicy == "admin" &&
                 c.RequiredTags.SequenceEqual(new[] { "tag-a" }) &&
-                c.RequiredClaims.SequenceEqual(new[] { "claim-a" }) &&
                 c.Privileged),
             It.IsAny<CancellationToken>()), Times.Once);
     }

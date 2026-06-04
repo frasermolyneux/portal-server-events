@@ -77,8 +77,7 @@ public class WhoAmICommandTests
         AuthorizationSnapshot = new CommandAuthorizationSnapshot
         {
             Tags = new HashSet<string>(["HeadAdmin", "GameAdmin"], StringComparer.OrdinalIgnoreCase),
-            TagsResolved = true,
-            ClaimsResolved = true
+            TagsResolved = true
         }
     };
 
@@ -149,8 +148,7 @@ public class WhoAmICommandTests
             AuthorizationSnapshot = new CommandAuthorizationSnapshot
             {
                 Tags = new HashSet<string>(StringComparer.OrdinalIgnoreCase),
-                TagsResolved = true,
-                ClaimsResolved = true
+                TagsResolved = true
             }
         };
 

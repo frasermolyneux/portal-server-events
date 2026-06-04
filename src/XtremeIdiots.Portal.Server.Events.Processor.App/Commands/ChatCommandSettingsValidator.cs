@@ -59,14 +59,12 @@ public sealed class ChatCommandSettingsValidator
         }
 
         ValidateStringArray(defaults.RequiredTags, "defaults.requiredTags", result);
-        ValidateStringArray(defaults.RequiredClaims, "defaults.requiredClaims", result);
     }
 
     private static void ValidateEntry(string path, ChatCommandSettingsEntry entry, ChatCommandSettingsValidationResult result)
     {
         ValidateNonNegative(entry.FreshnessSeconds, $"{path}.freshnessSeconds", result);
         ValidateStringArray(entry.RequiredTags, $"{path}.requiredTags", result);
-        ValidateStringArray(entry.RequiredClaims, $"{path}.requiredClaims", result);
     }
 
     private static void ValidateNonNegative(int? value, string path, ChatCommandSettingsValidationResult result)
