@@ -9,6 +9,8 @@ namespace XtremeIdiots.Portal.Server.Events.Processor.App.Commands;
 
 public sealed class MapVoteDislikeCommand : MapVoteCommandBase
 {
+    private static readonly ChatCommandDescriptor Descriptor = ChatCommandDescriptorCatalog.Dislike;
+
     public MapVoteDislikeCommand(
         IRepositoryApiClient repositoryClient,
         IServersApiClient serversClient,
@@ -18,14 +20,14 @@ public sealed class MapVoteDislikeCommand : MapVoteCommandBase
         ILogger<MapVoteDislikeCommand> logger)
         : base(repositoryClient, serversClient, commandSafetyService, rconService, auditLogger, logger) { }
 
-    public override string Prefix => "!dislike";
+    public override string Prefix => Descriptor.Prefix;
     public ChatCommandMetadata Metadata => new()
     {
-        Name = "dislike",
+        Name = Descriptor.Name,
         Prefix = Prefix,
-        Usage = "!dislike",
-        Description = "Records a negative vote for the current map.",
-        IsMutating = true
+        Usage = Descriptor.Usage,
+        Description = Descriptor.Description,
+        IsMutating = Descriptor.IsMutating
     };
 
     protected override bool IsLike => false;

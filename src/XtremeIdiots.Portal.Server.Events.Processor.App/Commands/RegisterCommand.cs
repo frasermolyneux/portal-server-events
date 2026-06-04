@@ -13,6 +13,7 @@ namespace XtremeIdiots.Portal.Server.Events.Processor.App.Commands;
 
 public sealed class RegisterCommand : IChatCommand
 {
+    private static readonly ChatCommandDescriptor Descriptor = ChatCommandDescriptorCatalog.Register;
     private static readonly Regex ActivationCodeRegex = new("^[0-9A-Z]{6}$", RegexOptions.Compiled);
 
     private readonly IRepositoryApiClient _repositoryClient;
@@ -35,14 +36,14 @@ public sealed class RegisterCommand : IChatCommand
         _logger = logger;
     }
 
-    public string Prefix => "!register";
+    public string Prefix => Descriptor.Prefix;
     public ChatCommandMetadata Metadata => new()
     {
-        Name = "register",
+        Name = Descriptor.Name,
         Prefix = Prefix,
-        Usage = "!register CODE",
-        Description = "Links your in-game identity to a portal profile using an activation code.",
-        IsMutating = true
+        Usage = Descriptor.Usage,
+        Description = Descriptor.Description,
+        IsMutating = Descriptor.IsMutating
     };
 
     public async Task<CommandResult> ExecuteAsync(CommandContext context, CancellationToken ct = default)
@@ -55,7 +56,7 @@ public sealed class RegisterCommand : IChatCommand
         if (!_rateLimiter.TryAcquire(context.PlayerId.Value, DateTime.UtcNow, out var retryAfter))
         {
             var seconds = Math.Max(1, (int)Math.Ceiling(retryAfter.TotalSeconds));
-            return await FailAsync(context, $"Too many !register attempts. Please wait {seconds} seconds and try again.", ct)
+            return await FailAsync(context, $"Too many {Prefix} attempts. Please wait {seconds} seconds and try again.", ct)
                 .ConfigureAwait(false);
         }
 
@@ -66,7 +67,7 @@ public sealed class RegisterCommand : IChatCommand
             if (!parsed.PrefixToken.Equals(Prefix, StringComparison.OrdinalIgnoreCase) ||
                 parsed.Arguments.Count != 1)
             {
-                return await FailAsync(context, "Usage: !register CODE", ct).ConfigureAwait(false);
+                return await FailAsync(context, $"Usage: {Descriptor.Usage}", ct).ConfigureAwait(false);
             }
 
             code = parsed.Arguments[0].Trim().ToUpperInvariant();
@@ -78,7 +79,7 @@ public sealed class RegisterCommand : IChatCommand
 
             if (parts.Length != 2 || !parts[0].Equals(Prefix, StringComparison.OrdinalIgnoreCase))
             {
-                return await FailAsync(context, "Usage: !register CODE", ct).ConfigureAwait(false);
+                return await FailAsync(context, $"Usage: {Descriptor.Usage}", ct).ConfigureAwait(false);
             }
 
             code = parts[1].Trim().ToUpperInvariant();

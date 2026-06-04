@@ -11,8 +11,7 @@ namespace XtremeIdiots.Portal.Server.Events.Processor.App.Commands;
 
 public sealed class FuCommand : IChatCommand
 {
-    public const string CommandPrefix = "!fu";
-    private const string CommandName = "fu";
+    private static readonly ChatCommandDescriptor Descriptor = ChatCommandDescriptorCatalog.Fu;
 
     private const string AgentNamespace = "agent";
     private const string AgentNameKey = "agentName";
@@ -41,13 +40,14 @@ public sealed class FuCommand : IChatCommand
         _logger = logger;
     }
 
-    public string Prefix => CommandPrefix;
+    public string Prefix => Descriptor.Prefix;
     public ChatCommandMetadata Metadata => new()
     {
-        Name = CommandName,
+        Name = Descriptor.Name,
         Prefix = Prefix,
-        Usage = "!fu <player name>",
-        Description = "Sends a playful server-wide message to a resolved player target."
+        Usage = Descriptor.Usage,
+        Description = Descriptor.Description,
+        IsMutating = Descriptor.IsMutating
     };
 
     public async Task<CommandResult> ExecuteAsync(CommandContext context, CancellationToken ct = default)
@@ -59,7 +59,7 @@ public sealed class FuCommand : IChatCommand
             if (!parsed.PrefixToken.Equals(Prefix, StringComparison.OrdinalIgnoreCase) ||
                 parsed.Arguments.Count < 1)
             {
-                return await FailAsync(context, "Usage: !fu <player name>", ct).ConfigureAwait(false);
+                return await FailAsync(context, $"Usage: {Descriptor.Usage}", ct).ConfigureAwait(false);
             }
 
             playerQuery = string.Join(' ', parsed.Arguments);
@@ -71,14 +71,14 @@ public sealed class FuCommand : IChatCommand
 
             if (messageParts.Length < 2 || !messageParts[0].Equals(Prefix, StringComparison.OrdinalIgnoreCase))
             {
-                return await FailAsync(context, "Usage: !fu <player name>", ct).ConfigureAwait(false);
+                return await FailAsync(context, $"Usage: {Descriptor.Usage}", ct).ConfigureAwait(false);
             }
 
             playerQuery = string.Join(' ', messageParts.Skip(1));
         }
 
         var commandSettings = await _settingsProvider
-            .GetEffectiveSettingsAsync(context.ServerId, CommandName, isMutating: false, ct)
+            .GetEffectiveSettingsAsync(context.ServerId, Descriptor.Name, Descriptor.IsMutating, ct)
             .ConfigureAwait(false);
 
         var effectiveMessages = ResolveMessagesFromSettings(commandSettings.Settings);

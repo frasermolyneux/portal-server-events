@@ -9,6 +9,8 @@ namespace XtremeIdiots.Portal.Server.Events.Processor.App.Commands;
 
 public sealed class MapVoteLikeCommand : MapVoteCommandBase
 {
+    private static readonly ChatCommandDescriptor Descriptor = ChatCommandDescriptorCatalog.Like;
+
     public MapVoteLikeCommand(
         IRepositoryApiClient repositoryClient,
         IServersApiClient serversClient,
@@ -18,14 +20,14 @@ public sealed class MapVoteLikeCommand : MapVoteCommandBase
         ILogger<MapVoteLikeCommand> logger)
         : base(repositoryClient, serversClient, commandSafetyService, rconService, auditLogger, logger) { }
 
-    public override string Prefix => "!like";
+    public override string Prefix => Descriptor.Prefix;
     public ChatCommandMetadata Metadata => new()
     {
-        Name = "like",
+        Name = Descriptor.Name,
         Prefix = Prefix,
-        Usage = "!like",
-        Description = "Records a positive vote for the current map.",
-        IsMutating = true
+        Usage = Descriptor.Usage,
+        Description = Descriptor.Description,
+        IsMutating = Descriptor.IsMutating
     };
 
     protected override bool IsLike => true;

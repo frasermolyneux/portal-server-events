@@ -4,6 +4,8 @@ namespace XtremeIdiots.Portal.Server.Events.Processor.App.Commands;
 
 public sealed class CommandsCommand : IChatCommand
 {
+    private static readonly ChatCommandDescriptor Descriptor = ChatCommandDescriptorCatalog.Commands;
+
     private readonly IChatCommandCatalog _catalog;
     private readonly IRconResponseService _rconResponseService;
     private readonly ILogger<CommandsCommand> _logger;
@@ -18,13 +20,14 @@ public sealed class CommandsCommand : IChatCommand
         _logger = logger;
     }
 
-    public string Prefix => "!commands";
+    public string Prefix => Descriptor.Prefix;
     public ChatCommandMetadata Metadata => new()
     {
-        Name = "commands",
+        Name = Descriptor.Name,
         Prefix = Prefix,
-        Usage = "!commands",
-        Description = "Lists available chat commands."
+        Usage = Descriptor.Usage,
+        Description = Descriptor.Description,
+        IsMutating = Descriptor.IsMutating
     };
 
     public async Task<CommandResult> ExecuteAsync(CommandContext context, CancellationToken ct = default)
@@ -35,7 +38,7 @@ public sealed class CommandsCommand : IChatCommand
             if (!parsed.PrefixToken.Equals(Prefix, StringComparison.OrdinalIgnoreCase) ||
                 parsed.Arguments.Count != 0)
             {
-                return await FailAsync(context, "Usage: !commands", ct).ConfigureAwait(false);
+                return await FailAsync(context, $"Usage: {Descriptor.Usage}", ct).ConfigureAwait(false);
             }
         }
         else
@@ -45,7 +48,7 @@ public sealed class CommandsCommand : IChatCommand
 
             if (parts.Length != 1 || !parts[0].Equals(Prefix, StringComparison.OrdinalIgnoreCase))
             {
-                return await FailAsync(context, "Usage: !commands", ct).ConfigureAwait(false);
+                return await FailAsync(context, $"Usage: {Descriptor.Usage}", ct).ConfigureAwait(false);
             }
         }
 
