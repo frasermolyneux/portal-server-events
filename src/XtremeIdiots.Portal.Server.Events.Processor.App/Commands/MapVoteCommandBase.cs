@@ -67,7 +67,17 @@ public abstract class MapVoteCommandBase : IChatCommand
 
         if (!mapValidation.IsValid)
         {
-            return CommandResult.Failed(mapValidation.Reason ?? "Map validation failed");
+            if (mapValidation.IsLiveMapListMismatch)
+            {
+                _logger.LogWarning(
+                    "Current map {MapName} was not present in the live server map list for server {ServerId}; proceeding with vote.",
+                    currentMap,
+                    context.ServerId);
+            }
+            else
+            {
+                return CommandResult.Failed(mapValidation.Reason ?? "Map validation failed");
+            }
         }
 
         if (!Enum.TryParse<GameType>(context.GameType, out var gameType))

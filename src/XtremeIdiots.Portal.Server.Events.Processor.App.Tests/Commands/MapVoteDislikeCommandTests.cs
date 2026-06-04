@@ -155,7 +155,7 @@ public class MapVoteDislikeCommandTests
     }
 
     [Fact]
-    public async Task ExecuteAsync_WhenLiveMapValidationFails_ReturnsFailedAndDoesNotCreateVote()
+    public async Task ExecuteAsync_WhenLiveMapValidationReturnsMissingCurrentMap_StillCreatesVote()
     {
         _rconApi.Setup(x => x.GetCurrentMap(TestServerId))
             .ReturnsAsync(new ApiResult<RconCurrentMapDto>(HttpStatusCode.OK,
@@ -163,15 +163,20 @@ public class MapVoteDislikeCommandTests
 
         _commandSafetyService
             .Setup(x => x.ValidateMapTargetAsync(TestServerId, "mp_crash", It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new MapValidationResult(false, "Map was not found in the live server map list."));
+            .ReturnsAsync(new MapValidationResult(false, "Map was not found in the live server map list.", IsLiveMapListMismatch: true));
 
         var result = await _sut.ExecuteAsync(CreateContext());
 
         Assert.True(result.Handled);
-        Assert.False(result.Success);
-        Assert.Equal("Map was not found in the live server map list.", result.ResponseMessage);
-        _mapsApi.Verify(x => x.UpsertMapVote(It.IsAny<UpsertMapVoteDto>(), It.IsAny<CancellationToken>()), Times.Never);
-        _rconService.Verify(x => x.TrySayAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()), Times.Never);
+        Assert.True(result.Success);
+        _mapsApi.Verify(x => x.UpsertMapVote(
+            It.Is<UpsertMapVoteDto>(d => d.MapId == TestMapId && d.PlayerId == TestPlayerId && !d.Like),
+            It.IsAny<CancellationToken>()), Times.Once);
+        _rconService.Verify(x => x.TrySayAsync(
+            TestServerId,
+            It.Is<string>(s => s.Contains("DISLIKE")),
+            It.IsAny<DateTime>(),
+            It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]

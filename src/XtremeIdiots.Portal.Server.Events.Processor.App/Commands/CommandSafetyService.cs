@@ -43,7 +43,7 @@ public sealed class CommandSafetyService : ICommandSafetyService
 
         return isKnownMap
             ? new MapValidationResult(true)
-            : new MapValidationResult(false, "Map was not found in the live server map list.");
+            : new MapValidationResult(false, "Map was not found in the live server map list.", IsLiveMapListMismatch: true);
     }
 
     public async Task<PlayerResolutionResult> ResolvePlayerTargetAsync(
