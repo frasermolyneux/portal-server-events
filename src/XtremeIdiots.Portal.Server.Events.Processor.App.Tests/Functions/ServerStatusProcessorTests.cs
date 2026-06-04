@@ -325,9 +325,9 @@ public class ServerStatusProcessorTests
             It.Is<SetGameServerLiveStatusDto>(dto =>
                 dto.Players.Count == 1 &&
                 dto.Players[0].GeoIntelligence != null &&
-                dto.Players[0].GeoIntelligence.Latitude == 51.5074 &&
-                dto.Players[0].GeoIntelligence.Longitude == -0.1278 &&
-                dto.Players[0].GeoIntelligence.CountryCode == "GB" &&
+                dto.Players[0].GeoIntelligence!.Latitude == 51.5074 &&
+                dto.Players[0].GeoIntelligence!.Longitude == -0.1278 &&
+                dto.Players[0].GeoIntelligence!.CountryCode == "GB" &&
                 dto.Players[0].PlayerId == TestPlayerId),
             It.IsAny<CancellationToken>()), Times.Once);
     }
