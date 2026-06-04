@@ -98,16 +98,16 @@ public class ServerStatusProcessorTests
         Guid? serverId = null,
         DateTime? eventGeneratedUtc = null,
         IReadOnlyList<ConnectedPlayer>? players = null) => new()
-    {
-        EventGeneratedUtc = eventGeneratedUtc ?? DateTime.UtcNow.AddSeconds(-10),
-        EventPublishedUtc = DateTime.UtcNow.AddSeconds(-5),
-        ServerId = serverId ?? TestServerId,
-        GameType = gameType ?? "CallOfDuty4",
-        SequenceId = 1,
-        MapName = mapName ?? "mp_crash",
-        GameName = "Call of Duty 4",
-        PlayerCount = playerCount,
-        Players = players ?? new List<ConnectedPlayer>
+        {
+            EventGeneratedUtc = eventGeneratedUtc ?? DateTime.UtcNow.AddSeconds(-10),
+            EventPublishedUtc = DateTime.UtcNow.AddSeconds(-5),
+            ServerId = serverId ?? TestServerId,
+            GameType = gameType ?? "CallOfDuty4",
+            SequenceId = 1,
+            MapName = mapName ?? "mp_crash",
+            GameName = "Call of Duty 4",
+            PlayerCount = playerCount,
+            Players = players ?? new List<ConnectedPlayer>
         {
             new()
             {
@@ -126,7 +126,7 @@ public class ServerStatusProcessorTests
                 ConnectedAtUtc = DateTime.UtcNow.AddMinutes(-3)
             }
         }
-    };
+        };
 
     [Fact]
     public async Task ProcessServerStatus_ValidEvent_SetsLiveStatusAndCreatesStats()

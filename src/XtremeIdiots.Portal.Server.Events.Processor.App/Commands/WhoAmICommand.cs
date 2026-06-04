@@ -38,7 +38,8 @@ public sealed class WhoAmICommand : IChatCommand
         Prefix = Prefix,
         Usage = Descriptor.Usage,
         Description = Descriptor.Description,
-        IsMutating = Descriptor.IsMutating
+        IsMutating = Descriptor.IsMutating,
+        Aliases = Descriptor.Aliases
     };
 
     public async Task<CommandResult> ExecuteAsync(CommandContext context, CancellationToken ct = default)

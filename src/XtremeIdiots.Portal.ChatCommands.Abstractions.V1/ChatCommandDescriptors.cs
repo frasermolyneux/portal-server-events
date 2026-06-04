@@ -13,7 +13,13 @@ public sealed record ChatCommandDescriptor(
     string Prefix,
     string Usage,
     string Description,
-    bool IsMutating);
+    bool IsMutating)
+{
+    /// <summary>
+    /// Optional alternative command prefixes that invoke the same command (e.g. <c>!help</c> as alias for <c>!commands</c>).
+    /// </summary>
+    public IReadOnlyList<string>? Aliases { get; init; }
+}
 
 /// <summary>
 /// Shared catalog of built-in chat command descriptors.
@@ -21,14 +27,17 @@ public sealed record ChatCommandDescriptor(
 public static class ChatCommandDescriptorCatalog
 {
     /// <summary>
-    /// <c>!commands</c> command descriptor.
+    /// <c>!commands</c> command descriptor with <c>!help</c> alias.
     /// </summary>
     public static ChatCommandDescriptor Commands { get; } = new(
         Name: "commands",
         Prefix: "!commands",
         Usage: "!commands",
         Description: "Lists available chat commands.",
-        IsMutating: false);
+        IsMutating: false)
+    {
+        Aliases = ["!help"]
+    };
 
     /// <summary>
     /// <c>!register</c> command descriptor.

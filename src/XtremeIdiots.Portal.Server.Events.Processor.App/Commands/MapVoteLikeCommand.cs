@@ -27,7 +27,8 @@ public sealed class MapVoteLikeCommand : MapVoteCommandBase
         Prefix = Prefix,
         Usage = Descriptor.Usage,
         Description = Descriptor.Description,
-        IsMutating = Descriptor.IsMutating
+        IsMutating = Descriptor.IsMutating,
+        Aliases = Descriptor.Aliases
     };
 
     protected override bool IsLike => true;

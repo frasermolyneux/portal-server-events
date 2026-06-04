@@ -39,15 +39,15 @@ public class MapChangeProcessorTests
         Guid? serverId = null,
         string? gameType = null,
         string? mapName = null) => new()
-    {
-        EventGeneratedUtc = DateTime.UtcNow.AddSeconds(-10),
-        EventPublishedUtc = DateTime.UtcNow.AddSeconds(-5),
-        ServerId = serverId ?? TestServerId,
-        GameType = gameType ?? "CallOfDuty4",
-        SequenceId = 1,
-        MapName = mapName ?? "mp_crash",
-        GameName = "Call of Duty 4"
-    };
+        {
+            EventGeneratedUtc = DateTime.UtcNow.AddSeconds(-10),
+            EventPublishedUtc = DateTime.UtcNow.AddSeconds(-5),
+            ServerId = serverId ?? TestServerId,
+            GameType = gameType ?? "CallOfDuty4",
+            SequenceId = 1,
+            MapName = mapName ?? "mp_crash",
+            GameName = "Call of Duty 4"
+        };
 
     [Fact]
     public async Task ValidEvent_CreatesMapChangeEvent()

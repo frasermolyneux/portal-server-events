@@ -48,15 +48,15 @@ public class PlayerIpResolvedProcessorTests
         string? ipAddress = null,
         Guid? serverId = null,
         DateTime? eventGeneratedUtc = null) => new()
-    {
-        EventGeneratedUtc = eventGeneratedUtc ?? DateTime.UtcNow.AddSeconds(-10),
-        EventPublishedUtc = DateTime.UtcNow.AddSeconds(-5),
-        ServerId = serverId ?? TestServerId,
-        GameType = gameType ?? "CallOfDuty4",
-        SequenceId = 1,
-        PlayerGuid = playerGuid ?? "abc123guid",
-        IpAddress = ipAddress ?? "192.168.1.100"
-    };
+        {
+            EventGeneratedUtc = eventGeneratedUtc ?? DateTime.UtcNow.AddSeconds(-10),
+            EventPublishedUtc = DateTime.UtcNow.AddSeconds(-5),
+            ServerId = serverId ?? TestServerId,
+            GameType = gameType ?? "CallOfDuty4",
+            SequenceId = 1,
+            PlayerGuid = playerGuid ?? "abc123guid",
+            IpAddress = ipAddress ?? "192.168.1.100"
+        };
 
     [Fact]
     public async Task ValidEvent_PersistsIpAddress()

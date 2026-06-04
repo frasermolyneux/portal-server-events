@@ -61,17 +61,17 @@ public class PlayerConnectedProcessorTests
         string? ipAddress = null,
         Guid? serverId = null,
         DateTime? eventGeneratedUtc = null) => new()
-    {
-        EventGeneratedUtc = eventGeneratedUtc ?? DateTime.UtcNow.AddSeconds(-10),
-        EventPublishedUtc = DateTime.UtcNow.AddSeconds(-5),
-        ServerId = serverId ?? TestServerId,
-        GameType = gameType ?? "CallOfDuty4",
-        SequenceId = 1,
-        PlayerGuid = playerGuid ?? "abc123guid",
-        Username = username ?? "TestPlayer",
-        IpAddress = ipAddress ?? "192.168.1.1",
-        SlotId = 0
-    };
+        {
+            EventGeneratedUtc = eventGeneratedUtc ?? DateTime.UtcNow.AddSeconds(-10),
+            EventPublishedUtc = DateTime.UtcNow.AddSeconds(-5),
+            ServerId = serverId ?? TestServerId,
+            GameType = gameType ?? "CallOfDuty4",
+            SequenceId = 1,
+            PlayerGuid = playerGuid ?? "abc123guid",
+            Username = username ?? "TestPlayer",
+            IpAddress = ipAddress ?? "192.168.1.1",
+            SlotId = 0
+        };
 
     [Fact]
     public async Task ValidNewPlayer_CreatesPlayer()

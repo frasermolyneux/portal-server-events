@@ -468,6 +468,195 @@ public class ChatCommandProcessorTests
     }
 
     [Fact]
+    public async Task ProcessAsync_WithAliasToken_ExecutesTargetCommand()
+    {
+        var command = new Mock<IChatCommand>();
+        CommandContext? capturedContext = null;
+
+        command.Setup(c => c.Prefix).Returns("!commands");
+        command.Setup(c => c.Metadata).Returns(new ChatCommandMetadata
+        {
+            Name = "commands",
+            Prefix = "!commands",
+            Usage = "!commands",
+            Aliases = ["!help"]
+        });
+        command.Setup(c => c.ExecuteAsync(It.IsAny<CommandContext>(), It.IsAny<CancellationToken>()))
+            .Callback<CommandContext, CancellationToken>((ctx, _) => capturedContext = ctx)
+            .ReturnsAsync(CommandResult.Ok("help text"));
+
+        var sut = new ChatCommandProcessor([command.Object], _parser, _authorizationService.Object, _idempotencyStore.Object, _clock.Object, _settingsProvider.Object, _rconResponseService.Object, _auditLogger.Object, _logger.Object);
+
+        var result = await sut.ProcessAsync(CreateContext("!help"));
+
+        Assert.True(result.Handled);
+        Assert.True(result.Success);
+        Assert.Equal("help text", result.ResponseMessage);
+        Assert.NotNull(capturedContext?.ParsedCommand);
+        Assert.Equal("!commands", capturedContext?.ParsedCommand?.PrefixToken);
+    }
+
+    [Fact]
+    public async Task ProcessAsync_WithCaseInsensitiveAlias_ExecutesTargetCommand()
+    {
+        var command = new Mock<IChatCommand>();
+        command.Setup(c => c.Prefix).Returns("!commands");
+        command.Setup(c => c.Metadata).Returns(new ChatCommandMetadata
+        {
+            Name = "commands",
+            Prefix = "!commands",
+            Usage = "!commands",
+            Aliases = ["!HELP"]
+        });
+        command.Setup(c => c.ExecuteAsync(It.IsAny<CommandContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(CommandResult.Ok("help text"));
+
+        var sut = new ChatCommandProcessor([command.Object], _parser, _authorizationService.Object, _idempotencyStore.Object, _clock.Object, _settingsProvider.Object, _rconResponseService.Object, _auditLogger.Object, _logger.Object);
+
+        var result = await sut.ProcessAsync(CreateContext("!help"));
+
+        Assert.True(result.Handled);
+        Assert.Equal("help text", result.ResponseMessage);
+    }
+
+    [Fact]
+    public async Task ProcessAsync_WithAliasToken_ExecutesConcreteCommandsCommand()
+    {
+        var catalog = new Mock<IChatCommandCatalog>();
+        catalog
+            .Setup(x => x.GetAvailableCommandsAsync(It.IsAny<CommandContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync([
+                new ChatCommandDefinition { Prefix = "!register" },
+                new ChatCommandDefinition { Prefix = "!commands" }
+            ]);
+
+        var command = new CommandsCommand(catalog.Object, _rconResponseService.Object, Mock.Of<ILogger<CommandsCommand>>());
+        var sut = new ChatCommandProcessor([command], _parser, _authorizationService.Object, _idempotencyStore.Object, _clock.Object, _settingsProvider.Object, _rconResponseService.Object, _auditLogger.Object, _logger.Object);
+
+        var result = await sut.ProcessAsync(CreateContext("!help"));
+
+        Assert.True(result.Handled);
+        Assert.True(result.Success);
+        Assert.Equal("Available commands: !commands, !register", result.ResponseMessage);
+        _rconResponseService.Verify(x => x.TryTellAsync(
+            It.IsAny<Guid>(),
+            It.IsAny<string>(),
+            It.IsAny<int>(),
+            "Available commands: !commands, !register",
+            It.IsAny<string?>(),
+            It.IsAny<DateTime>(),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task ProcessAsync_WithMutatingAlias_UsesCanonicalIdempotencyKey()
+    {
+        var command = new Mock<IChatCommand>();
+        var capturedKeys = new List<CommandIdempotencyKey>();
+
+        command.Setup(c => c.Prefix).Returns("!register");
+        command.Setup(c => c.Metadata).Returns(new ChatCommandMetadata
+        {
+            Name = "register",
+            Prefix = "!register",
+            Usage = "!register CODE",
+            IsMutating = true,
+            Aliases = ["!link"]
+        });
+        command.Setup(c => c.ExecuteAsync(It.IsAny<CommandContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(CommandResult.Ok());
+
+        _idempotencyStore
+            .Setup(x => x.TryBeginAsync(It.IsAny<CommandIdempotencyKey>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
+            .Callback<CommandIdempotencyKey, DateTime, CancellationToken>((key, _, _) => capturedKeys.Add(key))
+            .ReturnsAsync(CommandIdempotencyDecision.Acquired());
+
+        var sut = new ChatCommandProcessor([command.Object], _parser, _authorizationService.Object, _idempotencyStore.Object, _clock.Object, _settingsProvider.Object, _rconResponseService.Object, _auditLogger.Object, _logger.Object);
+        var baseContext = CreateContext("!register ABC123");
+
+        var canonicalResult = await sut.ProcessAsync(baseContext);
+        var aliasResult = await sut.ProcessAsync(baseContext with { Message = "!link ABC123" });
+
+        Assert.True(canonicalResult.Success);
+        Assert.True(aliasResult.Success);
+        Assert.Equal(2, capturedKeys.Count);
+        Assert.Equal(capturedKeys[0], capturedKeys[1]);
+    }
+
+    [Fact]
+    public async Task ProcessAsync_AliasCollidesWithPrimaryPrefix_FirstRegistrationWins()
+    {
+        var commandOne = new Mock<IChatCommand>();
+        commandOne.Setup(c => c.Prefix).Returns("!help");
+        commandOne.Setup(c => c.Metadata).Returns(new ChatCommandMetadata
+        {
+            Name = "help-standalone",
+            Prefix = "!help",
+            Usage = "!help"
+        });
+        commandOne.Setup(c => c.ExecuteAsync(It.IsAny<CommandContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(CommandResult.Ok("standalone help"));
+
+        var commandTwo = new Mock<IChatCommand>();
+        commandTwo.Setup(c => c.Prefix).Returns("!commands");
+        commandTwo.Setup(c => c.Metadata).Returns(new ChatCommandMetadata
+        {
+            Name = "commands",
+            Prefix = "!commands",
+            Usage = "!commands",
+            Aliases = ["!help"]
+        });
+        commandTwo.Setup(c => c.ExecuteAsync(It.IsAny<CommandContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(CommandResult.Ok("commands list"));
+
+        var sut = new ChatCommandProcessor([commandOne.Object, commandTwo.Object], _parser, _authorizationService.Object, _idempotencyStore.Object, _clock.Object, _settingsProvider.Object, _rconResponseService.Object, _auditLogger.Object, _logger.Object);
+
+        var result = await sut.ProcessAsync(CreateContext("!help"));
+
+        Assert.Equal("standalone help", result.ResponseMessage);
+        commandOne.Verify(c => c.ExecuteAsync(It.IsAny<CommandContext>(), It.IsAny<CancellationToken>()), Times.Once);
+        commandTwo.Verify(c => c.ExecuteAsync(It.IsAny<CommandContext>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task ProcessAsync_DuplicateAliasAcrossCommands_FirstRegistrationWins()
+    {
+        var commandOne = new Mock<IChatCommand>();
+        commandOne.Setup(c => c.Prefix).Returns("!first");
+        commandOne.Setup(c => c.Metadata).Returns(new ChatCommandMetadata
+        {
+            Name = "first",
+            Prefix = "!first",
+            Usage = "!first",
+            Aliases = ["!alias"]
+        });
+        commandOne.Setup(c => c.ExecuteAsync(It.IsAny<CommandContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(CommandResult.Ok("first command"));
+
+        var commandTwo = new Mock<IChatCommand>();
+        commandTwo.Setup(c => c.Prefix).Returns("!second");
+        commandTwo.Setup(c => c.Metadata).Returns(new ChatCommandMetadata
+        {
+            Name = "second",
+            Prefix = "!second",
+            Usage = "!second",
+            Aliases = ["!alias"]
+        });
+        commandTwo.Setup(c => c.ExecuteAsync(It.IsAny<CommandContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(CommandResult.Ok("second command"));
+
+        var sut = new ChatCommandProcessor([commandOne.Object, commandTwo.Object], _parser, _authorizationService.Object, _idempotencyStore.Object, _clock.Object, _settingsProvider.Object, _rconResponseService.Object, _auditLogger.Object, _logger.Object);
+
+        var result = await sut.ProcessAsync(CreateContext("!alias"));
+
+        Assert.Equal("first command", result.ResponseMessage);
+        commandOne.Verify(c => c.ExecuteAsync(It.IsAny<CommandContext>(), It.IsAny<CancellationToken>()), Times.Once);
+        commandTwo.Verify(c => c.ExecuteAsync(It.IsAny<CommandContext>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+
+
+    [Fact]
     public async Task ProcessAsync_PassesSettingsRequirementsToAuthorizationContext()
     {
         var command = new Mock<IChatCommand>();
@@ -508,3 +697,4 @@ public class ChatCommandProcessorTests
             It.IsAny<CancellationToken>()), Times.Once);
     }
 }
+

@@ -47,16 +47,42 @@ public sealed class ChatCommandProcessor : IChatCommandProcessor
             }
         }
 
-        _commandsByPrefix = registeredCommands
-            .GroupBy(c => c.Metadata.Prefix, StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(g => g.Key.ToLowerInvariant(), g => g.First(), StringComparer.OrdinalIgnoreCase);
+        var prefixMapping = new Dictionary<string, IChatCommand>(StringComparer.OrdinalIgnoreCase);
 
-        foreach (var duplicate in registeredCommands
-                     .GroupBy(c => c.Metadata.Prefix, StringComparer.OrdinalIgnoreCase)
-                     .Where(g => g.Count() > 1))
+        // Register by primary prefix
+        foreach (var command in registeredCommands)
         {
-            _logger.LogWarning("Duplicate chat command prefix registration detected for {Prefix}; first registration will be used.", duplicate.Key);
+            var prefixKey = command.Metadata.Prefix.ToLowerInvariant();
+            if (prefixMapping.ContainsKey(prefixKey))
+            {
+                _logger.LogWarning("Duplicate chat command prefix registration detected for {Prefix}; first registration will be used.", prefixKey);
+                continue;
+            }
+
+            prefixMapping[prefixKey] = command;
         }
+
+        // Register by aliases
+        foreach (var command in registeredCommands)
+        {
+            if (command.Metadata.Aliases is null || command.Metadata.Aliases.Count == 0)
+                continue;
+
+            foreach (var alias in command.Metadata.Aliases)
+            {
+                var aliasKey = alias.ToLowerInvariant();
+                if (prefixMapping.ContainsKey(aliasKey))
+                {
+                    _logger.LogWarning("Duplicate chat command alias registration detected for {Alias} (conflicts with {CommandName}); first registration will be used.",
+                        aliasKey, command.Metadata.Name);
+                    continue;
+                }
+
+                prefixMapping[aliasKey] = command;
+            }
+        }
+
+        _commandsByPrefix = prefixMapping;
     }
 
     public async Task<CommandResult> ProcessAsync(CommandContext context, CancellationToken ct = default)
@@ -67,6 +93,12 @@ public sealed class ChatCommandProcessor : IChatCommandProcessor
 
         if (!_commandsByPrefix.TryGetValue(parseResult.Command.PrefixToken, out var command))
             return CommandResult.NotHandled;
+
+        var canonicalCommand = parseResult.Command with
+        {
+            PrefixToken = command.Prefix,
+            Verb = command.Metadata.Name
+        };
 
         _logger.LogInformation("Command {CommandPrefix} matched for player {Username} on server {ServerId}",
             command.Prefix, context.Username, context.ServerId);
@@ -170,7 +202,7 @@ public sealed class ChatCommandProcessor : IChatCommandProcessor
                 return CommandResult.Failed("Command cannot be processed right now.");
             }
 
-            idempotencyKey = BuildIdempotencyKey(context, parseResult.Command);
+            idempotencyKey = BuildIdempotencyKey(context, canonicalCommand);
             var decision = await _idempotencyStore
                 .TryBeginAsync(idempotencyKey, _clock.UtcNow, ct)
                 .ConfigureAwait(false);
@@ -189,7 +221,7 @@ public sealed class ChatCommandProcessor : IChatCommandProcessor
         CommandResult result;
         try
         {
-            result = await command.ExecuteAsync(context with { ParsedCommand = parseResult.Command }, ct).ConfigureAwait(false);
+            result = await command.ExecuteAsync(context with { ParsedCommand = canonicalCommand }, ct).ConfigureAwait(false);
         }
         catch (Exception ex)
         {

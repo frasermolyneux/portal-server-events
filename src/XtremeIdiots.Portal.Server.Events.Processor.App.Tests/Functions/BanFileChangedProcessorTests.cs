@@ -56,14 +56,14 @@ public class BanFileChangedProcessorTests
         Guid? serverId = null,
         string? gameType = null,
         IReadOnlyList<DetectedBan>? newBans = null) => new()
-    {
-        EventGeneratedUtc = DateTime.UtcNow.AddSeconds(-10),
-        EventPublishedUtc = DateTime.UtcNow.AddSeconds(-5),
-        ServerId = serverId ?? TestServerId,
-        GameType = gameType ?? "CallOfDuty4",
-        SequenceId = 1,
-        NewBans = newBans ?? [new DetectedBan { PlayerGuid = "abc123guid", PlayerName = "TestPlayer" }]
-    };
+        {
+            EventGeneratedUtc = DateTime.UtcNow.AddSeconds(-10),
+            EventPublishedUtc = DateTime.UtcNow.AddSeconds(-5),
+            ServerId = serverId ?? TestServerId,
+            GameType = gameType ?? "CallOfDuty4",
+            SequenceId = 1,
+            NewBans = newBans ?? [new DetectedBan { PlayerGuid = "abc123guid", PlayerName = "TestPlayer" }]
+        };
 
     [Fact]
     public async Task NewBan_CreatesPlayerAndAdminAction()

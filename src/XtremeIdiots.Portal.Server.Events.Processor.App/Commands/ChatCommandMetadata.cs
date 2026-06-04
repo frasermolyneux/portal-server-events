@@ -10,4 +10,5 @@ public sealed record ChatCommandMetadata
     public bool IsMutating { get; init; }
     public string? RequiredPolicy { get; init; }
     public string? FeatureFlag { get; init; }
+    public IReadOnlyList<string>? Aliases { get; init; }
 }
