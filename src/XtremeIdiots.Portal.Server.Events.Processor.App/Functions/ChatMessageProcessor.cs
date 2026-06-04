@@ -13,7 +13,6 @@ using MX.Observability.ApplicationInsights.Auditing.Models;
 using XtremeIdiots.Portal.Repository.Api.Client.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Constants.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.ChatMessages;
-using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.ConnectedPlayers;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.GameServers;
 using XtremeIdiots.Portal.Server.Events.Abstractions.V1;
 using XtremeIdiots.Portal.Server.Events.Abstractions.V1.Events;
@@ -261,75 +260,18 @@ public class ChatMessageProcessor(
             .Select(t => t!)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-        var (claimNames, claimsResolved) = await GetAuthorizationClaimsAsync(gameType, player.PlayerId).ConfigureAwait(false);
         var authorizationSnapshot = new CommandAuthorizationSnapshot
         {
             Tags = tagNames,
-            Claims = claimNames,
             TagsResolved = true,
-            ClaimsResolved = claimsResolved
+            ClaimsResolved = true
         };
 
         var ctx = new PlayerContextInfo(player.PlayerId, player.FirstSeen, hasTag, authorizationSnapshot);
-        if (authorizationSnapshot.ClaimsResolved)
-        {
-            memoryCache.Set(cacheKey, ctx,
-                new MemoryCacheEntryOptions().SetSlidingExpiration(PlayerCacheExpiration));
-        }
+        memoryCache.Set(cacheKey, ctx,
+            new MemoryCacheEntryOptions().SetSlidingExpiration(PlayerCacheExpiration));
 
         return ctx;
-    }
-
-    private async Task<(IReadOnlySet<string> Claims, bool ClaimsResolved)> GetAuthorizationClaimsAsync(GameType gameType, Guid playerId)
-    {
-        try
-        {
-            var connectedPlayers = await repositoryApiClient.ConnectedPlayers.V1
-                .GetConnectedPlayers(playerId, null, gameType, true, 0, 1)
-                .ConfigureAwait(false);
-
-            if (!connectedPlayers.IsSuccess)
-            {
-                return (new HashSet<string>(StringComparer.OrdinalIgnoreCase), false);
-            }
-
-            var connectedPlayer = connectedPlayers.Result?.Data?.Items?.FirstOrDefault();
-            if (connectedPlayer is null)
-            {
-                return (new HashSet<string>(StringComparer.OrdinalIgnoreCase), true);
-            }
-
-            var userProfile = await repositoryApiClient.UserProfiles.V1
-                .GetUserProfile(connectedPlayer.UserProfileId)
-                .ConfigureAwait(false);
-
-            if (!userProfile.IsSuccess || userProfile.Result?.Data is null)
-            {
-                return (new HashSet<string>(StringComparer.OrdinalIgnoreCase), false);
-            }
-
-            var claims = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var claim in userProfile.Result.Data.UserProfileClaims)
-            {
-                if (string.IsNullOrWhiteSpace(claim.ClaimType))
-                {
-                    continue;
-                }
-
-                claims.Add(claim.ClaimType);
-                if (!string.IsNullOrWhiteSpace(claim.ClaimValue))
-                {
-                    claims.Add($"{claim.ClaimType}:{claim.ClaimValue}");
-                }
-            }
-
-            return (claims, true);
-        }
-        catch (Exception ex)
-        {
-            logger.LogWarning(ex, "Failed to resolve authorization claims for player {PlayerId}", playerId);
-            return (new HashSet<string>(StringComparer.OrdinalIgnoreCase), false);
-        }
     }
 
     private readonly record struct PlayerContextInfo(

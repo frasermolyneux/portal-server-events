@@ -70,8 +70,7 @@ public sealed class CommandAuthorizationService : ICommandAuthorizationService
                 return CommandAuthorizationResult.Deny("Authorization dependencies are unavailable.");
             }
 
-            if ((!snapshot.TagsResolved && policy.RequiredTags.Length > 0) ||
-                (!snapshot.ClaimsResolved && policy.RequiredClaims.Length > 0))
+            if (!snapshot.TagsResolved && policy.RequiredTags.Length > 0)
             {
                 return CommandAuthorizationResult.Deny("Authorization dependencies are unavailable.");
             }
@@ -82,30 +81,13 @@ public sealed class CommandAuthorizationService : ICommandAuthorizationService
             return CommandAuthorizationResult.Deny("Authorization context is unavailable.");
         }
 
+        if (policy.RequiredClaims.Length > 0)
+        {
+            return CommandAuthorizationResult.Deny("Claim-based authorization is no longer supported. Configure required tags only.");
+        }
+
         var tagMatch = MatchesAny(policy.RequiredTags, snapshot.Tags);
-        var claimMatch = MatchesAny(policy.RequiredClaims, snapshot.Claims);
-
-        if (policy.RequiredTags.Length > 0 && policy.RequiredClaims.Length > 0)
-        {
-            if (tagMatch && claimMatch)
-            {
-                return CommandAuthorizationResult.Allow();
-            }
-
-            if (policy.Privileged && tagMatch != claimMatch)
-            {
-                return CommandAuthorizationResult.Deny("Your authorization sources are inconsistent for this command.");
-            }
-
-            return CommandAuthorizationResult.Deny("You are not authorized to use this command.");
-        }
-
         if (policy.RequiredTags.Length > 0 && !tagMatch)
-        {
-            return CommandAuthorizationResult.Deny("You are not authorized to use this command.");
-        }
-
-        if (policy.RequiredClaims.Length > 0 && !claimMatch)
         {
             return CommandAuthorizationResult.Deny("You are not authorized to use this command.");
         }

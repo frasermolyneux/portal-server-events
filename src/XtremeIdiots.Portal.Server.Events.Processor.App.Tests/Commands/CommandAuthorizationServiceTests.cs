@@ -51,7 +51,7 @@ public class CommandAuthorizationServiceTests
     }
 
     [Fact]
-    public async Task AuthorizeAsync_WhenClaimPolicyMatches_Allows()
+    public async Task AuthorizeAsync_WhenOnlyClaimPolicyConfigured_Denies()
     {
         var sut = CreateSut(new CommandAuthorizationOptions
         {
@@ -66,11 +66,12 @@ public class CommandAuthorizationServiceTests
 
         var result = await sut.AuthorizeAsync(CreateContext(requiredPolicy: "admin", claims: ["AdminActions.Create"]));
 
-        Assert.True(result.Allowed);
+        Assert.False(result.Allowed);
+        Assert.Contains("no longer supported", result.Reason ?? string.Empty, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
-    public async Task AuthorizeAsync_WhenHybridConflictsForPrivileged_Denies()
+    public async Task AuthorizeAsync_WhenHybridPolicyConfigured_Denies()
     {
         var sut = CreateSut(new CommandAuthorizationOptions
         {
@@ -85,10 +86,10 @@ public class CommandAuthorizationServiceTests
             }
         });
 
-        var result = await sut.AuthorizeAsync(CreateContext(requiredPolicy: "admin", tags: ["game-admin"], claims: []));
+        var result = await sut.AuthorizeAsync(CreateContext(requiredPolicy: "admin", tags: ["game-admin"], claims: ["AdminActions.Create"]));
 
         Assert.False(result.Allowed);
-        Assert.Contains("inconsistent", result.Reason ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("no longer supported", result.Reason ?? string.Empty, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -135,7 +136,7 @@ public class CommandAuthorizationServiceTests
     }
 
     [Fact]
-    public async Task AuthorizeAsync_WhenPrivilegedClaimsUnavailable_DeniesFailClosed()
+    public async Task AuthorizeAsync_WhenPrivilegedTagsUnavailable_DeniesFailClosed()
     {
         var sut = CreateSut(new CommandAuthorizationOptions
         {
@@ -143,7 +144,7 @@ public class CommandAuthorizationServiceTests
             {
                 ["admin"] = new CommandPolicyOptions
                 {
-                    RequiredClaims = ["AdminActions.Create"],
+                    RequiredTags = ["game-admin"],
                     Privileged = true
                 }
             }
@@ -151,8 +152,8 @@ public class CommandAuthorizationServiceTests
 
         var snapshot = new CommandAuthorizationSnapshot
         {
-            ClaimsResolved = false,
-            TagsResolved = true,
+            ClaimsResolved = true,
+            TagsResolved = false,
             Claims = new HashSet<string>(StringComparer.OrdinalIgnoreCase),
             Tags = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         };
