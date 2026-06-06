@@ -155,11 +155,35 @@ public class MapVoteLikeCommandTests
     }
 
     [Fact]
+    public async Task ExecuteAsync_WhenMapLookupReturnsNullResult_ReturnsFailed()
+    {
+        _rconApi.Setup(x => x.GetCurrentMap(TestServerId))
+            .ReturnsAsync(new ApiResult<RconCurrentMapDto>(HttpStatusCode.OK,
+                new ApiResponse<RconCurrentMapDto>(new RconCurrentMapDto("mp_crash"))));
+
+        _mapsApi.Setup(x => x.GetMap(GameType.CallOfDuty4, "mp_crash", It.IsAny<CancellationToken>()))
+            .ReturnsAsync((ApiResult<MapDto>)null!);
+
+        var result = await _sut.ExecuteAsync(CreateContext());
+
+        Assert.True(result.Handled);
+        Assert.False(result.Success);
+        Assert.Equal("Map not found", result.ResponseMessage);
+    }
+
+    [Fact]
     public async Task ExecuteAsync_WhenLiveMapValidationReturnsMissingCurrentMap_StillCreatesVote()
     {
         _rconApi.Setup(x => x.GetCurrentMap(TestServerId))
             .ReturnsAsync(new ApiResult<RconCurrentMapDto>(HttpStatusCode.OK,
                 new ApiResponse<RconCurrentMapDto>(new RconCurrentMapDto("mp_crash"))));
+
+        _mapsApi.Setup(x => x.GetMap(GameType.CallOfDuty4, "mp_crash", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<MapDto>(HttpStatusCode.OK,
+                new ApiResponse<MapDto>(CreateMapDto())));
+
+        _mapsApi.Setup(x => x.UpsertMapVote(It.IsAny<UpsertMapVoteDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult(HttpStatusCode.OK));
 
         _commandSafetyService
             .Setup(x => x.ValidateMapTargetAsync(TestServerId, "mp_crash", It.IsAny<CancellationToken>()))

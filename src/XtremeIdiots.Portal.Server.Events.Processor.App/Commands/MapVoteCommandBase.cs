@@ -85,7 +85,7 @@ public abstract class MapVoteCommandBase : IChatCommand
 
         var repoMapResult = await _repositoryClient.Maps.V1.GetMap(gameType, currentMap, ct);
 
-        if (!repoMapResult.IsSuccess || repoMapResult.Result?.Data is null)
+        if (repoMapResult is null || !repoMapResult.IsSuccess || repoMapResult.Result?.Data is null)
         {
             _logger.LogWarning("Map {MapName} not found for {GameType}", currentMap, context.GameType);
             return CommandResult.Failed("Map not found");
