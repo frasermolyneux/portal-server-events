@@ -1,5 +1,7 @@
 using Microsoft.Extensions.Logging;
 
+using MX.Api.Abstractions;
+
 using XtremeIdiots.Portal.Integrations.Servers.Abstractions.Interfaces.V1;
 
 namespace XtremeIdiots.Portal.Server.Events.Processor.App.Commands;
@@ -76,9 +78,13 @@ public sealed class RconResponseService : IRconResponseService
 
             if (!result.IsSuccess)
             {
+                var errorSummary = SummarizeApiErrors(result);
                 _logger.LogWarning(
-                    "RCON TellPlayerWithVerification failed for server {ServerId}, client {ClientId}: {StatusCode}",
-                    serverId, player.Num, result.StatusCode);
+                    "RCON TellPlayerWithVerification failed for server {ServerId}, client {ClientId}: {StatusCode}. Errors: {ErrorSummary}",
+                    serverId,
+                    player.Num,
+                    result.StatusCode,
+                    errorSummary);
                 return false;
             }
 
@@ -113,9 +119,13 @@ public sealed class RconResponseService : IRconResponseService
                 return true;
             }
 
+            var errorSummary = SummarizeApiErrors(result);
             _logger.LogWarning(
-                "RCON TellPlayerWithVerification failed for server {ServerId}, client {ClientId}: {StatusCode}. Falling back to guid lookup.",
-                serverId, slotId, result.StatusCode);
+                "RCON TellPlayerWithVerification failed for server {ServerId}, client {ClientId}: {StatusCode}. Errors: {ErrorSummary}. Falling back to guid lookup.",
+                serverId,
+                slotId,
+                result.StatusCode,
+                errorSummary);
         }
         catch (Exception ex)
         {
@@ -126,6 +136,17 @@ public sealed class RconResponseService : IRconResponseService
 
         return await TryTellAsync(serverId, playerGuid, message, expectedPlayerName, eventGeneratedUtc, ct)
             .ConfigureAwait(false);
+    }
+
+    private static string SummarizeApiErrors(ApiResult result)
+    {
+        var errors = result.Result?.Errors;
+        if (errors is null || !errors.Any())
+        {
+            return "none";
+        }
+
+        return string.Join("; ", errors.Select(static e => e is null ? "<null-error>" : $"{e.Code}:{e.Message}"));
     }
 
     private bool IsFresh(Guid serverId, DateTime eventGeneratedUtc)
