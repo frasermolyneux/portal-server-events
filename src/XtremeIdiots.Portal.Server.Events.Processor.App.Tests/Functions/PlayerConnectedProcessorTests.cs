@@ -16,6 +16,7 @@ using XtremeIdiots.Portal.Repository.Abstractions.Interfaces.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.Players;
 using XtremeIdiots.Portal.Repository.Api.Client.V1;
 using XtremeIdiots.Portal.Server.Events.Abstractions.V1.Events;
+using XtremeIdiots.Portal.Server.Events.Processor.App.Commands;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Functions;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Services;
 
@@ -33,6 +34,7 @@ public class PlayerConnectedProcessorTests
     private readonly Mock<IVersionedPlayersApi> _versionedPlayers = new();
     private readonly Mock<IPlayersApi> _playersApi = new();
     private readonly Mock<IProtectedNameService> _protectedNameService = new();
+    private readonly Mock<IWelcomeMessageOrchestrator> _welcomeMessageOrchestrator = new();
     private readonly IMemoryCache _cache;
     private readonly Mock<IAuditLogger> _auditLogger = new();
     private readonly Mock<FunctionContext> _functionContext = new();
@@ -51,7 +53,14 @@ public class PlayerConnectedProcessorTests
 
         _cache = new MemoryCache(Options.Create(new MemoryCacheOptions()));
 
-        _sut = new PlayerConnectedProcessor(_logger.Object, _repoClient.Object, _geoClient.Object, _protectedNameService.Object, _cache, _auditLogger.Object);
+        _sut = new PlayerConnectedProcessor(
+            _logger.Object,
+            _repoClient.Object,
+            _geoClient.Object,
+            _protectedNameService.Object,
+            _welcomeMessageOrchestrator.Object,
+            _cache,
+            _auditLogger.Object);
     }
 
     private static PlayerConnectedEvent CreateValidEvent(
@@ -86,7 +95,7 @@ public class PlayerConnectedProcessorTests
             .ReturnsAsync(SuccessResult());
 
         var playerDto = CreatePlayerDto(TestPlayerId);
-        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.None))
+        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.Tags))
             .ReturnsAsync(SuccessResult(playerDto));
 
         await _sut.ProcessPlayerConnected(message, _functionContext.Object);
@@ -107,7 +116,7 @@ public class PlayerConnectedProcessorTests
             .ReturnsAsync(SuccessResult());
 
         var playerDto = CreatePlayerDto(TestPlayerId);
-        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.None))
+        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.Tags))
             .ReturnsAsync(SuccessResult(playerDto));
 
         _playersApi.Setup(x => x.RecordPlayerSession(It.IsAny<RecordPlayerSessionDto>()))
@@ -140,7 +149,7 @@ public class PlayerConnectedProcessorTests
             .ReturnsAsync(ConflictResult());
 
         var playerDto = CreatePlayerDto(TestPlayerId);
-        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.None))
+        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.Tags))
             .ReturnsAsync(SuccessResult(playerDto));
 
         _playersApi.Setup(x => x.RecordPlayerSession(It.IsAny<RecordPlayerSessionDto>()))
@@ -218,7 +227,7 @@ public class PlayerConnectedProcessorTests
             .ReturnsAsync(SuccessResult());
 
         var playerDto = CreatePlayerDto(TestPlayerId);
-        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.None))
+        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.Tags))
             .ReturnsAsync(SuccessResult(playerDto));
 
         _playersApi.Setup(x => x.RecordPlayerSession(It.IsAny<RecordPlayerSessionDto>()))
@@ -248,7 +257,7 @@ public class PlayerConnectedProcessorTests
             .ReturnsAsync(SuccessResult());
 
         var playerDto = CreatePlayerDto(TestPlayerId);
-        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.None))
+        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.Tags))
             .ReturnsAsync(SuccessResult(playerDto));
 
         _playersApi.Setup(x => x.RecordPlayerSession(It.IsAny<RecordPlayerSessionDto>()))
@@ -278,7 +287,7 @@ public class PlayerConnectedProcessorTests
             .ReturnsAsync(SuccessResult());
 
         var playerDto = CreatePlayerDto(TestPlayerId);
-        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.None))
+        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.Tags))
             .ReturnsAsync(SuccessResult(playerDto));
 
         _playersApi.Setup(x => x.RecordPlayerSession(It.IsAny<RecordPlayerSessionDto>()))

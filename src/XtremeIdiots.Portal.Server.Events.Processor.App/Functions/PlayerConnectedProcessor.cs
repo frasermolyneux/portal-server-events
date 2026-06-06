@@ -16,6 +16,7 @@ using XtremeIdiots.Portal.Repository.Abstractions.Constants.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.Players;
 using XtremeIdiots.Portal.Server.Events.Abstractions.V1;
 using XtremeIdiots.Portal.Server.Events.Abstractions.V1.Events;
+using XtremeIdiots.Portal.Server.Events.Processor.App.Commands;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Services;
 
 namespace XtremeIdiots.Portal.Server.Events.Processor.App.Functions;
@@ -25,6 +26,7 @@ public class PlayerConnectedProcessor(
     IRepositoryApiClient repositoryApiClient,
     IGeoLocationApiClient geoLocationApiClient,
     IProtectedNameService protectedNameService,
+    IWelcomeMessageOrchestrator welcomeMessageOrchestrator,
     IMemoryCache memoryCache,
     IAuditLogger auditLogger)
 {
@@ -121,7 +123,8 @@ public class PlayerConnectedProcessor(
                     .Build());
 
                 // Protected name enforcement (best-effort, never blocks player processing)
-                var newPlayerId = await GetPlayerId(gameType, playerEvent.PlayerGuid).ConfigureAwait(false);
+                var newPlayerContext = await GetPlayerContext(gameType, playerEvent.PlayerGuid).ConfigureAwait(false);
+                var newPlayerId = newPlayerContext.PlayerId;
                 if (newPlayerId != Guid.Empty)
                 {
                     await protectedNameService.CheckAsync(new ProtectedNameContext
@@ -134,7 +137,8 @@ public class PlayerConnectedProcessor(
                     }).ConfigureAwait(false);
                 }
 
-                await EnrichWithGeoLocation(playerEvent).ConfigureAwait(false);
+                var country = await EnrichWithGeoLocation(playerEvent).ConfigureAwait(false);
+                await TryProcessWelcomeMessage(playerEvent, gameType, newPlayerContext.Tags, country).ConfigureAwait(false);
                 return;
             }
             else
@@ -145,7 +149,8 @@ public class PlayerConnectedProcessor(
         }
 
         // Get player ID for update
-        var playerId = await GetPlayerId(gameType, playerEvent.PlayerGuid).ConfigureAwait(false);
+        var playerContext = await GetPlayerContext(gameType, playerEvent.PlayerGuid).ConfigureAwait(false);
+        var playerId = playerContext.PlayerId;
 
         if (playerId == Guid.Empty)
         {
@@ -189,13 +194,14 @@ public class PlayerConnectedProcessor(
         }).ConfigureAwait(false);
 
         // GeoIP enrichment (best-effort, never blocks player processing)
-        await EnrichWithGeoLocation(playerEvent).ConfigureAwait(false);
+        var enrichedCountry = await EnrichWithGeoLocation(playerEvent).ConfigureAwait(false);
+        await TryProcessWelcomeMessage(playerEvent, gameType, playerContext.Tags, enrichedCountry).ConfigureAwait(false);
     }
 
-    private async Task EnrichWithGeoLocation(PlayerConnectedEvent playerEvent)
+    private async Task<string?> EnrichWithGeoLocation(PlayerConnectedEvent playerEvent)
     {
         if (string.IsNullOrWhiteSpace(playerEvent.IpAddress))
-            return;
+            return null;
 
         try
         {
@@ -254,38 +260,84 @@ public class PlayerConnectedProcessor(
                     intel.ProxyCheck?.RiskScore,
                     intel.ProxyCheck?.IsVpn,
                     intel.ProxyCheck?.IsProxy);
+
+                if (!string.IsNullOrWhiteSpace(intel.CountryName))
+                {
+                    return intel.CountryName;
+                }
+
+                if (!string.IsNullOrWhiteSpace(intel.CountryCode))
+                {
+                    return intel.CountryCode;
+                }
             }
         }
         catch (Exception ex)
         {
             logger.LogWarning(ex, "IP intelligence enrichment failed for {IpAddress}", playerEvent.IpAddress);
         }
+
+        return null;
     }
 
-    private async Task<Guid> GetPlayerId(GameType gameType, string guid)
+    private async Task<PlayerContext> GetPlayerContext(GameType gameType, string guid)
     {
-        var cacheKey = $"player-id-{gameType}-{guid}";
+        var cacheKey = $"player-ctx-{gameType}-{guid}";
 
-        if (memoryCache.TryGetValue(cacheKey, out Guid cachedId))
-            return cachedId;
+        if (memoryCache.TryGetValue(cacheKey, out PlayerContext? cachedContext) && cachedContext is not null)
+            return cachedContext;
 
         var response = await repositoryApiClient.Players.V1
-            .GetPlayerByGameType(gameType, guid, PlayerEntityOptions.None)
+            .GetPlayerByGameType(gameType, guid, PlayerEntityOptions.Tags)
             .ConfigureAwait(false);
 
         if (!response.IsSuccess || response.Result?.Data is null)
-            return Guid.Empty;
+            return PlayerContext.Empty;
 
-        var playerId = response.Result.Data.PlayerId;
-        memoryCache.Set(cacheKey, playerId,
+        var player = response.Result.Data;
+        var tags = player.Tags
+            .Select(static x => x.Tag?.Name)
+            .Where(static name => !string.IsNullOrWhiteSpace(name))
+            .Select(static name => name!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        var context = new PlayerContext(player.PlayerId, tags);
+        memoryCache.Set(cacheKey, context,
             new MemoryCacheEntryOptions().SetSlidingExpiration(PlayerCacheExpiration));
 
-        return playerId;
+        return context;
+    }
+
+    private async Task TryProcessWelcomeMessage(
+        PlayerConnectedEvent playerEvent,
+        GameType gameType,
+        string[] playerTags,
+        string? country)
+    {
+        try
+        {
+            await welcomeMessageOrchestrator
+                .ProcessAsync(playerEvent, gameType, playerTags, country)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex,
+                "Welcome message processing failed for server {ServerId}, player {PlayerGuid}",
+                playerEvent.ServerId,
+                playerEvent.PlayerGuid);
+        }
     }
 
     private void InvalidatePlayerCache(GameType gameType, string guid)
     {
         memoryCache.Remove($"player-id-{gameType}-{guid}");
         memoryCache.Remove($"player-ctx-{gameType}-{guid}");
+    }
+
+    private sealed record PlayerContext(Guid PlayerId, string[] Tags)
+    {
+        public static readonly PlayerContext Empty = new(Guid.Empty, []);
     }
 }
