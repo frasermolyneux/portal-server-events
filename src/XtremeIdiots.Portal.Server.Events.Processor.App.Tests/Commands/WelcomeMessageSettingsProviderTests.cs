@@ -152,6 +152,78 @@ public class WelcomeMessageSettingsProviderTests
         Assert.Empty(result.Rules);
     }
 
+    [Fact]
+    public async Task GetEffectiveSettingsAsync_WhenGlobalFetchFails_FailsClosed()
+    {
+        _globalConfigsApi
+            .Setup(x => x.GetConfigurations(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<CollectionModel<ConfigurationDto>>(HttpStatusCode.InternalServerError));
+
+        var sut = CreateSut();
+
+        var result = await sut.GetEffectiveSettingsAsync(ServerId);
+
+        Assert.False(result.Enabled);
+        Assert.True(result.ValidationFailed);
+        Assert.Empty(result.Rules);
+    }
+
+    [Fact]
+    public async Task GetEffectiveSettingsAsync_WhenGlobalJsonIsMalformed_FailsClosed()
+    {
+        _globalConfigsApi
+            .Setup(x => x.GetConfigurations(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(SuccessResult(new CollectionModel<ConfigurationDto>(
+            [
+                CreateConfigurationDto(WelcomeMessageSettingsConstants.Namespace,
+                    "{\"schemaVersion\":1,\"rules\":[")
+            ])));
+
+        var sut = CreateSut();
+
+        var result = await sut.GetEffectiveSettingsAsync(ServerId);
+
+        Assert.False(result.Enabled);
+        Assert.True(result.ValidationFailed);
+        Assert.Empty(result.Rules);
+    }
+
+    [Fact]
+    public async Task GetEffectiveSettingsAsync_WhenServerFetchFails_FailsClosed()
+    {
+        _serverConfigsApi
+            .Setup(x => x.GetConfigurations(ServerId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<CollectionModel<ConfigurationDto>>(HttpStatusCode.InternalServerError));
+
+        var sut = CreateSut();
+
+        var result = await sut.GetEffectiveSettingsAsync(ServerId);
+
+        Assert.False(result.Enabled);
+        Assert.True(result.ValidationFailed);
+        Assert.Empty(result.Rules);
+    }
+
+    [Fact]
+    public async Task GetEffectiveSettingsAsync_WhenServerJsonIsMalformed_FailsClosed()
+    {
+        _serverConfigsApi
+            .Setup(x => x.GetConfigurations(ServerId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(SuccessResult(new CollectionModel<ConfigurationDto>(
+            [
+                CreateConfigurationDto(WelcomeMessageSettingsConstants.Namespace,
+                    "{\"schemaVersion\":1,\"rules\":[")
+            ])));
+
+        var sut = CreateSut();
+
+        var result = await sut.GetEffectiveSettingsAsync(ServerId);
+
+        Assert.False(result.Enabled);
+        Assert.True(result.ValidationFailed);
+        Assert.Empty(result.Rules);
+    }
+
     private WelcomeMessageSettingsProvider CreateSut()
         => new(
             _repositoryClient.Object,

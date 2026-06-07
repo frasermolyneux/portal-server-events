@@ -32,7 +32,7 @@ public class ChatCommandSettingsValidatorTests
     {
         var result = _sut.Validate(new ChatCommandSettingsDocument
         {
-            SchemaVersion = ChatCommandSettingsConstants.SupportedSchemaVersion,
+            SchemaVersion = ChatCommandSettingsConstants.SchemaVersion,
             Defaults = new ChatCommandSettingsDefaults
             {
                 FreshnessSeconds = new ChatCommandFreshnessDefaults
@@ -51,7 +51,7 @@ public class ChatCommandSettingsValidatorTests
     {
         var result = _sut.Validate(new ChatCommandSettingsDocument
         {
-            SchemaVersion = ChatCommandSettingsConstants.SupportedSchemaVersion,
+            SchemaVersion = ChatCommandSettingsConstants.SchemaVersion,
             Commands = new Dictionary<string, ChatCommandSettingsEntry>(StringComparer.OrdinalIgnoreCase)
             {
                 ["fu"] = new ChatCommandSettingsEntry
@@ -70,7 +70,7 @@ public class ChatCommandSettingsValidatorTests
     {
         var result = _sut.Validate(new ChatCommandSettingsDocument
         {
-            SchemaVersion = ChatCommandSettingsConstants.SupportedSchemaVersion,
+            SchemaVersion = ChatCommandSettingsConstants.SchemaVersion,
             Commands = new Dictionary<string, ChatCommandSettingsEntry>(StringComparer.OrdinalIgnoreCase)
             {
                 [" fu "] = new()
@@ -86,7 +86,7 @@ public class ChatCommandSettingsValidatorTests
     {
         var result = _sut.Validate(new ChatCommandSettingsDocument
         {
-            SchemaVersion = ChatCommandSettingsConstants.SupportedSchemaVersion,
+            SchemaVersion = ChatCommandSettingsConstants.SchemaVersion,
             Commands = new Dictionary<string, ChatCommandSettingsEntry>(StringComparer.OrdinalIgnoreCase)
             {
                 ["fu"] = null!
