@@ -36,6 +36,11 @@ The `copilot-setup-steps.yml` workflow checks out `frasermolyneux/.github-copilo
 - `patterns.terraform-remote-state`
 - `dotnet-nuget-library.instructions.md` — Abstractions package conventions
 
+### Platform settings contracts
+- Processor settings providers for `chatCommands` and `welcomeMessages` must consume `XtremeIdiots.Portal.Settings.Contracts.V1` typed contracts/validators.
+- Treat `XtremeIdiots.Portal.ChatCommands.Abstractions.V1` as compatibility-only, not as the canonical settings source.
+- Do not remove compatibility shims unless shim-removal gate criteria are met and evidenced.
+
 ### Platform consumption contracts
 - `platform.workloads`, `platform.monitoring`, `platform.hosting`
 

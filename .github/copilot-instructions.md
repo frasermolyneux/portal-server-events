@@ -41,3 +41,10 @@ This repository contains the XtremeIdiots Portal server event contracts and proc
 - Use `data` sources for existing Azure resources (resource groups, client config, remote state).
 - Follow file-per-resource pattern.
 - Variables declared in `variables.tf` with environment-specific values in `terraform/tfvars/`.
+
+## Platform Settings Contracts
+
+- Chat command and welcome message settings consumed by the processor are now sourced from `XtremeIdiots.Portal.Settings.Contracts.V1`.
+- Keep runtime settings validation on the typed validators from that package; avoid reintroducing local duplicate validators for the migrated namespaces.
+- `XtremeIdiots.Portal.ChatCommands.Abstractions.V1` remains compatibility-only and must not be treated as the canonical settings contract source.
+- Do not remove compatibility shims unless shim-removal gate criteria are met and evidenced in the implementation log.
