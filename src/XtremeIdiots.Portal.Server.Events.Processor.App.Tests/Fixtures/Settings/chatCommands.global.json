@@ -1,0 +1,32 @@
+{
+    "schemaVersion": 1,
+    "defaults": {
+        "enabled": true,
+        "freshnessSeconds": {
+            "default": 9,
+            "readOnly": 8,
+            "mutating": 4
+        },
+        "requiredTags": [
+            "member",
+            "trusted"
+        ]
+    },
+    "commands": {
+        "register": {
+            "enabled": false,
+            "freshnessSeconds": 12,
+            "requiredTags": [
+                "registerer"
+            ],
+            "settings": {
+                "mode": "strict",
+                "cooldownSeconds": 30
+            }
+        },
+        "whoami": {
+            "enabled": true,
+            "freshnessSeconds": 6
+        }
+    }
+}

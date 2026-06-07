@@ -11,6 +11,7 @@ using XtremeIdiots.Portal.Repository.Abstractions.Interfaces.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.Configurations;
 using XtremeIdiots.Portal.Repository.Api.Client.V1;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Commands;
+using XtremeIdiots.Portal.Server.Events.Processor.App.Tests.Fixtures;
 
 namespace XtremeIdiots.Portal.Server.Events.Processor.App.Tests.Commands;
 
@@ -82,6 +83,51 @@ public class ChatCommandSettingsProviderTests
         Assert.Equal(2, result.FreshnessSeconds);
         Assert.Equal(SettingsValueSource.ServerCommand, result.EnabledSource);
         Assert.Equal(SettingsValueSource.ServerCommand, result.FreshnessSource);
+    }
+
+    [Fact]
+    public async Task GetEffectiveSettingsAsync_WhenUsingFixtures_LocksCurrentMergeAndReadBehavior()
+    {
+        _globalConfigsApi
+            .Setup(x => x.GetConfigurations(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(SuccessResult(new CollectionModel<ConfigurationDto>(
+            [
+                CreateConfigurationDto(ChatCommandSettingsConstants.Namespace,
+                    SettingsFixtureLoader.LoadSettings("chatCommands.global.json"))
+            ])));
+
+        _serverConfigsApi
+            .Setup(x => x.GetConfigurations(ServerId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(SuccessResult(new CollectionModel<ConfigurationDto>(
+            [
+                CreateConfigurationDto(ChatCommandSettingsConstants.Namespace,
+                    SettingsFixtureLoader.LoadSettings("chatCommands.server.json"))
+            ])));
+
+        var sut = CreateSut();
+
+        var register = await sut.GetEffectiveSettingsAsync(ServerId, "register", isMutating: true);
+        Assert.True(register.Enabled);
+        Assert.Equal(2, register.FreshnessSeconds);
+        Assert.Equal(SettingsValueSource.ServerCommand, register.EnabledSource);
+        Assert.Equal(SettingsValueSource.ServerCommand, register.FreshnessSource);
+        Assert.Equal(SettingsValueSource.ServerCommand, register.AuthorizationSource);
+        Assert.Equal(SettingsValueSource.ServerCommand, register.PayloadSource);
+        Assert.Equal(["event-admin"], register.RequiredTags);
+        Assert.True(register.Settings.HasValue);
+        Assert.Equal("server-override", register.Settings.Value.GetProperty("mode").GetString());
+
+        var whoAmI = await sut.GetEffectiveSettingsAsync(ServerId, "whoami", isMutating: false);
+        Assert.True(whoAmI.Enabled);
+        Assert.Equal(6, whoAmI.FreshnessSeconds);
+        Assert.Equal(SettingsValueSource.GlobalCommand, whoAmI.EnabledSource);
+        Assert.Equal(SettingsValueSource.GlobalCommand, whoAmI.FreshnessSource);
+
+        var unknown = await sut.GetEffectiveSettingsAsync(ServerId, "unknown", isMutating: false);
+        Assert.True(unknown.Enabled);
+        Assert.Equal(8, unknown.FreshnessSeconds);
+        Assert.Equal(SettingsValueSource.GlobalDefaults, unknown.EnabledSource);
+        Assert.Equal(SettingsValueSource.GlobalDefaults, unknown.FreshnessSource);
     }
 
     [Fact]

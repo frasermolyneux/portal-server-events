@@ -1,0 +1,17 @@
+{
+    "schemaVersion": 1,
+    "inheritGlobalRules": false,
+    "rules": [
+        {
+            "id": "server-only",
+            "enabled": true,
+            "priority": 1,
+            "visibility": "Private",
+            "messageTemplate": "Server only",
+            "requiredTags": [
+                "solo"
+            ],
+            "connectionDelaySeconds": 4
+        }
+    ]
+}

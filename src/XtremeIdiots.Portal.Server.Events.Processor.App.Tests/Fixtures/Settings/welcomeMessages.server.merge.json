@@ -1,0 +1,35 @@
+{
+    "schemaVersion": 1,
+    "inheritGlobalRules": true,
+    "defaults": {
+        "countryFallback": "ServerFallback",
+        "connectionDelaySeconds": 5
+    },
+    "ruleOverrides": [
+        {
+            "id": "global-alpha",
+            "enabled": false,
+            "priority": 20,
+            "visibility": "Public",
+            "messageTemplate": "Server alpha override",
+            "requiredTags": [
+                "vip",
+                " vip "
+            ],
+            "connectionDelaySeconds": 6
+        }
+    ],
+    "rules": [
+        {
+            "id": "server-gamma",
+            "enabled": true,
+            "priority": 30,
+            "visibility": "Private",
+            "messageTemplate": "Server gamma",
+            "requiredTags": [
+                "admin"
+            ],
+            "connectionDelaySeconds": 7
+        }
+    ]
+}

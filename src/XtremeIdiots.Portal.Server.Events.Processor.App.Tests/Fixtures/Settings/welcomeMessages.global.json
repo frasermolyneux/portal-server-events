@@ -1,0 +1,30 @@
+{
+    "schemaVersion": 1,
+    "enabled": true,
+    "defaults": {
+        "countryFallback": "GlobalFallback",
+        "connectionDelaySeconds": 1,
+        "staleThresholdSeconds": 300
+    },
+    "rules": [
+        {
+            "id": "global-alpha",
+            "enabled": true,
+            "priority": 10,
+            "visibility": "Private",
+            "messageTemplate": "Welcome alpha",
+            "requiredTags": [
+                "member"
+            ],
+            "connectionDelaySeconds": 2
+        },
+        {
+            "id": "global-beta",
+            "enabled": true,
+            "priority": 5,
+            "visibility": "Public",
+            "messageTemplate": "Welcome beta",
+            "requiredTags": []
+        }
+    ]
+}

@@ -1,0 +1,20 @@
+{
+    "schemaVersion": 1,
+    "commands": {
+        "register": {
+            "enabled": true,
+            "freshnessSeconds": 2,
+            "requiredTags": [
+                "event-admin",
+                " event-admin "
+            ],
+            "settings": {
+                "mode": "server-override",
+                "cooldownSeconds": 10
+            }
+        },
+        "fu": {
+            "enabled": false
+        }
+    }
+}
