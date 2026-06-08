@@ -33,3 +33,9 @@ src/
 | `MapChangeEvent` | `map-change` | Server changes map |
 | `ServerStatusEvent` | `server-status` | Periodic snapshot (60s) |
 | `BanFileChangedEvent` | `ban-file-changed` | Ban file modified on server |
+
+## Platform Settings Contracts
+
+Chat command and welcome message settings consumed by the processor use typed contracts from `XtremeIdiots.Portal.Settings.Contracts.V1`.
+
+See `docs/platform-settings-contracts.md` for architecture details, migration context, and troubleshooting steps.

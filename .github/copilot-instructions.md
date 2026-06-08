@@ -31,8 +31,8 @@ This repository contains the XtremeIdiots Portal server event contracts and proc
 
 ## Development Guidelines
 
-- Run `dotnet build src/XtremeIdiots.Portal.Server.Events.sln` to build.
-- Run `dotnet test src/XtremeIdiots.Portal.Server.Events.sln` to run tests.
+- Run `dotnet build src/XtremeIdiots.Portal.Server.Events.slnx` to build.
+- Run `dotnet test src/XtremeIdiots.Portal.Server.Events.slnx` to run tests.
 - Terraform: `terraform -chdir=terraform init -backend-config=backends/dev.backend.hcl` then `terraform -chdir=terraform plan -var-file=tfvars/dev.tfvars`.
 - Ensure `terraform fmt -recursive` before committing Terraform changes.
 
@@ -48,3 +48,4 @@ This repository contains the XtremeIdiots Portal server event contracts and proc
 - Keep runtime settings validation on the typed validators from that package; avoid reintroducing local duplicate validators for the migrated namespaces.
 - `XtremeIdiots.Portal.ChatCommands.Abstractions.V1` remains compatibility-only and must not be treated as the canonical settings contract source.
 - Do not remove compatibility shims unless shim-removal gate criteria are met and evidenced in the implementation log.
+- Use `docs/platform-settings-contracts.md` for migration and troubleshooting procedures.

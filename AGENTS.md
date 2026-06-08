@@ -40,6 +40,7 @@ The `copilot-setup-steps.yml` workflow checks out `frasermolyneux/.github-copilo
 - Processor settings providers for `chatCommands` and `welcomeMessages` must consume `XtremeIdiots.Portal.Settings.Contracts.V1` typed contracts/validators.
 - Treat `XtremeIdiots.Portal.ChatCommands.Abstractions.V1` as compatibility-only, not as the canonical settings source.
 - Do not remove compatibility shims unless shim-removal gate criteria are met and evidenced.
+- Follow `docs/platform-settings-contracts.md` for migration and troubleshooting guidance.
 
 ### Platform consumption contracts
 - `platform.workloads`, `platform.monitoring`, `platform.hosting`
@@ -53,9 +54,9 @@ The `copilot-setup-steps.yml` workflow checks out `frasermolyneux/.github-copilo
 ## Build, test, format
 
 ```pwsh
-dotnet build src/XtremeIdiots.Portal.Server.Events.sln
-dotnet test src/XtremeIdiots.Portal.Server.Events.sln --filter "FullyQualifiedName!~IntegrationTests"
-dotnet format src/XtremeIdiots.Portal.Server.Events.sln --verify-no-changes
+dotnet build src/XtremeIdiots.Portal.Server.Events.slnx
+dotnet test src/XtremeIdiots.Portal.Server.Events.slnx --filter "FullyQualifiedName!~IntegrationTests"
+dotnet format src/XtremeIdiots.Portal.Server.Events.slnx --verify-no-changes
 
 terraform -chdir=terraform fmt -check -recursive
 terraform -chdir=terraform init -backend-config=backends/dev.backend.hcl
