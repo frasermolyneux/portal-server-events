@@ -39,3 +39,9 @@ src/
 Chat command and welcome message settings consumed by the processor use typed contracts from `XtremeIdiots.Portal.Settings.Contracts.V1`.
 
 See `docs/platform-settings-contracts.md` for architecture details, migration context, and troubleshooting steps.
+
+## Local dev: MCP wire-up
+
+This repo wires the `frasermolyneux-copilot` MCP server so AI agents can query org conventions (instructions, prompts, agents catalog) at runtime. The setup is exercised by `.github/workflows/copilot-setup-steps.yml` (cloud runner) and declared for the GitHub Copilot coding agent via `.github/copilot/mcp_config.json`.
+
+For full tool surface, content-root resolution, and per-client wire-up snippets (VS Code, Claude Desktop, Copilot CLI, etc.), see [`mcp-server/README.md`](https://github.com/frasermolyneux/.github-copilot/blob/main/mcp-server/README.md) in `frasermolyneux/.github-copilot`.
