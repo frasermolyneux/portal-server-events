@@ -1,6 +1,6 @@
 # AGENTS.md — portal-server-events
 
-Two components: (1) an **Abstractions NuGet package** (Service Bus event DTOs + queue-name constants shared by [`portal-server-agent`](../portal-server-agent/) as publisher and this repo as consumer); (2) an **Azure Functions Processor App** (.NET 9 isolated worker, Service Bus queue triggers) that handles persistence, moderation, GeoIP enrichment, and live stats.
+Two components: (1) an **Abstractions NuGet package** (Service Bus event DTOs + queue-name constants shared by portal-server-agent as publisher and this repo as consumer); (2) an **Azure Functions Processor App** (.NET 9 isolated worker, Service Bus queue triggers) that handles persistence, moderation, GeoIP enrichment, and live stats.
 
 This file is the brief for the **GitHub Copilot coding agent** (and any other agent that follows the [agents.md](https://agents.md) convention) when it runs in a cloud runner without the local VS Code multi-root workspace context.
 
@@ -16,6 +16,14 @@ The `copilot-setup-steps.yml` workflow checks out `frasermolyneux/.github-copilo
 2. `.github-copilot/.github/instructions/personal.working-preferences.instructions.md`
 3. `.github-copilot/.github/copilot-instructions.md` — org-wide catalog
 4. Stack-specific files — see **Stack guardrails** below
+
+---
+
+## Org conventions via MCP (when available)
+
+If a `frasermolyneux-copilot` MCP server is configured in your client (`~/.copilot/mcp-config.json`, VS Code user `mcp.json`, or an equivalent stdio MCP wire-up), **prefer its catalog tools** over your own assumptions when answering questions about org standards, branching, workflows, Terraform, .NET projects, Azure patterns, or shared library / platform consumption contracts. The catalog source-of-truth lives in `frasermolyneux/.github-copilot` — see `mcp-server/README.md` there for the tool contract.
+
+This is **complementary** to the file-load model: if `./.github-copilot/` is checked out in the runner (per `copilot-setup-steps.yml`), continue to read those files directly. If both are available, prefer MCP for freshness. If no MCP server is configured in your client, treat this section as a no-op and fall back to the file paths above.
 
 ---
 
@@ -75,6 +83,9 @@ terraform -chdir=terraform plan -var-file=tfvars/dev.tfvars
 - ❌ Do not add FTP / RCON / log-tailing logic here — wrong repo (belongs in `portal-server-agent`).
 - ❌ Do not modify `.github/workflows/`, `.github/dependabot.yml`, or `version.json` unless that is the explicit task.
 
+- ❌ Do not pull context from sibling workspace folders. Only what is inside this repo and `./.github-copilot/` is in scope.
+- ❌ Do not assume tools/SDKs are installed beyond what `.github/workflows/copilot-setup-steps.yml` provisions. If you need more, add the step and explain why.
+
 ---
 
 ## Opening the PR
@@ -104,6 +115,8 @@ Complete the `## Agent attestation` section before requesting review; reviewers 
 - [ ] PR body cites each acceptance criterion
 - [ ] Risk/rollout section filled in
 
+- [ ] `code-review` sub-agent run; High/Medium findings resolved or justified in the PR body
+
 ---
 
 ## Escalation
@@ -115,3 +128,7 @@ Stop and escalate when:
 - The change requires a breaking Abstractions change without a coordinated `portal-server-agent` update (also apply the `breaking-contract` label).
 - A `code-review` finding is **High** and cannot be resolved in-scope.
 - The Service Bus queue contract needs to add/remove a queue without coordinated provisioning in `portal-environments`.
+
+
+
+
