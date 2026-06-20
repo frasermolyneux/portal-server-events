@@ -6,6 +6,7 @@ using Microsoft.Extensions.Logging;
 
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.Configurations;
 using XtremeIdiots.Portal.Repository.Api.Client.V1;
+using XtremeIdiots.Portal.Settings.Contracts.V1.Contracts.Moderation;
 
 namespace XtremeIdiots.Portal.Server.Events.Processor.App.Moderation;
 
@@ -18,9 +19,13 @@ public sealed class ChatModerationSettingsProvider(
     private const int DisabledThresholdValue = -1;
     private const int MinThresholdValue = 0;
     private const int MaxThresholdValue = 6;
-    private const int LegacyDefaultThresholdValue = 4;
+    private const int DefaultThresholdValue = 4;
     private const string ModerationNamespace = "moderation";
     private static readonly TimeSpan CacheDuration = TimeSpan.FromMinutes(5);
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        PropertyNameCaseInsensitive = true
+    };
 
     public async Task<ChatModerationSettings> GetForServerAsync(Guid serverId, CancellationToken ct = default)
     {
@@ -38,8 +43,11 @@ public sealed class ChatModerationSettingsProvider(
             var globalConfig = await GetGlobalModerationConfigAsync(ct).ConfigureAwait(false);
             var serverConfig = await GetServerModerationConfigAsync(serverId, ct).ConfigureAwait(false);
 
-            var globalSettings = ParseGlobalSettings(globalConfig, defaults);
-            var effectiveSettings = ApplyServerOverrides(globalSettings, serverConfig);
+            var globalDocument = Deserialize(globalConfig, "global", serverId);
+            var serverDocument = Deserialize(serverConfig, "server", serverId);
+
+            var globalSettings = ParseGlobalSettings(globalDocument, defaults, serverId);
+            var effectiveSettings = ApplyServerOverrides(globalSettings, serverDocument, serverId);
 
             memoryCache.Set(cacheKey, effectiveSettings, new MemoryCacheEntryOptions
             {
@@ -61,8 +69,6 @@ public sealed class ChatModerationSettingsProvider(
             ? configuredMinLength
             : 5;
 
-        var legacyThreshold = TryGetIntFromConfiguration("ContentSafety:SeverityThreshold");
-
         var hateThreshold = TryGetIntFromConfiguration("ContentSafety:HateSeverityThreshold");
         var violenceThreshold = TryGetIntFromConfiguration("ContentSafety:ViolenceSeverityThreshold");
         var sexualThreshold = TryGetIntFromConfiguration("ContentSafety:SexualSeverityThreshold");
@@ -70,10 +76,10 @@ public sealed class ChatModerationSettingsProvider(
 
         return new ChatModerationSettings(
             MinMessageLength: minMessageLength,
-            HateSeverityThreshold: ResolveCategoryThreshold(hateThreshold, legacyThreshold, LegacyDefaultThresholdValue),
-            ViolenceSeverityThreshold: ResolveCategoryThreshold(violenceThreshold, legacyThreshold, LegacyDefaultThresholdValue),
-            SexualSeverityThreshold: ResolveCategoryThreshold(sexualThreshold, legacyThreshold, LegacyDefaultThresholdValue),
-            SelfHarmSeverityThreshold: ResolveCategoryThreshold(selfHarmThreshold, legacyThreshold, LegacyDefaultThresholdValue));
+            HateSeverityThreshold: ResolveCategoryThreshold(hateThreshold, DefaultThresholdValue),
+            ViolenceSeverityThreshold: ResolveCategoryThreshold(violenceThreshold, DefaultThresholdValue),
+            SexualSeverityThreshold: ResolveCategoryThreshold(sexualThreshold, DefaultThresholdValue),
+            SelfHarmSeverityThreshold: ResolveCategoryThreshold(selfHarmThreshold, DefaultThresholdValue));
     }
 
     private int? TryGetIntFromConfiguration(string key)
@@ -111,96 +117,74 @@ public sealed class ChatModerationSettingsProvider(
             string.Equals(x.Namespace, ModerationNamespace, StringComparison.OrdinalIgnoreCase));
     }
 
-    private static ChatModerationSettings ParseGlobalSettings(ConfigurationDto? moderationConfig, ChatModerationSettings defaults)
+    private ChatModerationSettings ParseGlobalSettings(ModerationSettingsDocument? moderationDocument, ChatModerationSettings defaults, Guid serverId)
     {
-        if (string.IsNullOrWhiteSpace(moderationConfig?.Configuration))
+        if (moderationDocument is null)
         {
             return defaults;
         }
 
-        try
+        var validation = new ModerationSettingsValidator().Validate(moderationDocument);
+        if (!validation.IsValid)
         {
-            using var document = JsonDocument.Parse(moderationConfig.Configuration);
-            var root = document.RootElement;
-
-            var legacyThreshold = TryGetThresholdValue(root, "contentSafetySeverityThreshold");
-
-            return new ChatModerationSettings(
-                MinMessageLength: TryGetInt(root, "minMessageLength") ?? defaults.MinMessageLength,
-                HateSeverityThreshold: ResolveCategoryThreshold(
-                    categoryValue: TryGetThresholdValue(root, "contentSafetyHateSeverityThreshold"),
-                    legacyValue: legacyThreshold,
-                    fallbackValue: defaults.HateSeverityThreshold),
-                ViolenceSeverityThreshold: ResolveCategoryThreshold(
-                    categoryValue: TryGetThresholdValue(root, "contentSafetyViolenceSeverityThreshold"),
-                    legacyValue: legacyThreshold,
-                    fallbackValue: defaults.ViolenceSeverityThreshold),
-                SexualSeverityThreshold: ResolveCategoryThreshold(
-                    categoryValue: TryGetThresholdValue(root, "contentSafetySexualSeverityThreshold"),
-                    legacyValue: legacyThreshold,
-                    fallbackValue: defaults.SexualSeverityThreshold),
-                SelfHarmSeverityThreshold: ResolveCategoryThreshold(
-                    categoryValue: TryGetThresholdValue(root, "contentSafetySelfHarmSeverityThreshold"),
-                    legacyValue: legacyThreshold,
-                    fallbackValue: defaults.SelfHarmSeverityThreshold));
-        }
-        catch (JsonException)
-        {
+            logger.LogWarning(
+                "Invalid global moderation settings for server {ServerId}: {Errors}",
+                serverId,
+                string.Join("; ", validation.Errors));
             return defaults;
         }
+
+        return new ChatModerationSettings(
+            MinMessageLength: moderationDocument.MinMessageLength ?? defaults.MinMessageLength,
+            HateSeverityThreshold: ResolveCategoryThreshold(
+                categoryValue: moderationDocument.ContentSafetyHateSeverityThreshold,
+                fallbackValue: defaults.HateSeverityThreshold),
+            ViolenceSeverityThreshold: ResolveCategoryThreshold(
+                categoryValue: moderationDocument.ContentSafetyViolenceSeverityThreshold,
+                fallbackValue: defaults.ViolenceSeverityThreshold),
+            SexualSeverityThreshold: ResolveCategoryThreshold(
+                categoryValue: moderationDocument.ContentSafetySexualSeverityThreshold,
+                fallbackValue: defaults.SexualSeverityThreshold),
+            SelfHarmSeverityThreshold: ResolveCategoryThreshold(
+                categoryValue: moderationDocument.ContentSafetySelfHarmSeverityThreshold,
+                fallbackValue: defaults.SelfHarmSeverityThreshold));
     }
 
-    private static ChatModerationSettings ApplyServerOverrides(ChatModerationSettings globalSettings, ConfigurationDto? serverConfig)
+    private ChatModerationSettings ApplyServerOverrides(ChatModerationSettings globalSettings, ModerationSettingsDocument? serverDocument, Guid serverId)
     {
-        if (string.IsNullOrWhiteSpace(serverConfig?.Configuration))
+        if (serverDocument is null)
         {
             return globalSettings;
         }
 
-        try
+        var validation = new ModerationSettingsValidator().Validate(serverDocument);
+        if (!validation.IsValid)
         {
-            using var document = JsonDocument.Parse(serverConfig.Configuration);
-            var root = document.RootElement;
-
-            var legacyThreshold = TryGetThresholdOverride(root, "contentSafetySeverityThreshold");
-
-            var hateOverride = ResolveCategoryThresholdOverride(root, "contentSafetyHateSeverityThreshold", legacyThreshold);
-            var violenceOverride = ResolveCategoryThresholdOverride(root, "contentSafetyViolenceSeverityThreshold", legacyThreshold);
-            var sexualOverride = ResolveCategoryThresholdOverride(root, "contentSafetySexualSeverityThreshold", legacyThreshold);
-            var selfHarmOverride = ResolveCategoryThresholdOverride(root, "contentSafetySelfHarmSeverityThreshold", legacyThreshold);
-
-            return new ChatModerationSettings(
-                MinMessageLength: TryGetInt(root, "minMessageLength") ?? globalSettings.MinMessageLength,
-                HateSeverityThreshold: hateOverride.HasValue ? hateOverride.Value : globalSettings.HateSeverityThreshold,
-                ViolenceSeverityThreshold: violenceOverride.HasValue ? violenceOverride.Value : globalSettings.ViolenceSeverityThreshold,
-                SexualSeverityThreshold: sexualOverride.HasValue ? sexualOverride.Value : globalSettings.SexualSeverityThreshold,
-                SelfHarmSeverityThreshold: selfHarmOverride.HasValue ? selfHarmOverride.Value : globalSettings.SelfHarmSeverityThreshold);
-        }
-        catch (JsonException)
-        {
+            logger.LogWarning(
+                "Invalid server moderation settings for server {ServerId}: {Errors}",
+                serverId,
+                string.Join("; ", validation.Errors));
             return globalSettings;
         }
+
+        return new ChatModerationSettings(
+            MinMessageLength: serverDocument.MinMessageLength ?? globalSettings.MinMessageLength,
+            HateSeverityThreshold: ResolveServerOverride(serverDocument.ContentSafetyHateSeverityThreshold, globalSettings.HateSeverityThreshold),
+            ViolenceSeverityThreshold: ResolveServerOverride(serverDocument.ContentSafetyViolenceSeverityThreshold, globalSettings.ViolenceSeverityThreshold),
+            SexualSeverityThreshold: ResolveServerOverride(serverDocument.ContentSafetySexualSeverityThreshold, globalSettings.SexualSeverityThreshold),
+            SelfHarmSeverityThreshold: ResolveServerOverride(serverDocument.ContentSafetySelfHarmSeverityThreshold, globalSettings.SelfHarmSeverityThreshold));
     }
 
-    private static int? ResolveCategoryThreshold(int? categoryValue, int? legacyValue, int? fallbackValue)
+    private static int? ResolveCategoryThreshold(int? categoryValue, int? fallbackValue)
     {
-        return NormalizeThreshold(categoryValue ?? legacyValue ?? fallbackValue);
+        return NormalizeThreshold(categoryValue ?? fallbackValue);
     }
 
-    private static ThresholdOverride ResolveCategoryThresholdOverride(JsonElement root, string propertyName, ThresholdOverride legacyOverride)
+    private static int? ResolveServerOverride(int? overrideValue, int? globalValue)
     {
-        var categoryOverride = TryGetThresholdOverride(root, propertyName);
-        if (categoryOverride.HasValue)
-        {
-            return new ThresholdOverride(true, NormalizeThreshold(categoryOverride.Value));
-        }
-
-        if (legacyOverride.HasValue)
-        {
-            return new ThresholdOverride(true, NormalizeThreshold(legacyOverride.Value));
-        }
-
-        return ThresholdOverride.None;
+        return overrideValue.HasValue
+            ? NormalizeThreshold(overrideValue)
+            : globalValue;
     }
 
     private static int? NormalizeThreshold(int? value)
@@ -223,38 +207,21 @@ public sealed class ChatModerationSettingsProvider(
         return value.Value;
     }
 
-    private static int? TryGetInt(JsonElement root, string propertyName)
+    private ModerationSettingsDocument? Deserialize(ConfigurationDto? config, string scope, Guid serverId)
     {
-        if (root.TryGetProperty(propertyName, out var property) &&
-            property.ValueKind == JsonValueKind.Number &&
-            property.TryGetInt32(out var value))
+        if (string.IsNullOrWhiteSpace(config?.Configuration))
         {
-            return value;
+            return null;
         }
 
-        return null;
-    }
-
-    private static int? TryGetThresholdValue(JsonElement root, string propertyName)
-        => TryGetInt(root, propertyName);
-
-    private static ThresholdOverride TryGetThresholdOverride(JsonElement root, string propertyName)
-    {
-        if (!root.TryGetProperty(propertyName, out var property))
+        try
         {
-            return ThresholdOverride.None;
+            return JsonSerializer.Deserialize<ModerationSettingsDocument>(config.Configuration, JsonOptions);
         }
-
-        if (property.ValueKind == JsonValueKind.Number && property.TryGetInt32(out var value))
+        catch (JsonException ex)
         {
-            return new ThresholdOverride(true, value);
+            logger.LogWarning(ex, "Failed to parse {Scope} moderation settings for server {ServerId}", scope, serverId);
+            return new ModerationSettingsDocument { SchemaVersion = -1 };
         }
-
-        return ThresholdOverride.None;
-    }
-
-    private readonly record struct ThresholdOverride(bool HasValue, int? Value)
-    {
-        public static ThresholdOverride None => new(false, null);
     }
 }

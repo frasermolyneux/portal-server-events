@@ -1,10 +1,8 @@
-using System.Text.Json;
-
 using Microsoft.Extensions.Logging;
+using System.Text.Json;
 
 using XtremeIdiots.Portal.Integrations.Servers.Abstractions.Models.V1.Rcon;
 using XtremeIdiots.Portal.Integrations.Servers.Api.Client.V1;
-using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.Configurations;
 using XtremeIdiots.Portal.Repository.Api.Client.V1;
 
 namespace XtremeIdiots.Portal.Server.Events.Processor.App.Commands;
@@ -12,10 +10,6 @@ namespace XtremeIdiots.Portal.Server.Events.Processor.App.Commands;
 public sealed class FuCommand : IChatCommand
 {
     private static readonly ChatCommandDescriptor Descriptor = ChatCommandDescriptorCatalog.Fu;
-
-    private const string AgentNamespace = "agent";
-    private const string AgentNameKey = "agentName";
-    private const string DefaultAgentNamePrefix = "^4[^1>XI< BOT^4]^7";
 
     private readonly IChatCommandSettingsProvider _settingsProvider;
     private readonly FuMessageTemplateRenderer _messageTemplateRenderer;
@@ -130,7 +124,7 @@ public sealed class FuCommand : IChatCommand
         var template = effectiveMessages[Random.Shared.Next(effectiveMessages.Count)];
         var renderedMessage = _messageTemplateRenderer.Render(template, resolvedName);
 
-        var prefix = await ResolveAgentNamePrefixAsync(context.ServerId, ct).ConfigureAwait(false);
+        var prefix = await AgentNamePrefixResolver.ResolveAsync(_repositoryClient, _logger, context.ServerId, ct).ConfigureAwait(false);
         var response = BuildPrefixedMessage(prefix, renderedMessage);
 
         var saySent = await _rconResponseService
@@ -180,84 +174,6 @@ public sealed class FuCommand : IChatCommand
         }
 
         return CommandResult.Failed(reason);
-    }
-
-    private async Task<string> ResolveAgentNamePrefixAsync(Guid serverId, CancellationToken ct)
-    {
-        var globalPrefix = DefaultAgentNamePrefix;
-
-        try
-        {
-            var globalConfigs = await _repositoryClient.GlobalConfigurations.V1
-                .GetConfigurations(ct)
-                .ConfigureAwait(false);
-
-            var globalAgentConfig = globalConfigs.Result?.Data?.Items?
-                .FirstOrDefault(x => string.Equals(x.Namespace, AgentNamespace, StringComparison.OrdinalIgnoreCase));
-
-            if (TryReadAgentName(globalAgentConfig, out var parsedGlobalPrefix))
-            {
-                globalPrefix = parsedGlobalPrefix;
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Unable to resolve global agent prefix for server {ServerId}; using default", serverId);
-        }
-
-        try
-        {
-            var serverConfigs = await _repositoryClient.GameServerConfigurations.V1
-                .GetConfigurations(serverId, ct)
-                .ConfigureAwait(false);
-
-            var serverAgentConfig = serverConfigs.Result?.Data?.Items?
-                .FirstOrDefault(x => string.Equals(x.Namespace, AgentNamespace, StringComparison.OrdinalIgnoreCase));
-
-            if (TryReadAgentName(serverAgentConfig, out var parsedServerPrefix))
-            {
-                return parsedServerPrefix;
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Unable to resolve server agent prefix for server {ServerId}; using global/default", serverId);
-        }
-
-        return globalPrefix;
-    }
-
-    private static bool TryReadAgentName(ConfigurationDto? config, out string agentName)
-    {
-        agentName = string.Empty;
-
-        if (string.IsNullOrWhiteSpace(config?.Configuration))
-        {
-            return false;
-        }
-
-        try
-        {
-            using var document = JsonDocument.Parse(config.Configuration);
-            var root = document.RootElement;
-            if (root.ValueKind == JsonValueKind.Object &&
-                root.TryGetProperty(AgentNameKey, out var agentNameProperty) &&
-                agentNameProperty.ValueKind == JsonValueKind.String)
-            {
-                var parsed = agentNameProperty.GetString();
-                if (!string.IsNullOrWhiteSpace(parsed))
-                {
-                    agentName = parsed;
-                    return true;
-                }
-            }
-        }
-        catch (JsonException)
-        {
-            return false;
-        }
-
-        return false;
     }
 
     private static string BuildPrefixedMessage(string prefix, string message)
