@@ -221,7 +221,7 @@ public sealed class ChatModerationSettingsProvider(
         catch (JsonException ex)
         {
             logger.LogWarning(ex, "Failed to parse {Scope} moderation settings for server {ServerId}", scope, serverId);
-            return new ModerationSettingsDocument { SchemaVersion = -1 };
+            return null;
         }
     }
 }

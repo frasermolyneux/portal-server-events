@@ -1,5 +1,6 @@
-using Microsoft.Extensions.Logging;
 using System.Text.Json;
+
+using Microsoft.Extensions.Logging;
 
 using XtremeIdiots.Portal.Integrations.Servers.Abstractions.Models.V1.Rcon;
 using XtremeIdiots.Portal.Integrations.Servers.Api.Client.V1;

@@ -124,7 +124,7 @@ public class ChatModerationSettingsProviderTests
     }
 
     [Fact]
-    public async Task GetForServerAsync_OutOfRangeThresholds_AreNormalized()
+    public async Task GetForServerAsync_OutOfRangeThresholds_FallBackToDefaults()
     {
         _globalConfigsApi
             .Setup(x => x.GetConfigurations(It.IsAny<CancellationToken>()))
