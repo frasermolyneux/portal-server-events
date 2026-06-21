@@ -68,12 +68,40 @@ public class ChatModerationSettingsProviderTests
     }
 
     [Fact]
+    public async Task GetForServerAsync_WhenOnlyLegacyThresholdIsConfigured_UsesCategoryDefaults()
+    {
+        _globalConfigsApi
+            .Setup(x => x.GetConfigurations(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(SuccessResult(new CollectionModel<ConfigurationDto>(
+            [
+                CreateConfig("moderation", "{\"minMessageLength\":9,\"contentSafetySeverityThreshold\":1}")
+            ])));
+
+        _serverConfigsApi
+            .Setup(x => x.GetConfigurations(ServerId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(SuccessResult(new CollectionModel<ConfigurationDto>([])));
+
+        var sut = CreateSut();
+
+        var result = await sut.GetForServerAsync(ServerId);
+
+        Assert.Equal(9, result.MinMessageLength);
+        Assert.Equal(4, result.HateSeverityThreshold);
+        Assert.Equal(4, result.ViolenceSeverityThreshold);
+        Assert.Equal(4, result.SexualSeverityThreshold);
+        Assert.Equal(4, result.SelfHarmSeverityThreshold);
+    }
+
+    [Fact]
     public async Task GetForServerAsync_WhenConfigApisFail_UsesSafeConfigurationDefaults()
     {
         var configuration = BuildConfiguration(new Dictionary<string, string?>
         {
             ["ContentSafety:MinMessageLength"] = "7",
-            ["ContentSafety:SeverityThreshold"] = "4"
+            ["ContentSafety:HateSeverityThreshold"] = "2",
+            ["ContentSafety:ViolenceSeverityThreshold"] = "3",
+            ["ContentSafety:SexualSeverityThreshold"] = "4",
+            ["ContentSafety:SelfHarmSeverityThreshold"] = "5"
         });
 
         _globalConfigsApi
@@ -89,14 +117,14 @@ public class ChatModerationSettingsProviderTests
         var result = await sut.GetForServerAsync(ServerId);
 
         Assert.Equal(7, result.MinMessageLength);
-        Assert.Equal(4, result.HateSeverityThreshold);
-        Assert.Equal(4, result.ViolenceSeverityThreshold);
+        Assert.Equal(2, result.HateSeverityThreshold);
+        Assert.Equal(3, result.ViolenceSeverityThreshold);
         Assert.Equal(4, result.SexualSeverityThreshold);
-        Assert.Equal(4, result.SelfHarmSeverityThreshold);
+        Assert.Equal(5, result.SelfHarmSeverityThreshold);
     }
 
     [Fact]
-    public async Task GetForServerAsync_OutOfRangeThresholds_AreNormalized()
+    public async Task GetForServerAsync_OutOfRangeThresholds_FallBackToDefaults()
     {
         _globalConfigsApi
             .Setup(x => x.GetConfigurations(It.IsAny<CancellationToken>()))
@@ -113,10 +141,10 @@ public class ChatModerationSettingsProviderTests
 
         var result = await sut.GetForServerAsync(ServerId);
 
-        Assert.Equal(6, result.HateSeverityThreshold);
-        Assert.Equal(0, result.ViolenceSeverityThreshold);
-        Assert.Null(result.SexualSeverityThreshold);
-        Assert.Equal(0, result.SelfHarmSeverityThreshold);
+        Assert.Equal(4, result.HateSeverityThreshold);
+        Assert.Equal(4, result.ViolenceSeverityThreshold);
+        Assert.Equal(4, result.SexualSeverityThreshold);
+        Assert.Equal(4, result.SelfHarmSeverityThreshold);
     }
 
     private ChatModerationSettingsProvider CreateSut(IConfiguration? configuration = null)
@@ -134,7 +162,10 @@ public class ChatModerationSettingsProviderTests
             .AddInMemoryCollection(values ?? new Dictionary<string, string?>
             {
                 ["ContentSafety:MinMessageLength"] = "5",
-                ["ContentSafety:SeverityThreshold"] = "4"
+                ["ContentSafety:HateSeverityThreshold"] = "4",
+                ["ContentSafety:ViolenceSeverityThreshold"] = "4",
+                ["ContentSafety:SexualSeverityThreshold"] = "4",
+                ["ContentSafety:SelfHarmSeverityThreshold"] = "4"
             })
             .Build();
     }
