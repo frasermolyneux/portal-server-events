@@ -8,12 +8,12 @@ namespace XtremeIdiots.Portal.Server.Events.Processor.App.Functions;
 
 public class HealthCheck(HealthCheckService healthCheck)
 {
-    [Function(nameof(HealthCheck))]
-    public async Task<HttpResponseData> Run(
-        [HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "health")] HttpRequestData req,
+    [Function("HealthCheckReady")]
+    public async Task<HttpResponseData> RunReady(
+        [HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "health/ready")] HttpRequestData req,
         FunctionContext context)
     {
-        var result = await healthCheck.CheckHealthAsync().ConfigureAwait(false);
+        var result = await healthCheck.CheckHealthAsync(context.CancellationToken).ConfigureAwait(false);
 
         var statusCode = result.Status == HealthStatus.Healthy
             ? HttpStatusCode.OK
@@ -30,6 +30,19 @@ public class HealthCheck(HealthCheckService healthCheck)
                 description = e.Value.Description
             })
         });
+        return response;
+    }
+
+    [Function("HealthCheckLive")]
+    public async Task<HttpResponseData> RunLive(
+        [HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "health/live")] HttpRequestData req,
+        FunctionContext context)
+    {
+        var response = req.CreateResponse(HttpStatusCode.OK);
+        await response.WriteAsJsonAsync(new
+        {
+            status = HealthStatus.Healthy.ToString(),
+        }, context.CancellationToken).ConfigureAwait(false);
         return response;
     }
 }
