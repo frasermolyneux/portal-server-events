@@ -1,41 +1,35 @@
 # Portal Server Events
 
-Service Bus event contracts and processor functions for the XtremeIdiots portal server event pipeline.
+[![Build and Test](https://github.com/frasermolyneux/portal-server-events/actions/workflows/build-and-test.yml/badge.svg)](https://github.com/frasermolyneux/portal-server-events/actions/workflows/build-and-test.yml)
+[![Code Quality](https://github.com/frasermolyneux/portal-server-events/actions/workflows/codequality.yml/badge.svg)](https://github.com/frasermolyneux/portal-server-events/actions/workflows/codequality.yml)
+[![Copilot Setup Steps](https://github.com/frasermolyneux/portal-server-events/actions/workflows/copilot-setup-steps.yml/badge.svg)](https://github.com/frasermolyneux/portal-server-events/actions/workflows/copilot-setup-steps.yml)
+[![Dependabot Auto-Merge](https://github.com/frasermolyneux/portal-server-events/actions/workflows/dependabot-automerge.yml/badge.svg)](https://github.com/frasermolyneux/portal-server-events/actions/workflows/dependabot-automerge.yml)
+[![Deploy Dev](https://github.com/frasermolyneux/portal-server-events/actions/workflows/deploy-dev.yml/badge.svg)](https://github.com/frasermolyneux/portal-server-events/actions/workflows/deploy-dev.yml)
+[![Deploy Prd](https://github.com/frasermolyneux/portal-server-events/actions/workflows/deploy-prd.yml/badge.svg)](https://github.com/frasermolyneux/portal-server-events/actions/workflows/deploy-prd.yml)
+[![Destroy Development](https://github.com/frasermolyneux/portal-server-events/actions/workflows/destroy-development.yml/badge.svg)](https://github.com/frasermolyneux/portal-server-events/actions/workflows/destroy-development.yml)
+[![Destroy Environment](https://github.com/frasermolyneux/portal-server-events/actions/workflows/destroy-environment.yml/badge.svg)](https://github.com/frasermolyneux/portal-server-events/actions/workflows/destroy-environment.yml)
+[![PR Verify](https://github.com/frasermolyneux/portal-server-events/actions/workflows/pr-verify.yml/badge.svg)](https://github.com/frasermolyneux/portal-server-events/actions/workflows/pr-verify.yml)
+[![Release - Publish NuGet](https://github.com/frasermolyneux/portal-server-events/actions/workflows/release-publish-nuget.yml/badge.svg)](https://github.com/frasermolyneux/portal-server-events/actions/workflows/release-publish-nuget.yml)
+[![Release - Version and Tag](https://github.com/frasermolyneux/portal-server-events/actions/workflows/release-version-and-tag.yml/badge.svg)](https://github.com/frasermolyneux/portal-server-events/actions/workflows/release-version-and-tag.yml)
 
-## Architecture
+## Documentation
 
-This repository contains:
+* [Platform Settings Contracts](/docs/platform-settings-contracts.md) - Typed settings contract usage and migration guidance for processor runtime settings
 
-1. **Abstractions NuGet package** — Event DTOs and queue name constants shared between the agent (publisher) and processor (consumer)
-2. **Processor Function App** — Azure Functions that subscribe to Service Bus queues and process events (persistence, moderation, GeoIP enrichment, live stats)
+## Overview
 
-## Project Structure
+Portal Server Events provides the shared Service Bus event contracts and the Azure Functions processor used in the XtremeIdiots server-event pipeline. The abstractions package defines queue names and DTO contracts consumed by both publishers and consumers. The processor app subscribes to those queues for persistence, moderation, enrichment, and downstream event handling flows. Terraform and GitHub Actions manage the infrastructure lifecycle and automated deployments.
 
-```
-src/
-├── XtremeIdiots.Portal.Server.Events.Abstractions.V1/    # NuGet package
-│   ├── Events/           # Event DTOs (ServerEventBase, PlayerConnectedEvent, etc.)
-│   └── Queues.cs         # Queue name constants
-├── XtremeIdiots.Portal.Server.Events.Processor.App/       # Azure Functions
-│   └── Functions/        # Queue-triggered processors
-└── XtremeIdiots.Portal.Server.Events.Processor.App.Tests/
-```
+## NuGet Packages
 
-## Event Types
+| Package                                                                                                                                 | Latest                                                                                                                                                                              | Description                                                                              |
+| --------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| [`XtremeIdiots.Portal.Server.Events.Abstractions.V1`](https://www.nuget.org/packages/XtremeIdiots.Portal.Server.Events.Abstractions.V1) | [![NuGet](https://img.shields.io/nuget/v/XtremeIdiots.Portal.Server.Events.Abstractions.V1.svg)](https://www.nuget.org/packages/XtremeIdiots.Portal.Server.Events.Abstractions.V1/) | Shared Service Bus queue constants and event DTO contracts for the server event pipeline |
 
-| Event | Queue | Published When |
-|-------|-------|----------------|
-| `PlayerConnectedEvent` | `player-connected` | Player joins server |
-| `PlayerDisconnectedEvent` | `player-disconnected` | Player leaves server |
-| `ChatMessageEvent` | `chat-message` | Player sends chat |
-| `MapVoteEvent` | `map-vote` | Player types !like/!dislike |
-| `ServerConnectedEvent` | `server-connected` | Agent starts monitoring |
-| `MapChangeEvent` | `map-change` | Server changes map |
-| `ServerStatusEvent` | `server-status` | Periodic snapshot (60s) |
-| `BanFileChangedEvent` | `ban-file-changed` | Ban file modified on server |
+## Contributing
 
-## Platform Settings Contracts
+Please read the [contributing](CONTRIBUTING.md) guidance; this is a learning and development project.
 
-Chat command and welcome message settings consumed by the processor use typed contracts from `XtremeIdiots.Portal.Settings.Contracts.V1`.
+## Security
 
-See `docs/platform-settings-contracts.md` for architecture details, migration context, and troubleshooting steps.
+Please read the [security](SECURITY.md) guidance; I am always open to security feedback through email or opening an issue.
