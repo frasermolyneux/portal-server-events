@@ -15,7 +15,7 @@ namespace XtremeIdiots.Portal.Server.Events.Processor.App.Tests.Commands;
 public class RegisterCommandTests
 {
     private readonly Mock<IRepositoryApiClient> _repoClient = new();
-    private readonly Mock<XtremeIdiots.Portal.Repository.Api.Client.V1.IVersionedConnectedPlayersApi> _versionedConnectedPlayers = new();
+    private readonly Mock<IVersionedConnectedPlayersApi> _versionedConnectedPlayers = new();
     private readonly Mock<IConnectedPlayersApi> _connectedPlayersApi = new();
     private readonly Mock<IRconResponseService> _rconResponseService = new();
     private readonly Mock<IRegisterCommandRateLimiter> _rateLimiter = new();
@@ -85,7 +85,7 @@ public class RegisterCommandTests
             It.IsAny<DateTime>(),
             It.IsAny<CancellationToken>()), Times.Once);
 
-        _connectedPlayersApi.Verify(x => x.ConsumeConnectedPlayerActivationCode(It.IsAny<XtremeIdiots.Portal.Repository.Abstractions.Models.V1.ConnectedPlayers.ConsumeConnectedPlayerActivationCodeDto>(), It.IsAny<CancellationToken>()), Times.Never);
+        _connectedPlayersApi.Verify(x => x.ConsumeConnectedPlayerActivationCode(It.IsAny<Repository.Abstractions.Models.V1.ConnectedPlayers.ConsumeConnectedPlayerActivationCodeDto>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Theory]
@@ -99,15 +99,15 @@ public class RegisterCommandTests
 
         Assert.True(result.Handled);
         Assert.False(result.Success);
-        _connectedPlayersApi.Verify(x => x.ConsumeConnectedPlayerActivationCode(It.IsAny<XtremeIdiots.Portal.Repository.Abstractions.Models.V1.ConnectedPlayers.ConsumeConnectedPlayerActivationCodeDto>(), It.IsAny<CancellationToken>()), Times.Never);
+        _connectedPlayersApi.Verify(x => x.ConsumeConnectedPlayerActivationCode(It.IsAny<Repository.Abstractions.Models.V1.ConnectedPlayers.ConsumeConnectedPlayerActivationCodeDto>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
     public async Task ExecuteAsync_WhenConsumeSucceeds_ReturnsSuccessAndUsesNormalizedCode()
     {
         _connectedPlayersApi
-            .Setup(x => x.ConsumeConnectedPlayerActivationCode(It.IsAny<XtremeIdiots.Portal.Repository.Abstractions.Models.V1.ConnectedPlayers.ConsumeConnectedPlayerActivationCodeDto>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new MX.Api.Abstractions.ApiResult<XtremeIdiots.Portal.Repository.Abstractions.Models.V1.ConnectedPlayers.ConnectedPlayerDto>(HttpStatusCode.Created));
+            .Setup(x => x.ConsumeConnectedPlayerActivationCode(It.IsAny<Repository.Abstractions.Models.V1.ConnectedPlayers.ConsumeConnectedPlayerActivationCodeDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new MX.Api.Abstractions.ApiResult<Repository.Abstractions.Models.V1.ConnectedPlayers.ConnectedPlayerDto>(HttpStatusCode.Created));
 
         var result = await _sut.ExecuteAsync(CreateContext("!register ab12cd"));
 
@@ -124,7 +124,7 @@ public class RegisterCommandTests
             It.IsAny<CancellationToken>()), Times.Once);
 
         _connectedPlayersApi.Verify(x => x.ConsumeConnectedPlayerActivationCode(
-            It.Is<XtremeIdiots.Portal.Repository.Abstractions.Models.V1.ConnectedPlayers.ConsumeConnectedPlayerActivationCodeDto>(dto =>
+            It.Is<Repository.Abstractions.Models.V1.ConnectedPlayers.ConsumeConnectedPlayerActivationCodeDto>(dto =>
                 dto.PlayerId == TestPlayerId && dto.Code == "AB12CD"),
             It.IsAny<CancellationToken>()), Times.Once);
     }
@@ -133,8 +133,8 @@ public class RegisterCommandTests
     public async Task ExecuteAsync_WhenConsumeReturnsOk_ReturnsSuccess()
     {
         _connectedPlayersApi
-            .Setup(x => x.ConsumeConnectedPlayerActivationCode(It.IsAny<XtremeIdiots.Portal.Repository.Abstractions.Models.V1.ConnectedPlayers.ConsumeConnectedPlayerActivationCodeDto>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new MX.Api.Abstractions.ApiResult<XtremeIdiots.Portal.Repository.Abstractions.Models.V1.ConnectedPlayers.ConnectedPlayerDto>(HttpStatusCode.OK));
+            .Setup(x => x.ConsumeConnectedPlayerActivationCode(It.IsAny<Repository.Abstractions.Models.V1.ConnectedPlayers.ConsumeConnectedPlayerActivationCodeDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new MX.Api.Abstractions.ApiResult<Repository.Abstractions.Models.V1.ConnectedPlayers.ConnectedPlayerDto>(HttpStatusCode.OK));
 
         var result = await _sut.ExecuteAsync(CreateContext());
 
@@ -146,8 +146,8 @@ public class RegisterCommandTests
     public async Task ExecuteAsync_WithTabSeparatedArguments_ParsesAndSucceeds()
     {
         _connectedPlayersApi
-            .Setup(x => x.ConsumeConnectedPlayerActivationCode(It.IsAny<XtremeIdiots.Portal.Repository.Abstractions.Models.V1.ConnectedPlayers.ConsumeConnectedPlayerActivationCodeDto>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new MX.Api.Abstractions.ApiResult<XtremeIdiots.Portal.Repository.Abstractions.Models.V1.ConnectedPlayers.ConnectedPlayerDto>(HttpStatusCode.OK));
+            .Setup(x => x.ConsumeConnectedPlayerActivationCode(It.IsAny<Repository.Abstractions.Models.V1.ConnectedPlayers.ConsumeConnectedPlayerActivationCodeDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new MX.Api.Abstractions.ApiResult<Repository.Abstractions.Models.V1.ConnectedPlayers.ConnectedPlayerDto>(HttpStatusCode.OK));
 
         var result = await _sut.ExecuteAsync(CreateContext("!register\tAB12CD"));
 
@@ -159,8 +159,8 @@ public class RegisterCommandTests
     public async Task ExecuteAsync_WhenConsumeConflicts_ReturnsFailed()
     {
         _connectedPlayersApi
-            .Setup(x => x.ConsumeConnectedPlayerActivationCode(It.IsAny<XtremeIdiots.Portal.Repository.Abstractions.Models.V1.ConnectedPlayers.ConsumeConnectedPlayerActivationCodeDto>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new MX.Api.Abstractions.ApiResult<XtremeIdiots.Portal.Repository.Abstractions.Models.V1.ConnectedPlayers.ConnectedPlayerDto>(HttpStatusCode.Conflict));
+            .Setup(x => x.ConsumeConnectedPlayerActivationCode(It.IsAny<Repository.Abstractions.Models.V1.ConnectedPlayers.ConsumeConnectedPlayerActivationCodeDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new MX.Api.Abstractions.ApiResult<Repository.Abstractions.Models.V1.ConnectedPlayers.ConnectedPlayerDto>(HttpStatusCode.Conflict));
 
         var result = await _sut.ExecuteAsync(CreateContext());
 
@@ -182,8 +182,8 @@ public class RegisterCommandTests
     public async Task ExecuteAsync_WhenConsumeBadRequest_ReturnsFailed()
     {
         _connectedPlayersApi
-            .Setup(x => x.ConsumeConnectedPlayerActivationCode(It.IsAny<XtremeIdiots.Portal.Repository.Abstractions.Models.V1.ConnectedPlayers.ConsumeConnectedPlayerActivationCodeDto>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new MX.Api.Abstractions.ApiResult<XtremeIdiots.Portal.Repository.Abstractions.Models.V1.ConnectedPlayers.ConnectedPlayerDto>(HttpStatusCode.BadRequest));
+            .Setup(x => x.ConsumeConnectedPlayerActivationCode(It.IsAny<Repository.Abstractions.Models.V1.ConnectedPlayers.ConsumeConnectedPlayerActivationCodeDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new MX.Api.Abstractions.ApiResult<Repository.Abstractions.Models.V1.ConnectedPlayers.ConnectedPlayerDto>(HttpStatusCode.BadRequest));
 
         var result = await _sut.ExecuteAsync(CreateContext());
 
@@ -205,7 +205,7 @@ public class RegisterCommandTests
     public async Task ExecuteAsync_WhenConsumeThrows_ReturnsFailedAndSendsPrivateFailure()
     {
         _connectedPlayersApi
-            .Setup(x => x.ConsumeConnectedPlayerActivationCode(It.IsAny<XtremeIdiots.Portal.Repository.Abstractions.Models.V1.ConnectedPlayers.ConsumeConnectedPlayerActivationCodeDto>(), It.IsAny<CancellationToken>()))
+            .Setup(x => x.ConsumeConnectedPlayerActivationCode(It.IsAny<Repository.Abstractions.Models.V1.ConnectedPlayers.ConsumeConnectedPlayerActivationCodeDto>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new InvalidOperationException("boom"));
 
         var result = await _sut.ExecuteAsync(CreateContext());
@@ -242,7 +242,7 @@ public class RegisterCommandTests
         Assert.Equal("Too many !register attempts. Please wait 42 seconds and try again.", result.ResponseMessage);
 
         _connectedPlayersApi.Verify(x => x.ConsumeConnectedPlayerActivationCode(
-            It.IsAny<XtremeIdiots.Portal.Repository.Abstractions.Models.V1.ConnectedPlayers.ConsumeConnectedPlayerActivationCodeDto>(),
+            It.IsAny<Repository.Abstractions.Models.V1.ConnectedPlayers.ConsumeConnectedPlayerActivationCodeDto>(),
             It.IsAny<CancellationToken>()), Times.Never);
 
         _rconResponseService.Verify(x => x.TryTellAsync(

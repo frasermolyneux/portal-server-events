@@ -84,7 +84,7 @@ jobs:
       BUILD_VERSION_OVERRIDE: ${{ needs.calculate-version.outputs.nuget_version }}
 
     steps:
-    - uses: frasermolyneux/actions/dotnet-func-ci@dotnet-func-ci/v1.4
+    - uses: frasermolyneux/actions/dotnet-func-ci@dotnet-func-ci/v2
       with:
         dotnet-project: "XtremeIdiots.Portal.Server.Events.Processor.App"
         dotnet-version: 9.0.x

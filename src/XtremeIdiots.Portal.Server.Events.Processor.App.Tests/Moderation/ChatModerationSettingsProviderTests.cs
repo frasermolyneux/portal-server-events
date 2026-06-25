@@ -46,14 +46,14 @@ public class ChatModerationSettingsProviderTests
             .Setup(x => x.GetConfigurations(It.IsAny<CancellationToken>()))
             .ReturnsAsync(SuccessResult(new CollectionModel<ConfigurationDto>(
             [
-                CreateConfig("moderation", "{\"minMessageLength\":9,\"contentSafetyHateSeverityThreshold\":2,\"contentSafetyViolenceSeverityThreshold\":3,\"contentSafetySexualSeverityThreshold\":4,\"contentSafetySelfHarmSeverityThreshold\":5}")
+                CreateConfig("moderation", /*lang=json,strict*/ "{\"minMessageLength\":9,\"contentSafetyHateSeverityThreshold\":2,\"contentSafetyViolenceSeverityThreshold\":3,\"contentSafetySexualSeverityThreshold\":4,\"contentSafetySelfHarmSeverityThreshold\":5}")
             ])));
 
         _serverConfigsApi
             .Setup(x => x.GetConfigurations(ServerId, It.IsAny<CancellationToken>()))
             .ReturnsAsync(SuccessResult(new CollectionModel<ConfigurationDto>(
             [
-                CreateConfig("moderation", "{\"contentSafetyHateSeverityThreshold\":6,\"contentSafetyViolenceSeverityThreshold\":-1}")
+                CreateConfig("moderation", /*lang=json,strict*/ "{\"contentSafetyHateSeverityThreshold\":6,\"contentSafetyViolenceSeverityThreshold\":-1}")
             ])));
 
         var sut = CreateSut();
@@ -74,7 +74,7 @@ public class ChatModerationSettingsProviderTests
             .Setup(x => x.GetConfigurations(It.IsAny<CancellationToken>()))
             .ReturnsAsync(SuccessResult(new CollectionModel<ConfigurationDto>(
             [
-                CreateConfig("moderation", "{\"minMessageLength\":9,\"contentSafetySeverityThreshold\":1}")
+                CreateConfig("moderation", /*lang=json,strict*/ "{\"minMessageLength\":9,\"contentSafetySeverityThreshold\":1}")
             ])));
 
         _serverConfigsApi
@@ -130,7 +130,7 @@ public class ChatModerationSettingsProviderTests
             .Setup(x => x.GetConfigurations(It.IsAny<CancellationToken>()))
             .ReturnsAsync(SuccessResult(new CollectionModel<ConfigurationDto>(
             [
-                CreateConfig("moderation", "{\"contentSafetyHateSeverityThreshold\":99,\"contentSafetyViolenceSeverityThreshold\":-5,\"contentSafetySexualSeverityThreshold\":-1,\"contentSafetySelfHarmSeverityThreshold\":0}")
+                CreateConfig("moderation", /*lang=json,strict*/ "{\"contentSafetyHateSeverityThreshold\":99,\"contentSafetyViolenceSeverityThreshold\":-5,\"contentSafetySexualSeverityThreshold\":-1,\"contentSafetySelfHarmSeverityThreshold\":0}")
             ])));
 
         _serverConfigsApi

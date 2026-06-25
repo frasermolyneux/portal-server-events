@@ -140,7 +140,8 @@ public class WelcomeMessageSettingsProviderTests
             .ReturnsAsync(SuccessResult(new CollectionModel<ConfigurationDto>(
             [
                 CreateConfigurationDto(WelcomeMessageSettingsConstants.Namespace,
-                    "{\"schemaVersion\":999}")
+                    /*lang=json,strict*/
+                                         "{\"schemaVersion\":999}")
             ])));
 
         var sut = CreateSut();

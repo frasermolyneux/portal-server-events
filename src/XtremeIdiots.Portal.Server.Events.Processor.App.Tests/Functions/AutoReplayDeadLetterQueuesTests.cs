@@ -111,7 +111,7 @@ public class AutoReplayDeadLetterQueuesTests
     public async Task ReplayQueueDlq_ReplaysMessagesWithReplayCount()
     {
         var dlqMessage = ServiceBusModelFactory.ServiceBusReceivedMessage(
-            body: new BinaryData("{\"test\":true}"),
+            body: new BinaryData(/*lang=json,strict*/ "{\"test\":true}"),
             messageId: "msg-1",
             sequenceNumber: 1);
 
@@ -146,7 +146,7 @@ public class AutoReplayDeadLetterQueuesTests
     {
         var properties = new Dictionary<string, object> { ["DlqReplayCount"] = 3 };
         var dlqMessage = ServiceBusModelFactory.ServiceBusReceivedMessage(
-            body: new BinaryData("{\"test\":true}"),
+            body: new BinaryData(/*lang=json,strict*/ "{\"test\":true}"),
             messageId: "msg-max",
             properties: properties,
             sequenceNumber: 1);

@@ -51,14 +51,14 @@ public class FuCommandTests
             .Setup(x => x.GetConfigurations(It.IsAny<CancellationToken>()))
             .ReturnsAsync(SuccessResult(new CollectionModel<ConfigurationDto>(
             [
-                CreateConfigurationDto("agent", "{\"agentName\":\"^5[GlobalBot]^7\"}")
+                CreateConfigurationDto("agent", /*lang=json,strict*/ "{\"agentName\":\"^5[GlobalBot]^7\"}")
             ])));
 
         _serverConfigsApi
             .Setup(x => x.GetConfigurations(TestServerId, It.IsAny<CancellationToken>()))
             .ReturnsAsync(SuccessResult(new CollectionModel<ConfigurationDto>(
             [
-                CreateConfigurationDto("agent", "{\"agentName\":\"^2[ServerBot]^7\"}")
+                CreateConfigurationDto("agent", /*lang=json,strict*/ "{\"agentName\":\"^2[ServerBot]^7\"}")
             ])));
 
         _settingsProvider

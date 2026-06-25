@@ -24,7 +24,7 @@ jobs:
     if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
-      - uses: frasermolyneux/actions/dotnet-func-ci@dotnet-func-ci/v1.4
+      - uses: frasermolyneux/actions/dotnet-func-ci@dotnet-func-ci/v2
         with:
           dotnet-project: "XtremeIdiots.Portal.Server.Events.Processor.App"
           dotnet-version: 9.0.x

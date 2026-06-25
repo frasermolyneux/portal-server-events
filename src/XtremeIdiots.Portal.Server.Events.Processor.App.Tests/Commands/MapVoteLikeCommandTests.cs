@@ -25,8 +25,8 @@ public class MapVoteLikeCommandTests
     private readonly Mock<IServersApiClient> _serversClient = new();
     private readonly Mock<IVersionedRconApi> _versionedRcon = new();
     private readonly Mock<IRconApi> _rconApi = new();
-    private readonly Mock<XtremeIdiots.Portal.Repository.Api.Client.V1.IVersionedMapsApi> _versionedMaps = new();
-    private readonly Mock<XtremeIdiots.Portal.Repository.Abstractions.Interfaces.V1.IMapsApi> _mapsApi = new();
+    private readonly Mock<Repository.Api.Client.V1.IVersionedMapsApi> _versionedMaps = new();
+    private readonly Mock<Repository.Abstractions.Interfaces.V1.IMapsApi> _mapsApi = new();
     private readonly Mock<IVersionedGlobalConfigurationsApi> _versionedGlobalConfigs = new();
     private readonly Mock<IGlobalConfigurationsApi> _globalConfigsApi = new();
     private readonly Mock<IVersionedGameServerConfigurationsApi> _versionedServerConfigs = new();
@@ -59,7 +59,7 @@ public class MapVoteLikeCommandTests
                 HttpStatusCode.OK,
                 new ApiResponse<CollectionModel<ConfigurationDto>>(new CollectionModel<ConfigurationDto>(new[]
                 {
-                    CreateConfigurationDto("agent", "{\"agentName\":\"^5[GlobalBot]^7\"}")
+                    CreateConfigurationDto("agent", /*lang=json,strict*/ "{\"agentName\":\"^5[GlobalBot]^7\"}")
                 }))));
 
         _serverConfigsApi
@@ -68,7 +68,7 @@ public class MapVoteLikeCommandTests
                 HttpStatusCode.OK,
                 new ApiResponse<CollectionModel<ConfigurationDto>>(new CollectionModel<ConfigurationDto>(new[]
                 {
-                    CreateConfigurationDto("agent", "{\"agentName\":\"^2[ServerBot]^7\"}")
+                    CreateConfigurationDto("agent", /*lang=json,strict*/ "{\"agentName\":\"^2[ServerBot]^7\"}")
                 }))));
 
         _commandSafetyService

@@ -64,7 +64,8 @@ public class ChatCommandSettingsProviderTests
             .ReturnsAsync(SuccessResult(new CollectionModel<ConfigurationDto>(
             [
                 CreateConfigurationDto(ChatCommandSettingsConstants.Namespace,
-                    "{\"schemaVersion\":1,\"defaults\":{\"enabled\":true,\"freshnessSeconds\":{\"readOnly\":7}},\"commands\":{\"fu\":{\"enabled\":true,\"freshnessSeconds\":6}}}")
+                    /*lang=json,strict*/
+                                         "{\"schemaVersion\":1,\"defaults\":{\"enabled\":true,\"freshnessSeconds\":{\"readOnly\":7}},\"commands\":{\"fu\":{\"enabled\":true,\"freshnessSeconds\":6}}}")
             ])));
 
         _serverConfigsApi
@@ -72,7 +73,8 @@ public class ChatCommandSettingsProviderTests
             .ReturnsAsync(SuccessResult(new CollectionModel<ConfigurationDto>(
             [
                 CreateConfigurationDto(ChatCommandSettingsConstants.Namespace,
-                    "{\"schemaVersion\":1,\"commands\":{\"fu\":{\"enabled\":false,\"freshnessSeconds\":2}}}")
+                    /*lang=json,strict*/
+                                         "{\"schemaVersion\":1,\"commands\":{\"fu\":{\"enabled\":false,\"freshnessSeconds\":2}}}")
             ])));
 
         var sut = CreateSut();
@@ -138,7 +140,8 @@ public class ChatCommandSettingsProviderTests
             .ReturnsAsync(SuccessResult(new CollectionModel<ConfigurationDto>(
             [
                 CreateConfigurationDto(ChatCommandSettingsConstants.Namespace,
-                    "{\"schemaVersion\":999}")
+                    /*lang=json,strict*/
+                                         "{\"schemaVersion\":999}")
             ])));
 
         var sut = CreateSut();
@@ -243,7 +246,8 @@ public class ChatCommandSettingsProviderTests
             .ReturnsAsync(SuccessResult(new CollectionModel<ConfigurationDto>(
             [
                 CreateConfigurationDto(ChatCommandSettingsConstants.Namespace,
-                    "{\"schemaVersion\":1,\"commands\":{\"register\":{\"enabled\":false}}}")
+                    /*lang=json,strict*/
+                                         "{\"schemaVersion\":1,\"commands\":{\"register\":{\"enabled\":false}}}")
             ])));
 
         var sut = CreateSut();

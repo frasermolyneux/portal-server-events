@@ -48,7 +48,7 @@ public class ServerConnectedProcessorTests
                 System.Net.HttpStatusCode.OK,
                 new ApiResponse<CollectionModel<ConfigurationDto>>(new CollectionModel<ConfigurationDto>(new[]
                 {
-                    CreateConfigurationDto("agent", "{\"agentName\":\"^5[GlobalBot]^7\"}")
+                    CreateConfigurationDto("agent", /*lang=json,strict*/ "{\"agentName\":\"^5[GlobalBot]^7\"}")
                 }))));
 
         _versionedServerConfigs.Setup(x => x.V1).Returns(_serverConfigsApi.Object);
@@ -59,7 +59,7 @@ public class ServerConnectedProcessorTests
                 System.Net.HttpStatusCode.OK,
                 new ApiResponse<CollectionModel<ConfigurationDto>>(new CollectionModel<ConfigurationDto>(new[]
                 {
-                    CreateConfigurationDto("agent", "{\"agentName\":\"^2[ServerBot]^7\"}")
+                    CreateConfigurationDto("agent", /*lang=json,strict*/ "{\"agentName\":\"^2[ServerBot]^7\"}")
                 }))));
 
         _rconResponseService

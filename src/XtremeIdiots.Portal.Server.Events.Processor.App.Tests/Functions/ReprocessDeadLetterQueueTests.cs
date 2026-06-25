@@ -75,7 +75,7 @@ public class ReprocessDeadLetterQueueTests
     public async Task Run_DryRun_PeeksOnly()
     {
         var dlqMessage = ServiceBusModelFactory.ServiceBusReceivedMessage(
-            body: new BinaryData("{\"test\":true}"),
+            body: new BinaryData(/*lang=json,strict*/ "{\"test\":true}"),
             messageId: "msg-1",
             sequenceNumber: 1);
 
@@ -106,7 +106,7 @@ public class ReprocessDeadLetterQueueTests
     public async Task Run_WithValidQueueName_ReprocessesMessages()
     {
         var dlqMessage = ServiceBusModelFactory.ServiceBusReceivedMessage(
-            body: new BinaryData("{\"test\":true}"),
+            body: new BinaryData(/*lang=json,strict*/ "{\"test\":true}"),
             messageId: "msg-1",
             sequenceNumber: 1);
 
@@ -141,7 +141,7 @@ public class ReprocessDeadLetterQueueTests
     {
         var properties = new Dictionary<string, object> { ["DlqReplayCount"] = 3 };
         var dlqMessage = ServiceBusModelFactory.ServiceBusReceivedMessage(
-            body: new BinaryData("{\"test\":true}"),
+            body: new BinaryData(/*lang=json,strict*/ "{\"test\":true}"),
             messageId: "msg-max-retries",
             properties: properties,
             sequenceNumber: 1);

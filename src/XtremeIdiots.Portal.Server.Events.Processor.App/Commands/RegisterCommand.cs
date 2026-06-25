@@ -90,7 +90,7 @@ public sealed class RegisterCommand : IChatCommand
             return await FailAsync(context, "Activation code must be 6 characters [0-9A-Z]", ct).ConfigureAwait(false);
         }
 
-        MX.Api.Abstractions.ApiResult<XtremeIdiots.Portal.Repository.Abstractions.Models.V1.ConnectedPlayers.ConnectedPlayerDto> consumeResult;
+        MX.Api.Abstractions.ApiResult<ConnectedPlayerDto> consumeResult;
         try
         {
             consumeResult = await _repositoryClient.ConnectedPlayers.V1

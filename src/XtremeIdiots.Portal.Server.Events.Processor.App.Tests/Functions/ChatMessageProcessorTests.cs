@@ -182,7 +182,7 @@ public class ChatMessageProcessorTests
     [Fact]
     public async Task MessageWithoutSlotId_DoesNotProcess()
     {
-        var legacyPayload = """
+        var legacyPayload = /*lang=json,strict*/ """
             {
               "eventGeneratedUtc": "2025-01-15T12:00:00Z",
               "eventPublishedUtc": "2025-01-15T12:00:01Z",
@@ -212,7 +212,7 @@ public class ChatMessageProcessorTests
     [Fact]
     public async Task MessageWithNullSlotId_DoesNotProcess()
     {
-        var legacyPayload = """
+        var legacyPayload = /*lang=json,strict*/ """
             {
               "eventGeneratedUtc": "2025-01-15T12:00:00Z",
               "eventPublishedUtc": "2025-01-15T12:00:01Z",
