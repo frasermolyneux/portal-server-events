@@ -201,7 +201,9 @@ public class PlayerConnectedProcessor(
     private async Task<string?> EnrichWithGeoLocation(PlayerConnectedEvent playerEvent)
     {
         if (string.IsNullOrWhiteSpace(playerEvent.IpAddress))
+        {
             return null;
+        }
 
         try
         {
@@ -285,14 +287,18 @@ public class PlayerConnectedProcessor(
         var cacheKey = $"player-ctx-{gameType}-{guid}";
 
         if (memoryCache.TryGetValue(cacheKey, out PlayerContext? cachedContext) && cachedContext is not null)
+        {
             return cachedContext;
+        }
 
         var response = await repositoryApiClient.Players.V1
             .GetPlayerByGameType(gameType, guid, PlayerEntityOptions.Tags)
             .ConfigureAwait(false);
 
         if (!response.IsSuccess || response.Result?.Data is null)
+        {
             return PlayerContext.Empty;
+        }
 
         var player = response.Result.Data;
         var tags = player.Tags

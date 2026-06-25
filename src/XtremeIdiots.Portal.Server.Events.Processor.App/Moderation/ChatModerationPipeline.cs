@@ -25,22 +25,30 @@ public sealed class ChatModerationPipeline(
         try
         {
             if (!await featureManager.IsEnabledAsync("EventIngest.ChatToxicityDetection"))
+            {
                 return;
+            }
 
             var moderationSettings = await settingsProvider
                 .GetForServerAsync(context.ServerId, ct)
                 .ConfigureAwait(false);
 
             if (!moderationSettings.IsCategoryEnabled)
+            {
                 return;
+            }
 
             var minLength = moderationSettings.MinMessageLength;
 
             if (context.Message.Length < minLength)
+            {
                 return;
+            }
 
             if (context.Message.StartsWith("QUICKMESSAGE_", StringComparison.OrdinalIgnoreCase))
+            {
                 return;
+            }
 
             // Azure Content Safety API has a 10,000 character limit; truncate to stay within bounds
             const int maxApiTextLength = 10_000;
@@ -54,15 +62,21 @@ public sealed class ChatModerationPipeline(
                 && context.PlayerFirstSeen > DateTime.UtcNow.AddDays(-newPlayerDays);
 
             if (!isNewPlayer && !context.HasModerateChatTag)
+            {
                 return;
+            }
 
             var moderationResult = await contentSafety.AnalyseAsync(textToAnalyse, ct);
             if (moderationResult is null)
+            {
                 return;
+            }
 
             var triggeredCategories = GetTriggeredCategories(moderationResult, moderationSettings);
             if (triggeredCategories.Count == 0)
+            {
                 return;
+            }
 
             var reason = BuildObservationReason(moderationResult, moderationSettings, context.Message, triggeredCategories);
 
@@ -116,16 +130,24 @@ public sealed class ChatModerationPipeline(
         var triggered = new List<string>();
 
         if (settings.HateSeverityThreshold.HasValue && result.HateSeverity >= settings.HateSeverityThreshold.Value)
+        {
             triggered.Add("Hate");
+        }
 
         if (settings.ViolenceSeverityThreshold.HasValue && result.ViolenceSeverity >= settings.ViolenceSeverityThreshold.Value)
+        {
             triggered.Add("Violence");
+        }
 
         if (settings.SexualSeverityThreshold.HasValue && result.SexualSeverity >= settings.SexualSeverityThreshold.Value)
+        {
             triggered.Add("Sexual");
+        }
 
         if (settings.SelfHarmSeverityThreshold.HasValue && result.SelfHarmSeverity >= settings.SelfHarmSeverityThreshold.Value)
+        {
             triggered.Add("SelfHarm");
+        }
 
         return triggered;
     }

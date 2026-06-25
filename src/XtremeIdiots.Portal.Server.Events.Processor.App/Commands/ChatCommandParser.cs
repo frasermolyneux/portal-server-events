@@ -7,22 +7,32 @@ public sealed class ChatCommandParser : ICommandParser
     public CommandParseResult Parse(string? message)
     {
         if (string.IsNullOrWhiteSpace(message))
+        {
             return CommandParseResult.NotACommand("Message is empty");
+        }
 
         var normalized = message.Trim();
         if (!normalized.StartsWith('!'))
+        {
             return CommandParseResult.NotACommand("Message is not a command");
+        }
 
         var tokens = Tokenize(normalized, out var hasUnbalancedQuotes);
         if (hasUnbalancedQuotes)
+        {
             return CommandParseResult.NotACommand("Command has unbalanced quotes");
+        }
 
         if (tokens.Count == 0)
+        {
             return CommandParseResult.NotACommand("Command has no tokens");
+        }
 
         var prefixToken = tokens[0];
         if (prefixToken.Length <= 1)
+        {
             return CommandParseResult.NotACommand("Command prefix is missing");
+        }
 
         var command = new ChatCommandEnvelope
         {
@@ -40,7 +50,9 @@ public sealed class ChatCommandParser : ICommandParser
     private static string BuildArgumentText(string normalized, string prefixToken)
     {
         if (normalized.Length <= prefixToken.Length)
+        {
             return string.Empty;
+        }
 
         return normalized[prefixToken.Length..].TrimStart();
     }
@@ -75,7 +87,9 @@ public sealed class ChatCommandParser : ICommandParser
         void Flush()
         {
             if (buffer.Length == 0)
+            {
                 return;
+            }
 
             tokens.Add(buffer.ToString());
             buffer.Clear();

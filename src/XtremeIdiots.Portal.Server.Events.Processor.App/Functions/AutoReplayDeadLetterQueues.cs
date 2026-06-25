@@ -53,7 +53,9 @@ public class AutoReplayDeadLetterQueues(
                 totalReplayed += count;
 
                 if (count > 0)
+                {
                     logger.LogInformation("Auto-replayed {Count} DLQ messages from queue '{QueueName}'", count, queueName);
+                }
             }
             catch (Exception ex)
             {
@@ -81,7 +83,9 @@ public class AutoReplayDeadLetterQueues(
             var messages = await receiver.ReceiveMessagesAsync(batchSize, ReceiveTimeout);
 
             if (messages.Count == 0)
+            {
                 break;
+            }
 
             foreach (var message in messages)
             {
@@ -110,7 +114,9 @@ public class AutoReplayDeadLetterQueues(
             }
 
             if (messages.Count < batchSize)
+            {
                 break;
+            }
 
             await Task.Delay(BatchThrottle);
         }

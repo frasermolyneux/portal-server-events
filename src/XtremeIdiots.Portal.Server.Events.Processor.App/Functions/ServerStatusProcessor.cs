@@ -126,7 +126,9 @@ public sealed class ServerStatusProcessor(
                     {
                         var playerId = await GetPlayerId(gameType, player.PlayerGuid).ConfigureAwait(false);
                         if (playerId != Guid.Empty)
+                        {
                             livePlayer.PlayerId = playerId;
+                        }
                     }
                     catch (Exception ex)
                     {
@@ -203,7 +205,9 @@ public sealed class ServerStatusProcessor(
             foreach (var livePlayer in livePlayerDtos)
             {
                 if (livePlayer.PlayerId is null || livePlayer.PlayerId == Guid.Empty)
+                {
                     continue;
+                }
 
                 var recentPlayer = new CreateRecentPlayerDto(
                     livePlayer.Name ?? "Unknown",
@@ -264,14 +268,18 @@ public sealed class ServerStatusProcessor(
         var cacheKey = $"player-id-{gameType}-{guid}";
 
         if (memoryCache.TryGetValue(cacheKey, out Guid cachedId))
+        {
             return cachedId;
+        }
 
         var response = await repositoryApiClient.Players.V1
             .GetPlayerByGameType(gameType, guid, PlayerEntityOptions.None)
             .ConfigureAwait(false);
 
         if (!response.IsSuccess || response.Result?.Data is null)
+        {
             return Guid.Empty;
+        }
 
         var playerId = response.Result.Data.PlayerId;
         memoryCache.Set(cacheKey, playerId,

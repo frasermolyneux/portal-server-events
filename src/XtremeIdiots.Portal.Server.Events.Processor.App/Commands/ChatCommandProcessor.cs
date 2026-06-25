@@ -66,7 +66,9 @@ public sealed class ChatCommandProcessor : IChatCommandProcessor
         foreach (var command in registeredCommands)
         {
             if (command.Metadata.Aliases is null || command.Metadata.Aliases.Count == 0)
+            {
                 continue;
+            }
 
             foreach (var alias in command.Metadata.Aliases)
             {
@@ -89,10 +91,14 @@ public sealed class ChatCommandProcessor : IChatCommandProcessor
     {
         var parseResult = _parser.Parse(context.Message);
         if (!parseResult.IsCommand || parseResult.Command is null)
+        {
             return CommandResult.NotHandled;
+        }
 
         if (!_commandsByPrefix.TryGetValue(parseResult.Command.PrefixToken, out var command))
+        {
             return CommandResult.NotHandled;
+        }
 
         var canonicalCommand = parseResult.Command with
         {

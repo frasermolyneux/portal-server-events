@@ -49,7 +49,9 @@ public sealed class ProtectedNameService(
             var protectedNames = await GetProtectedNamesAsync(contextGameType, ct).ConfigureAwait(false);
 
             if (protectedNames is null || !protectedNames.Any())
+            {
                 return;
+            }
 
             var playerNameLower = context.Username.ToLowerInvariant();
 
@@ -61,7 +63,9 @@ public sealed class ProtectedNameService(
                     || protectedNameLower.Contains(playerNameLower);
 
                 if (!isMatch)
+                {
                     continue;
+                }
 
                 if (context.PlayerId == protectedName.PlayerId)
                 {
@@ -141,7 +145,9 @@ public sealed class ProtectedNameService(
         var cacheKey = $"{CacheKeyPrefix}{contextGameType}";
 
         if (memoryCache.TryGetValue(cacheKey, out IReadOnlyList<ScopedProtectedName>? cached))
+        {
             return cached;
+        }
 
         var scopedItems = new List<ScopedProtectedName>();
         var skip = 0;
@@ -163,12 +169,16 @@ public sealed class ProtectedNameService(
                 .ToList();
 
             if (page.Count == 0)
+            {
                 break;
+            }
 
             scopedItems.AddRange(page);
 
             if (page.Count < ProtectedNamesPageSize)
+            {
                 break;
+            }
 
             skip += ProtectedNamesPageSize;
         }
@@ -188,7 +198,9 @@ public sealed class ProtectedNameService(
                 .ConfigureAwait(false);
 
             if (response.IsSuccess && response.Result?.Data is not null)
+            {
                 return new OwnerPlayerInfo(response.Result.Data.Username);
+            }
         }
         catch (Exception ex)
         {

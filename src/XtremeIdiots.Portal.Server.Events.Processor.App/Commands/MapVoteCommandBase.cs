@@ -42,17 +42,23 @@ public abstract class MapVoteCommandBase : IChatCommand
     public async Task<CommandResult> ExecuteAsync(CommandContext context, CancellationToken ct = default)
     {
         if (context.PlayerId is null)
+        {
             return CommandResult.Failed("Player not found");
+        }
 
         var mapResult = await _serversClient.Rcon.V1.GetCurrentMap(context.ServerId);
 
         if (!mapResult.IsSuccess || mapResult.Result?.Data is null)
+        {
             return CommandResult.Failed("Could not fetch current map from server");
+        }
 
         var currentMap = mapResult.Result.Data.MapName;
 
         if (string.IsNullOrEmpty(currentMap))
+        {
             return CommandResult.Failed("Current map unknown");
+        }
 
         var mapValidation = await _commandSafetyService
             .ValidateMapTargetAsync(context.ServerId, currentMap, ct)
@@ -74,7 +80,9 @@ public abstract class MapVoteCommandBase : IChatCommand
         }
 
         if (!Enum.TryParse<GameType>(context.GameType, out var gameType))
+        {
             return CommandResult.Failed("Invalid game type");
+        }
 
         var repoMapResult = await _repositoryClient.Maps.V1.GetMap(gameType, currentMap, ct);
 

@@ -222,11 +222,15 @@ public class ChatMessageProcessor(
     private static string? ExtractCommandPrefix(string message)
     {
         if (string.IsNullOrWhiteSpace(message))
+        {
             return null;
+        }
 
         var trimmed = message.TrimStart();
         if (!trimmed.StartsWith('!'))
+        {
             return null;
+        }
 
         var firstToken = trimmed
             .Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
@@ -240,14 +244,18 @@ public class ChatMessageProcessor(
         var cacheKey = $"player-ctx-{gameType}-{guid}";
 
         if (memoryCache.TryGetValue(cacheKey, out PlayerContextInfo cached))
+        {
             return cached;
+        }
 
         var response = await repositoryApiClient.Players.V1
             .GetPlayerByGameType(gameType, guid, PlayerEntityOptions.Tags)
             .ConfigureAwait(false);
 
         if (!response.IsSuccess || response.Result?.Data is null)
+        {
             return null;
+        }
 
         var player = response.Result.Data;
         var moderateTagName = configuration["ContentSafety:ModerateChatTagName"] ?? "moderate-chat";

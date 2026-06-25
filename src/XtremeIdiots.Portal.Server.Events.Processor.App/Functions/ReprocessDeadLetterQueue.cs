@@ -97,12 +97,17 @@ public class ReprocessDeadLetterQueue(
             var messages = await receiver.PeekMessagesAsync(batchSize, fromSequenceNumber);
 
             if (messages.Count == 0)
+            {
                 break;
+            }
 
             foreach (var message in messages)
             {
                 var bodyPreview = message.Body?.ToString() ?? "";
-                if (bodyPreview.Length > 500) bodyPreview = bodyPreview[..500] + "...";
+                if (bodyPreview.Length > 500)
+                {
+                    bodyPreview = bodyPreview[..500] + "...";
+                }
 
                 logger.LogInformation(
                     "[DryRun] DLQ message: MessageId={MessageId}, DeadLetterReason={Reason}, ErrorDescription={Error}, Body={Body}",
@@ -117,7 +122,9 @@ public class ReprocessDeadLetterQueue(
             totalPeeked += messages.Count;
 
             if (messages.Count < batchSize)
+            {
                 break;
+            }
 
             await Task.Delay(BatchThrottle);
         }
@@ -142,12 +149,17 @@ public class ReprocessDeadLetterQueue(
             var messages = await receiver.ReceiveMessagesAsync(batchSize, ReceiveTimeout);
 
             if (messages.Count == 0)
+            {
                 break;
+            }
 
             foreach (var message in messages)
             {
                 var bodyPreview = message.Body?.ToString() ?? "";
-                if (bodyPreview.Length > 500) bodyPreview = bodyPreview[..500] + "...";
+                if (bodyPreview.Length > 500)
+                {
+                    bodyPreview = bodyPreview[..500] + "...";
+                }
 
                 var replayCount = message.ApplicationProperties.TryGetValue("DlqReplayCount", out var rc)
                     ? Convert.ToInt32(rc)
@@ -182,7 +194,9 @@ public class ReprocessDeadLetterQueue(
             }
 
             if (messages.Count < batchSize)
+            {
                 break;
+            }
 
             await Task.Delay(BatchThrottle);
         }

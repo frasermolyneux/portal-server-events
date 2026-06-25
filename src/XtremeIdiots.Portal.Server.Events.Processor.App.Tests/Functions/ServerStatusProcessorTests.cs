@@ -353,7 +353,7 @@ public class ServerStatusProcessorTests
             .ReturnsAsync(SuccessResult(playerDto));
 
         var geoData = Newtonsoft.Json.JsonConvert.DeserializeObject<IpIntelligenceDto>(
-            Newtonsoft.Json.JsonConvert.SerializeObject(new { Latitude = 51.5074, Longitude = -0.1278, CountryCode = "GB" }))!;
+            Newtonsoft.Json.JsonConvert.SerializeObject(new { Latitude = 51.5074, Longitude = -0.1278, CountryCode = "GB" }));
 
         _geoLookupApi.Setup(x => x.GetIpIntelligence("203.0.113.50", It.IsAny<CancellationToken>()))
             .ReturnsAsync(new ApiResult<IpIntelligenceDto>(System.Net.HttpStatusCode.OK, new ApiResponse<IpIntelligenceDto>(geoData)));

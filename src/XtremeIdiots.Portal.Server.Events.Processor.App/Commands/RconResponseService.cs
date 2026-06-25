@@ -22,7 +22,9 @@ public sealed class RconResponseService : IRconResponseService
     public async Task<bool> TrySayAsync(Guid serverId, string message, DateTime eventGeneratedUtc, CancellationToken ct = default)
     {
         if (!IsFresh(serverId, eventGeneratedUtc))
+        {
             return false;
+        }
 
         try
         {
@@ -54,7 +56,9 @@ public sealed class RconResponseService : IRconResponseService
         CancellationToken ct = default)
     {
         if (!IsFresh(serverId, eventGeneratedUtc))
+        {
             return false;
+        }
 
         try
         {
@@ -108,7 +112,9 @@ public sealed class RconResponseService : IRconResponseService
         CancellationToken ct = default)
     {
         if (!IsFresh(serverId, eventGeneratedUtc))
+        {
             return false;
+        }
 
         try
         {
@@ -154,7 +160,9 @@ public sealed class RconResponseService : IRconResponseService
         var age = DateTime.UtcNow - eventGeneratedUtc;
 
         if (age <= FreshnessThreshold)
+        {
             return true;
+        }
 
         _logger.LogInformation(
             "Skipping RCON response for server {ServerId} - event is {Age} old (threshold {Threshold})",

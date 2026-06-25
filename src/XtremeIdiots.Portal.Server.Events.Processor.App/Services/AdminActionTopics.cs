@@ -86,7 +86,9 @@ internal sealed class AdminActionTopics(
         };
 
         if (category is null)
+        {
             return defaultForumId;
+        }
 
         var gameKey = gameType switch
         {
@@ -96,7 +98,9 @@ internal sealed class AdminActionTopics(
 
         var configValue = configuration[$"XtremeIdiots:Forums:{category}:{gameKey}"];
         if (configValue is not null && int.TryParse(configValue, out var forumId))
+        {
             return forumId;
+        }
 
         return type switch
         {

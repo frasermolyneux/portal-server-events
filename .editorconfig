@@ -46,6 +46,8 @@ dotnet_diagnostic.CA1711.severity = suggestion
 dotnet_diagnostic.CA1305.severity = suggestion
 dotnet_diagnostic.CA1822.severity = suggestion
 dotnet_diagnostic.CA1848.severity = suggestion
+
+dotnet_diagnostic.CA1873.severity = suggestion # Logging call-site message formatting is widespread; defer mass refactor during analyzer standards rollout.
 dotnet_diagnostic.CA1859.severity = suggestion
 dotnet_diagnostic.CA1860.severity = suggestion
 dotnet_diagnostic.CA2016.severity = suggestion
@@ -54,7 +56,7 @@ dotnet_diagnostic.CA1825.severity = suggestion
 dotnet_diagnostic.CA1861.severity = suggestion
 dotnet_diagnostic.CA2201.severity = suggestion
 dotnet_diagnostic.IDE0007.severity = suggestion
-dotnet_diagnostic.IDE0011.severity = suggestion
+dotnet_diagnostic.IDE0011.severity = warning
 dotnet_diagnostic.IDE0037.severity = suggestion
 dotnet_diagnostic.IDE0045.severity = suggestion
 dotnet_diagnostic.IDE0046.severity = suggestion

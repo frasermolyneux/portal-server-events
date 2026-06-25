@@ -123,14 +123,18 @@ public class PlayerIpResolvedProcessor(
         var cacheKey = $"player-id-{gameType}-{guid}";
 
         if (memoryCache.TryGetValue(cacheKey, out Guid cachedId))
+        {
             return cachedId;
+        }
 
         var response = await repositoryApiClient.Players.V1
             .GetPlayerByGameType(gameType, guid, PlayerEntityOptions.None)
             .ConfigureAwait(false);
 
         if (!response.IsSuccess || response.Result?.Data is null)
+        {
             return Guid.Empty;
+        }
 
         var playerId = response.Result.Data.PlayerId;
         memoryCache.Set(cacheKey, playerId,
