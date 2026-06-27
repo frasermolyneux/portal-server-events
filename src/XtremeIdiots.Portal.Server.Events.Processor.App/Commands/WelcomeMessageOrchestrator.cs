@@ -69,15 +69,6 @@ public sealed class WelcomeMessageOrchestrator : IWelcomeMessageOrchestrator
             return;
         }
 
-        _auditLogger.LogAudit(AuditEvent.ServerAction("WelcomeRuleMatched", AuditAction.Execute)
-            .WithGameContext(gameType.ToString(), playerEvent.ServerId)
-            .WithPlayer(playerEvent.PlayerGuid, playerEvent.Username)
-            .WithSource(nameof(WelcomeMessageOrchestrator))
-            .WithProperty("RuleId", winner.Id)
-            .WithProperty("Priority", winner.Priority.ToString())
-            .WithProperty("Visibility", winner.Visibility.ToString())
-            .Build());
-
         var idempotencyKey = string.Join(":",
             playerEvent.ServerId,
             playerEvent.PlayerGuid,
@@ -137,14 +128,6 @@ public sealed class WelcomeMessageOrchestrator : IWelcomeMessageOrchestrator
 
                 return;
             }
-
-            _auditLogger.LogAudit(AuditEvent.ServerAction("WelcomeMessageSent", AuditAction.Execute)
-                .WithGameContext(gameType.ToString(), playerEvent.ServerId)
-                .WithPlayer(playerEvent.PlayerGuid, playerEvent.Username)
-                .WithSource(nameof(WelcomeMessageOrchestrator))
-                .WithProperty("RuleId", winner.Id)
-                .WithProperty("Visibility", winner.Visibility.ToString())
-                .Build());
 
             delivered = true;
         }
@@ -224,13 +207,13 @@ public sealed class WelcomeMessageOrchestrator : IWelcomeMessageOrchestrator
 
     private void LogSkipped(string reason, PlayerConnectedEvent playerEvent, GameType gameType, string? ruleId)
     {
-        _auditLogger.LogAudit(AuditEvent.ServerAction("WelcomeMessageSkipped", AuditAction.Execute)
-            .WithGameContext(gameType.ToString(), playerEvent.ServerId)
-            .WithPlayer(playerEvent.PlayerGuid, playerEvent.Username)
-            .WithSource(nameof(WelcomeMessageOrchestrator))
-            .WithProperty("Reason", reason)
-            .WithProperty("RuleId", ruleId ?? string.Empty)
-            .Build());
+        _logger.LogDebug(
+            "Welcome message skipped for server {ServerId}, player {PlayerGuid}, game {GameType}, reason {Reason}, rule {RuleId}",
+            playerEvent.ServerId,
+            playerEvent.PlayerGuid,
+            gameType,
+            reason,
+            ruleId ?? string.Empty);
     }
 
     private sealed record VerificationResult(bool Success, int SlotId, string? PlayerName, string? Reason)

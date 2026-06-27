@@ -42,6 +42,10 @@ This repository contains the XtremeIdiots Portal server event contracts and proc
 - Follow file-per-resource pattern.
 - Variables declared in `variables.tf` with environment-specific values in `terraform/tfvars/`.
 
+## Auditing Guidance
+
+- Use `.github/instructions/auditing-balance.instructions.md` when adding, reviewing, or removing audit events.
+
 ## Platform Settings Contracts
 
 - Chat command and welcome message settings consumed by the processor are now sourced from `XtremeIdiots.Portal.Settings.Contracts.V1`.
