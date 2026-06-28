@@ -52,6 +52,8 @@ public class ProtectedNameServiceTests
             .Setup(x => x.CreateAdminAction(It.IsAny<CreateAdminActionDto>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(SuccessResult());
 
+        SetupActiveBans();
+
         _rconApi
             .Setup(x => x.BanPlayerWithVerification(It.IsAny<Guid>(), It.IsAny<int>(), It.IsAny<string?>()))
             .ReturnsAsync(SuccessResult());
@@ -107,6 +109,25 @@ public class ProtectedNameServiceTests
             .ReturnsAsync(SuccessResult(ownerDto));
     }
 
+    private void SetupActiveBans(params AdminActionDto[] adminActions)
+    {
+        var collection = new CollectionModel<AdminActionDto>(adminActions.ToList());
+
+        _adminActionsApi
+            .Setup(x => x.GetAdminActions(
+                It.IsAny<GameType?>(),
+                It.IsAny<Guid?>(),
+                It.IsAny<string?>(),
+                It.IsAny<AdminActionFilter?>(),
+                It.IsAny<int>(),
+                It.IsAny<int>(),
+                It.IsAny<AdminActionOrder?>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<CollectionModel<AdminActionDto>>(
+                System.Net.HttpStatusCode.OK,
+                new ApiResponse<CollectionModel<AdminActionDto>>(collection)));
+    }
+
     private static ProtectedNameDto CreateProtectedNameDto(string name, Guid ownerId)
     {
         var json = Newtonsoft.Json.JsonConvert.SerializeObject(new
@@ -127,6 +148,29 @@ public class ProtectedNameServiceTests
         return Newtonsoft.Json.JsonConvert.DeserializeObject<PlayerDto>(json)!;
     }
 
+    private static AdminActionDto CreateAdminActionDto(AdminActionType type, string text)
+    {
+        var json = Newtonsoft.Json.JsonConvert.SerializeObject(new
+        {
+            AdminActionId = Guid.NewGuid(),
+            PlayerId = TestPlayerId,
+            UserProfileId = (Guid?)null,
+            ForumTopicId = (int?)null,
+            Type = type,
+            Text = text,
+            Created = DateTime.UtcNow,
+            Expires = (DateTime?)null,
+            Player = new
+            {
+                PlayerId = TestPlayerId,
+                Username = "TestPlayer",
+                GameType = GameType.CallOfDuty4
+            }
+        });
+
+        return Newtonsoft.Json.JsonConvert.DeserializeObject<AdminActionDto>(json)!;
+    }
+
     [Fact]
     public async Task CheckAsync_WhenNameMatchesProtectedName_KicksAndBans()
     {
@@ -143,6 +187,16 @@ public class ProtectedNameServiceTests
                 dto.Text.Contains("TestPlayer") &&
                 dto.Text.Contains("OwnerGuy") &&
                 dto.AdminId == BotAdminId),
+            It.IsAny<CancellationToken>()), Times.Once);
+
+        _adminActionsApi.Verify(x => x.GetAdminActions(
+            GameType.CallOfDuty4,
+            TestPlayerId,
+            null,
+            AdminActionFilter.ActiveBans,
+            0,
+            50,
+            AdminActionOrder.CreatedDesc,
             It.IsAny<CancellationToken>()), Times.Once);
 
         _rconApi.Verify(x => x.BanPlayerWithVerification(TestServerId, 3, "TestPlayer"), Times.Once);
@@ -383,5 +437,105 @@ public class ProtectedNameServiceTests
 
         _rconApi.Verify(x => x.BanPlayerWithVerification(
             It.IsAny<Guid>(), It.IsAny<int>(), It.IsAny<string?>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task CheckAsync_WhenActiveProtectedNameBanExists_SkipsCreateAndStillRunsRcon()
+    {
+        SetupProtectedNames(("TestPlayer", OwnerId));
+        SetupOwnerLookup(OwnerId, "OwnerGuy");
+        SetupActiveBans(CreateAdminActionDto(AdminActionType.Ban, "Protected Name Violation - existing enforcement"));
+
+        await _sut.CheckAsync(CreateContext(username: "TestPlayer"));
+
+        _adminActionsApi.Verify(x => x.CreateAdminAction(
+            It.IsAny<CreateAdminActionDto>(),
+            It.IsAny<CancellationToken>()), Times.Never);
+
+        _rconApi.Verify(x => x.BanPlayerWithVerification(TestServerId, 3, "TestPlayer"), Times.Once);
+    }
+
+    [Fact]
+    public async Task CheckAsync_WhenOnlyNonProtectedNameBanExists_CreatesProtectedNameBan()
+    {
+        SetupProtectedNames(("TestPlayer", OwnerId));
+        SetupOwnerLookup(OwnerId, "OwnerGuy");
+        SetupActiveBans(CreateAdminActionDto(AdminActionType.Ban, "Manual ban from moderator"));
+
+        await _sut.CheckAsync(CreateContext(username: "TestPlayer"));
+
+        _adminActionsApi.Verify(x => x.CreateAdminAction(
+            It.Is<CreateAdminActionDto>(dto => dto.Type == AdminActionType.Ban),
+            It.IsAny<CancellationToken>()), Times.Once);
+
+        _rconApi.Verify(x => x.BanPlayerWithVerification(TestServerId, 3, "TestPlayer"), Times.Once);
+    }
+
+    [Fact]
+    public async Task CheckAsync_WhenActiveBanPrecheckFails_FailsOpenAndCreatesBan()
+    {
+        SetupProtectedNames(("TestPlayer", OwnerId));
+        SetupOwnerLookup(OwnerId, "OwnerGuy");
+
+        _adminActionsApi
+            .Setup(x => x.GetAdminActions(
+                It.IsAny<GameType?>(),
+                It.IsAny<Guid?>(),
+                It.IsAny<string?>(),
+                It.IsAny<AdminActionFilter?>(),
+                It.IsAny<int>(),
+                It.IsAny<int>(),
+                It.IsAny<AdminActionOrder?>(),
+                It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new HttpRequestException("admin actions unavailable"));
+
+        await _sut.CheckAsync(CreateContext(username: "TestPlayer"));
+
+        _adminActionsApi.Verify(x => x.CreateAdminAction(
+            It.Is<CreateAdminActionDto>(dto => dto.Type == AdminActionType.Ban),
+            It.IsAny<CancellationToken>()), Times.Once);
+
+        _rconApi.Verify(x => x.BanPlayerWithVerification(TestServerId, 3, "TestPlayer"), Times.Once);
+    }
+
+    [Fact]
+    public async Task CheckAsync_WhenCalledTwice_CreatesOnceThenSkipsDuplicateCreate()
+    {
+        SetupProtectedNames(("TestPlayer", OwnerId));
+        SetupOwnerLookup(OwnerId, "OwnerGuy");
+
+        var noBans = new ApiResult<CollectionModel<AdminActionDto>>(
+            System.Net.HttpStatusCode.OK,
+            new ApiResponse<CollectionModel<AdminActionDto>>(new CollectionModel<AdminActionDto>([])));
+
+        var existingProtectedNameBan = new ApiResult<CollectionModel<AdminActionDto>>(
+            System.Net.HttpStatusCode.OK,
+            new ApiResponse<CollectionModel<AdminActionDto>>(
+                new CollectionModel<AdminActionDto>(
+                [
+                    CreateAdminActionDto(AdminActionType.Ban, "Protected Name Violation - existing enforcement")
+                ])));
+
+        _adminActionsApi
+            .SetupSequence(x => x.GetAdminActions(
+                It.IsAny<GameType?>(),
+                It.IsAny<Guid?>(),
+                It.IsAny<string?>(),
+                It.IsAny<AdminActionFilter?>(),
+                It.IsAny<int>(),
+                It.IsAny<int>(),
+                It.IsAny<AdminActionOrder?>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(noBans)
+            .ReturnsAsync(existingProtectedNameBan);
+
+        await _sut.CheckAsync(CreateContext(username: "TestPlayer"));
+        await _sut.CheckAsync(CreateContext(username: "TestPlayer"));
+
+        _adminActionsApi.Verify(x => x.CreateAdminAction(
+            It.Is<CreateAdminActionDto>(dto => dto.Type == AdminActionType.Ban),
+            It.IsAny<CancellationToken>()), Times.Once);
+
+        _rconApi.Verify(x => x.BanPlayerWithVerification(TestServerId, 3, "TestPlayer"), Times.Exactly(2));
     }
 }
