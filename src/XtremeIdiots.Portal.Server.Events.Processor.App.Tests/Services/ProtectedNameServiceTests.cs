@@ -10,6 +10,8 @@ using Moq;
 using MX.Api.Abstractions;
 
 using XtremeIdiots.Portal.Integrations.Servers.Abstractions.Interfaces.V1;
+using XtremeIdiots.Portal.Integrations.Servers.Abstractions.Models.V1.Rcon;
+using XtremeIdiots.Portal.Integrations.Servers.Api.Client.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Constants.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Interfaces.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.AdminActions;
@@ -28,7 +30,9 @@ public class ProtectedNameServiceTests
     private readonly Mock<IPlayersApi> _playersApi = new();
     private readonly Mock<IVersionedAdminActionsApi> _versionedAdminActions = new();
     private readonly Mock<IAdminActionsApi> _adminActionsApi = new();
-    private readonly Mock<IRconApi> _rconApi = new();
+    private readonly Mock<IServersApiClient> _serversApiClient = new();
+    private readonly Mock<IVersionedCoD4xRconApi> _versionedCoD4xRconApi = new();
+    private readonly Mock<ICoD4xRconApi> _coD4xRconApi = new();
     private readonly Mock<ILogger<ProtectedNameService>> _logger = new();
     private readonly Mock<IAuditLogger> _auditLogger = new();
     private readonly IConfiguration _configuration;
@@ -48,15 +52,35 @@ public class ProtectedNameServiceTests
         _versionedAdminActions.Setup(x => x.V1).Returns(_adminActionsApi.Object);
         _repoClient.Setup(x => x.AdminActions).Returns(_versionedAdminActions.Object);
 
+        _versionedCoD4xRconApi.Setup(x => x.V1).Returns(_coD4xRconApi.Object);
+        _serversApiClient.Setup(x => x.CoD4xRcon).Returns(_versionedCoD4xRconApi.Object);
+
         _adminActionsApi
             .Setup(x => x.CreateAdminAction(It.IsAny<CreateAdminActionDto>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(SuccessResult());
 
         SetupActiveBans();
 
-        _rconApi
-            .Setup(x => x.BanPlayerWithVerification(It.IsAny<Guid>(), It.IsAny<int>(), It.IsAny<string?>()))
-            .ReturnsAsync(SuccessResult());
+        _coD4xRconApi
+            .Setup(x => x.Status(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<CoD4xStatusResponseDto>(
+                System.Net.HttpStatusCode.OK,
+                new ApiResponse<CoD4xStatusResponseDto>(new CoD4xStatusResponseDto
+                {
+                    Players =
+                    [
+                        new CoD4xStatusPlayerDto
+                        {
+                            Num = 3,
+                            PlayerIdentifier = "test-guid",
+                            Name = "TestPlayer"
+                        }
+                    ]
+                })));
+
+        _coD4xRconApi
+            .Setup(x => x.BanClient(It.IsAny<Guid>(), It.IsAny<CoD4xClientReasonRequestDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<string>(System.Net.HttpStatusCode.OK, new ApiResponse<string>("ok")));
 
         _cache = new MemoryCache(Options.Create(new MemoryCacheOptions()));
 
@@ -69,7 +93,7 @@ public class ProtectedNameServiceTests
 
         _sut = new ProtectedNameService(
             _repoClient.Object,
-            _rconApi.Object,
+            _serversApiClient.Object,
             _cache,
             _auditLogger.Object,
             _configuration,
@@ -199,7 +223,10 @@ public class ProtectedNameServiceTests
             AdminActionOrder.CreatedDesc,
             It.IsAny<CancellationToken>()), Times.Once);
 
-        _rconApi.Verify(x => x.BanPlayerWithVerification(TestServerId, 3, "TestPlayer"), Times.Once);
+        _coD4xRconApi.Verify(x => x.BanClient(
+            TestServerId,
+            It.Is<CoD4xClientReasonRequestDto>(r => r.ClientId == 3),
+            It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -212,8 +239,8 @@ public class ProtectedNameServiceTests
         _adminActionsApi.Verify(x => x.CreateAdminAction(
             It.IsAny<CreateAdminActionDto>(), It.IsAny<CancellationToken>()), Times.Never);
 
-        _rconApi.Verify(x => x.BanPlayerWithVerification(
-            It.IsAny<Guid>(), It.IsAny<int>(), It.IsAny<string?>()), Times.Never);
+        _coD4xRconApi.Verify(x => x.BanClient(
+            It.IsAny<Guid>(), It.IsAny<CoD4xClientReasonRequestDto>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -236,8 +263,8 @@ public class ProtectedNameServiceTests
         _adminActionsApi.Verify(x => x.CreateAdminAction(
             It.IsAny<CreateAdminActionDto>(), It.IsAny<CancellationToken>()), Times.Never);
 
-        _rconApi.Verify(x => x.BanPlayerWithVerification(
-            It.IsAny<Guid>(), It.IsAny<int>(), It.IsAny<string?>()), Times.Never);
+        _coD4xRconApi.Verify(x => x.BanClient(
+            It.IsAny<Guid>(), It.IsAny<CoD4xClientReasonRequestDto>(), It.IsAny<CancellationToken>()), Times.Never);
 
         _playersApi.Verify(x => x.GetPlayer(It.IsAny<Guid>(), It.IsAny<PlayerEntityOptions>()), Times.Never);
     }
@@ -252,8 +279,8 @@ public class ProtectedNameServiceTests
         _adminActionsApi.Verify(x => x.CreateAdminAction(
             It.IsAny<CreateAdminActionDto>(), It.IsAny<CancellationToken>()), Times.Never);
 
-        _rconApi.Verify(x => x.BanPlayerWithVerification(
-            It.IsAny<Guid>(), It.IsAny<int>(), It.IsAny<string?>()), Times.Never);
+        _coD4xRconApi.Verify(x => x.BanClient(
+            It.IsAny<Guid>(), It.IsAny<CoD4xClientReasonRequestDto>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -261,6 +288,23 @@ public class ProtectedNameServiceTests
     {
         SetupProtectedNames(("Admin", OwnerId));
         SetupOwnerLookup(OwnerId, "RealAdmin");
+
+        _coD4xRconApi
+            .Setup(x => x.Status(TestServerId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<CoD4xStatusResponseDto>(
+                System.Net.HttpStatusCode.OK,
+                new ApiResponse<CoD4xStatusResponseDto>(new CoD4xStatusResponseDto
+                {
+                    Players =
+                    [
+                        new CoD4xStatusPlayerDto
+                        {
+                            Num = 3,
+                            PlayerIdentifier = "test-guid",
+                            Name = "FakeAdminHere"
+                        }
+                    ]
+                })));
 
         // Player name contains the protected name as a substring
         await _sut.CheckAsync(CreateContext(username: "FakeAdminHere"));
@@ -271,7 +315,45 @@ public class ProtectedNameServiceTests
                 dto.Type == AdminActionType.Ban),
             It.IsAny<CancellationToken>()), Times.Once);
 
-        _rconApi.Verify(x => x.BanPlayerWithVerification(TestServerId, 3, "FakeAdminHere"), Times.Once);
+        _coD4xRconApi.Verify(x => x.BanClient(
+            TestServerId,
+            It.Is<CoD4xClientReasonRequestDto>(r => r.ClientId == 3),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task CheckAsync_WhenSlotPlayerNameMismatches_DoesNotBan()
+    {
+        SetupProtectedNames(("TestPlayer", OwnerId));
+        SetupOwnerLookup(OwnerId, "OwnerGuy");
+
+        _coD4xRconApi
+            .Setup(x => x.Status(TestServerId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<CoD4xStatusResponseDto>(
+                System.Net.HttpStatusCode.OK,
+                new ApiResponse<CoD4xStatusResponseDto>(new CoD4xStatusResponseDto
+                {
+                    Players =
+                    [
+                        new CoD4xStatusPlayerDto
+                        {
+                            Num = 3,
+                            PlayerIdentifier = "different-player",
+                            Name = "CompletelyDifferent"
+                        }
+                    ]
+                })));
+
+        await _sut.CheckAsync(CreateContext(username: "TestPlayer"));
+
+        _adminActionsApi.Verify(x => x.CreateAdminAction(
+            It.IsAny<CreateAdminActionDto>(),
+            It.IsAny<CancellationToken>()), Times.Never);
+
+        _coD4xRconApi.Verify(x => x.BanClient(
+            It.IsAny<Guid>(),
+            It.IsAny<CoD4xClientReasonRequestDto>(),
+            It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -280,6 +362,23 @@ public class ProtectedNameServiceTests
         // Protected name "SuperAdmin" contains player name "Admin"
         SetupProtectedNames(("SuperAdmin", OwnerId));
         SetupOwnerLookup(OwnerId, "RealSuperAdmin");
+
+        _coD4xRconApi
+            .Setup(x => x.Status(TestServerId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<CoD4xStatusResponseDto>(
+                System.Net.HttpStatusCode.OK,
+                new ApiResponse<CoD4xStatusResponseDto>(new CoD4xStatusResponseDto
+                {
+                    Players =
+                    [
+                        new CoD4xStatusPlayerDto
+                        {
+                            Num = 3,
+                            PlayerIdentifier = "admin-player",
+                            Name = "Admin"
+                        }
+                    ]
+                })));
 
         await _sut.CheckAsync(CreateContext(username: "Admin"));
 
@@ -356,6 +455,23 @@ public class ProtectedNameServiceTests
 
         SetupOwnerLookup(OwnerId, "OwnerGuy");
 
+        _coD4xRconApi
+            .Setup(x => x.Status(TestServerId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<CoD4xStatusResponseDto>(
+                System.Net.HttpStatusCode.OK,
+                new ApiResponse<CoD4xStatusResponseDto>(new CoD4xStatusResponseDto
+                {
+                    Players =
+                    [
+                        new CoD4xStatusPlayerDto
+                        {
+                            Num = 3,
+                            PlayerIdentifier = "target-player",
+                            Name = "TargetPlayer"
+                        }
+                    ]
+                })));
+
         await _sut.CheckAsync(CreateContext(username: "TargetPlayer", gameType: "CallOfDuty4"));
 
         _playersApi.Verify(x => x.GetProtectedNames(0, 500, GameType.CallOfDuty4), Times.Once);
@@ -399,8 +515,8 @@ public class ProtectedNameServiceTests
         _playersApi.Verify(x => x.GetProtectedNames(It.IsAny<int>(), It.IsAny<int>(), It.IsAny<GameType?>()), Times.Never);
         _adminActionsApi.Verify(x => x.CreateAdminAction(
             It.IsAny<CreateAdminActionDto>(), It.IsAny<CancellationToken>()), Times.Never);
-        _rconApi.Verify(x => x.BanPlayerWithVerification(
-            It.IsAny<Guid>(), It.IsAny<int>(), It.IsAny<string?>()), Times.Never);
+        _coD4xRconApi.Verify(x => x.BanClient(
+            It.IsAny<Guid>(), It.IsAny<CoD4xClientReasonRequestDto>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -417,8 +533,8 @@ public class ProtectedNameServiceTests
         _adminActionsApi.Verify(x => x.CreateAdminAction(
             It.IsAny<CreateAdminActionDto>(), It.IsAny<CancellationToken>()), Times.Never);
 
-        _rconApi.Verify(x => x.BanPlayerWithVerification(
-            It.IsAny<Guid>(), It.IsAny<int>(), It.IsAny<string?>()), Times.Never);
+        _coD4xRconApi.Verify(x => x.BanClient(
+            It.IsAny<Guid>(), It.IsAny<CoD4xClientReasonRequestDto>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -435,8 +551,8 @@ public class ProtectedNameServiceTests
         _adminActionsApi.Verify(x => x.CreateAdminAction(
             It.IsAny<CreateAdminActionDto>(), It.IsAny<CancellationToken>()), Times.Never);
 
-        _rconApi.Verify(x => x.BanPlayerWithVerification(
-            It.IsAny<Guid>(), It.IsAny<int>(), It.IsAny<string?>()), Times.Never);
+        _coD4xRconApi.Verify(x => x.BanClient(
+            It.IsAny<Guid>(), It.IsAny<CoD4xClientReasonRequestDto>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -452,7 +568,10 @@ public class ProtectedNameServiceTests
             It.IsAny<CreateAdminActionDto>(),
             It.IsAny<CancellationToken>()), Times.Never);
 
-        _rconApi.Verify(x => x.BanPlayerWithVerification(TestServerId, 3, "TestPlayer"), Times.Once);
+        _coD4xRconApi.Verify(x => x.BanClient(
+            TestServerId,
+            It.Is<CoD4xClientReasonRequestDto>(r => r.ClientId == 3),
+            It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -468,7 +587,10 @@ public class ProtectedNameServiceTests
             It.Is<CreateAdminActionDto>(dto => dto.Type == AdminActionType.Ban),
             It.IsAny<CancellationToken>()), Times.Once);
 
-        _rconApi.Verify(x => x.BanPlayerWithVerification(TestServerId, 3, "TestPlayer"), Times.Once);
+        _coD4xRconApi.Verify(x => x.BanClient(
+            TestServerId,
+            It.Is<CoD4xClientReasonRequestDto>(r => r.ClientId == 3),
+            It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -495,7 +617,10 @@ public class ProtectedNameServiceTests
             It.Is<CreateAdminActionDto>(dto => dto.Type == AdminActionType.Ban),
             It.IsAny<CancellationToken>()), Times.Once);
 
-        _rconApi.Verify(x => x.BanPlayerWithVerification(TestServerId, 3, "TestPlayer"), Times.Once);
+        _coD4xRconApi.Verify(x => x.BanClient(
+            TestServerId,
+            It.Is<CoD4xClientReasonRequestDto>(r => r.ClientId == 3),
+            It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -536,6 +661,9 @@ public class ProtectedNameServiceTests
             It.Is<CreateAdminActionDto>(dto => dto.Type == AdminActionType.Ban),
             It.IsAny<CancellationToken>()), Times.Once);
 
-        _rconApi.Verify(x => x.BanPlayerWithVerification(TestServerId, 3, "TestPlayer"), Times.Exactly(2));
+        _coD4xRconApi.Verify(x => x.BanClient(
+            TestServerId,
+            It.Is<CoD4xClientReasonRequestDto>(r => r.ClientId == 3),
+            It.IsAny<CancellationToken>()), Times.Exactly(2));
     }
 }

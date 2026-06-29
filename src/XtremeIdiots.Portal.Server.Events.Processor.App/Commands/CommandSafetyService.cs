@@ -23,8 +23,8 @@ public sealed class CommandSafetyService : ICommandSafetyService
         string mapName,
         CancellationToken cancellationToken = default)
     {
-        var mapsResult = await _serversApiClient.Rcon.V1
-            .GetServerMaps(serverId)
+        var mapsResult = await _serversApiClient.Maps.V1
+            .GetLoadedServerMapsFromHost(serverId)
             .ConfigureAwait(false);
 
         if (!mapsResult.IsSuccess || mapsResult.Result?.Data is null)
@@ -39,7 +39,7 @@ public sealed class CommandSafetyService : ICommandSafetyService
         }
 
         var isKnownMap = mapItems.Any(m =>
-            string.Equals(m.MapName, mapName, StringComparison.OrdinalIgnoreCase));
+            string.Equals(m.Name, mapName, StringComparison.OrdinalIgnoreCase));
 
         return isKnownMap
             ? new MapValidationResult(true)
@@ -51,16 +51,17 @@ public sealed class CommandSafetyService : ICommandSafetyService
         string query,
         CancellationToken cancellationToken = default)
     {
-        var resolveResult = await _serversApiClient.Rcon.V1
-            .ResolvePlayer(serverId, new ResolvePlayerRequestDto { PlayerQuery = query }, cancellationToken)
+        var statusResult = await _serversApiClient.CoD4xRcon.V1
+            .Status(serverId, cancellationToken)
             .ConfigureAwait(false);
 
-        if (!resolveResult.IsSuccess || resolveResult.Result?.Data is null)
+        if (!statusResult.IsSuccess || statusResult.Result?.Data?.Players is null)
         {
             return new PlayerResolutionResult(false, null, "Unable to resolve player on live server state.");
         }
 
-        return new PlayerResolutionResult(true, resolveResult.Result.Data);
+        var resolution = PlayerResolutionMatcher.ResolvePlayer(statusResult.Result.Data.Players, query, maxSuggestions: 3);
+        return new PlayerResolutionResult(true, resolution);
     }
 
     public async Task<PlayerSlotVerificationResult> VerifyPlayerSlotAsync(

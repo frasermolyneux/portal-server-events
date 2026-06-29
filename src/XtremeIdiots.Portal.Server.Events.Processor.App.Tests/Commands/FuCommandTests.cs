@@ -24,8 +24,8 @@ public class FuCommandTests
     private readonly Mock<IChatCommandSettingsProvider> _settingsProvider = new();
     private readonly FuMessageTemplateRenderer _templateRenderer = new();
     private readonly Mock<IServersApiClient> _serversClient = new();
-    private readonly Mock<IVersionedRconApi> _versionedRcon = new();
-    private readonly Mock<IRconApi> _rconApi = new();
+    private readonly Mock<IVersionedCoD4xRconApi> _versionedCoD4xRcon = new();
+    private readonly Mock<ICoD4xRconApi> _coD4xRconApi = new();
     private readonly Mock<IRepositoryApiClient> _repositoryClient = new();
     private readonly Mock<IVersionedGlobalConfigurationsApi> _versionedGlobalConfigs = new();
     private readonly Mock<IGlobalConfigurationsApi> _globalConfigsApi = new();
@@ -38,8 +38,8 @@ public class FuCommandTests
 
     public FuCommandTests()
     {
-        _versionedRcon.Setup(x => x.V1).Returns(_rconApi.Object);
-        _serversClient.Setup(x => x.Rcon).Returns(_versionedRcon.Object);
+        _versionedCoD4xRcon.Setup(x => x.V1).Returns(_coD4xRconApi.Object);
+        _serversClient.Setup(x => x.CoD4xRcon).Returns(_versionedCoD4xRcon.Object);
 
         _versionedGlobalConfigs.Setup(x => x.V1).Returns(_globalConfigsApi.Object);
         _repositoryClient.Setup(x => x.GlobalConfigurations).Returns(_versionedGlobalConfigs.Object);
@@ -188,18 +188,19 @@ public class FuCommandTests
     [Fact]
     public async Task ExecuteAsync_WhenResolved_SendsPublicSayWithRenderedName()
     {
-        _rconApi
-            .Setup(x => x.ResolvePlayer(TestServerId, It.IsAny<ResolvePlayerRequestDto>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new ApiResult<ResolvePlayerResponseDto>(HttpStatusCode.OK, new ApiResponse<ResolvePlayerResponseDto>(new ResolvePlayerResponseDto
+        _coD4xRconApi
+            .Setup(x => x.Status(TestServerId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<CoD4xStatusResponseDto>(HttpStatusCode.OK, new ApiResponse<CoD4xStatusResponseDto>(new CoD4xStatusResponseDto
             {
-                Status = ResolvePlayerStatus.Resolved,
-                ResolvedPlayer = new ResolvePlayerSuggestionDto
-                {
-                    Name = "^3Target^7",
-                    Slot = 4,
-                    Guid = "target-guid",
-                    Score = 0.99
-                }
+                Players =
+                [
+                    new CoD4xStatusPlayerDto
+                    {
+                        Num = 4,
+                        PlayerIdentifier = "target-guid",
+                        Name = "^3Target^7"
+                    }
+                ]
             })));
 
         var result = await _sut.ExecuteAsync(CreateContext("!fu target"));
@@ -231,18 +232,19 @@ public class FuCommandTests
             .Setup(x => x.GetEffectiveSettingsAsync(TestServerId, "fu", false, It.IsAny<CancellationToken>()))
             .ReturnsAsync(CreateEnabledFuSettings(["owned"]));
 
-        _rconApi
-            .Setup(x => x.ResolvePlayer(TestServerId, It.IsAny<ResolvePlayerRequestDto>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new ApiResult<ResolvePlayerResponseDto>(HttpStatusCode.OK, new ApiResponse<ResolvePlayerResponseDto>(new ResolvePlayerResponseDto
+        _coD4xRconApi
+            .Setup(x => x.Status(TestServerId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<CoD4xStatusResponseDto>(HttpStatusCode.OK, new ApiResponse<CoD4xStatusResponseDto>(new CoD4xStatusResponseDto
             {
-                Status = ResolvePlayerStatus.Resolved,
-                ResolvedPlayer = new ResolvePlayerSuggestionDto
-                {
-                    Name = "Target",
-                    Slot = 4,
-                    Guid = "target-guid",
-                    Score = 0.99
-                }
+                Players =
+                [
+                    new CoD4xStatusPlayerDto
+                    {
+                        Num = 4,
+                        PlayerIdentifier = "target-guid",
+                        Name = "Target"
+                    }
+                ]
             })));
 
         var result = await _sut.ExecuteAsync(CreateContext("!fu target"));
@@ -254,11 +256,11 @@ public class FuCommandTests
     [Fact]
     public async Task ExecuteAsync_WhenNotFound_SendsPrivateTellOnly()
     {
-        _rconApi
-            .Setup(x => x.ResolvePlayer(TestServerId, It.IsAny<ResolvePlayerRequestDto>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new ApiResult<ResolvePlayerResponseDto>(HttpStatusCode.OK, new ApiResponse<ResolvePlayerResponseDto>(new ResolvePlayerResponseDto
+        _coD4xRconApi
+            .Setup(x => x.Status(TestServerId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<CoD4xStatusResponseDto>(HttpStatusCode.OK, new ApiResponse<CoD4xStatusResponseDto>(new CoD4xStatusResponseDto
             {
-                Status = ResolvePlayerStatus.NotFound
+                Players = []
             })));
 
         var result = await _sut.ExecuteAsync(CreateContext("!fu target"));
@@ -282,15 +284,14 @@ public class FuCommandTests
     [Fact]
     public async Task ExecuteAsync_WhenAmbiguous_SendsPrivateTellWithSuggestionsOnly()
     {
-        _rconApi
-            .Setup(x => x.ResolvePlayer(TestServerId, It.IsAny<ResolvePlayerRequestDto>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new ApiResult<ResolvePlayerResponseDto>(HttpStatusCode.OK, new ApiResponse<ResolvePlayerResponseDto>(new ResolvePlayerResponseDto
+        _coD4xRconApi
+            .Setup(x => x.Status(TestServerId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<CoD4xStatusResponseDto>(HttpStatusCode.OK, new ApiResponse<CoD4xStatusResponseDto>(new CoD4xStatusResponseDto
             {
-                Status = ResolvePlayerStatus.Ambiguous,
-                Suggestions =
+                Players =
                 [
-                    new ResolvePlayerSuggestionDto { Name = "Name1", Slot = 3, Guid = "g1", Score = 0.8 },
-                    new ResolvePlayerSuggestionDto { Name = "Name2", Slot = 5, Guid = "g2", Score = 0.7 }
+                    new CoD4xStatusPlayerDto { Num = 3, PlayerIdentifier = "g1", Name = "Name1" },
+                    new CoD4xStatusPlayerDto { Num = 5, PlayerIdentifier = "g2", Name = "Name2" }
                 ]
             })));
 
@@ -315,8 +316,8 @@ public class FuCommandTests
     [Fact]
     public async Task ExecuteAsync_WhenResolvePlayerThrows_SendsPrivateTellOnly()
     {
-        _rconApi
-            .Setup(x => x.ResolvePlayer(TestServerId, It.IsAny<ResolvePlayerRequestDto>(), It.IsAny<CancellationToken>()))
+        _coD4xRconApi
+            .Setup(x => x.Status(TestServerId, It.IsAny<CancellationToken>()))
             .ThrowsAsync(new InvalidOperationException("timeout"));
 
         var result = await _sut.ExecuteAsync(CreateContext("!fu target"));

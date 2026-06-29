@@ -3,8 +3,8 @@ using Microsoft.Extensions.Logging;
 using MX.Observability.ApplicationInsights.Auditing;
 using MX.Observability.ApplicationInsights.Auditing.Models;
 
-using XtremeIdiots.Portal.Integrations.Servers.Abstractions.Interfaces.V1;
 using XtremeIdiots.Portal.Integrations.Servers.Abstractions.Models.V1.Rcon;
+using XtremeIdiots.Portal.Integrations.Servers.Api.Client.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Constants.V1;
 using XtremeIdiots.Portal.Server.Events.Abstractions.V1.Events;
 
@@ -15,7 +15,7 @@ public sealed class WelcomeMessageOrchestrator : IWelcomeMessageOrchestrator
     private readonly IWelcomeMessageSettingsProvider _settingsProvider;
     private readonly IWelcomeMessageIdempotencyStore _idempotencyStore;
     private readonly WelcomeMessageTemplateRenderer _renderer;
-    private readonly IRconApi _rconApi;
+    private readonly IServersApiClient _serversApiClient;
     private readonly IAuditLogger _auditLogger;
     private readonly ILogger<WelcomeMessageOrchestrator> _logger;
 
@@ -23,14 +23,14 @@ public sealed class WelcomeMessageOrchestrator : IWelcomeMessageOrchestrator
         IWelcomeMessageSettingsProvider settingsProvider,
         IWelcomeMessageIdempotencyStore idempotencyStore,
         WelcomeMessageTemplateRenderer renderer,
-        IRconApi rconApi,
+        IServersApiClient serversApiClient,
         IAuditLogger auditLogger,
         ILogger<WelcomeMessageOrchestrator> logger)
     {
         _settingsProvider = settingsProvider;
         _idempotencyStore = idempotencyStore;
         _renderer = renderer;
-        _rconApi = rconApi;
+        _serversApiClient = serversApiClient;
         _auditLogger = auditLogger;
         _logger = logger;
     }
@@ -42,6 +42,12 @@ public sealed class WelcomeMessageOrchestrator : IWelcomeMessageOrchestrator
         string? country,
         CancellationToken ct = default)
     {
+        if (gameType != GameType.CallOfDuty4x)
+        {
+            LogSkipped("UnsupportedGameType", playerEvent, gameType, null);
+            return;
+        }
+
         var settings = await _settingsProvider.GetEffectiveSettingsAsync(playerEvent.ServerId, ct).ConfigureAwait(false);
         if (!settings.Enabled)
         {
@@ -102,12 +108,18 @@ public sealed class WelcomeMessageOrchestrator : IWelcomeMessageOrchestrator
             var renderedMessage = _renderer.Render(winner.MessageTemplate, verification.PlayerName ?? playerEvent.Username, messageCountry);
 
             var deliveryResult = winner.Visibility == WelcomeMessageVisibility.Public
-                ? await _rconApi.Say(playerEvent.ServerId, renderedMessage).ConfigureAwait(false)
-                : await _rconApi.TellPlayerWithVerification(
+                ? await _serversApiClient.CoD4xRcon.V1.ConSay(
                     playerEvent.ServerId,
-                    verification.SlotId,
-                    renderedMessage,
-                    verification.PlayerName ?? playerEvent.Username).ConfigureAwait(false);
+                    new CoD4xMessageRequestDto { Message = renderedMessage },
+                    ct).ConfigureAwait(false)
+                : await _serversApiClient.CoD4xRcon.V1.Tell(
+                    playerEvent.ServerId,
+                    new CoD4xTargetMessageRequestDto
+                    {
+                        Target = verification.SlotId.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                        Message = renderedMessage
+                    },
+                    ct).ConfigureAwait(false);
 
             if (!deliveryResult.IsSuccess)
             {
@@ -160,7 +172,7 @@ public sealed class WelcomeMessageOrchestrator : IWelcomeMessageOrchestrator
 
     private async Task<VerificationResult> VerifyPlayerStillConnected(PlayerConnectedEvent playerEvent, CancellationToken ct)
     {
-        var statusResult = await _rconApi.GetServerStatus(playerEvent.ServerId).ConfigureAwait(false);
+        var statusResult = await _serversApiClient.CoD4xRcon.V1.Status(playerEvent.ServerId, ct).ConfigureAwait(false);
         if (!statusResult.IsSuccess || statusResult.Result?.Data is null)
         {
             return VerificationResult.FromFailure("StatusUnavailable");
@@ -168,41 +180,14 @@ public sealed class WelcomeMessageOrchestrator : IWelcomeMessageOrchestrator
 
         var players = statusResult.Result.Data.Players;
         var byGuid = players.FirstOrDefault(p =>
-            string.Equals(p.Guid, playerEvent.PlayerGuid, StringComparison.OrdinalIgnoreCase));
+            string.Equals(p.PlayerIdentifier, playerEvent.PlayerGuid, StringComparison.OrdinalIgnoreCase));
 
         if (byGuid is null)
         {
             return VerificationResult.FromFailure("PlayerNotConnected");
         }
 
-        // Preferred path: the expected slot should still match.
-        if (byGuid.Num == playerEvent.SlotId)
-        {
-            return VerificationResult.FromSuccess(byGuid.Num, byGuid.Name);
-        }
-
-        // Fallback path: resolve by guid to ensure we still target the same identity.
-        var resolveResult = await _rconApi.ResolvePlayer(
-            playerEvent.ServerId,
-            new ResolvePlayerRequestDto
-            {
-                PlayerQuery = playerEvent.PlayerGuid,
-                MaxSuggestions = 1
-            },
-            ct).ConfigureAwait(false);
-
-        if (!resolveResult.IsSuccess || resolveResult.Result?.Data?.ResolvedPlayer is null)
-        {
-            return VerificationResult.FromFailure("ResolvePlayerFailed");
-        }
-
-        var resolvedPlayer = resolveResult.Result.Data.ResolvedPlayer;
-        if (!string.Equals(resolvedPlayer.Guid, playerEvent.PlayerGuid, StringComparison.OrdinalIgnoreCase))
-        {
-            return VerificationResult.FromFailure("ResolvedGuidMismatch");
-        }
-
-        return VerificationResult.FromSuccess(resolvedPlayer.Slot, resolvedPlayer.Name);
+        return VerificationResult.FromSuccess(byGuid.Num, byGuid.Name);
     }
 
     private void LogSkipped(string reason, PlayerConnectedEvent playerEvent, GameType gameType, string? ruleId)

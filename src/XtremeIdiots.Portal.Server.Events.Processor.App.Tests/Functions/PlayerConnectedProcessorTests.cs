@@ -51,6 +51,10 @@ public class PlayerConnectedProcessorTests
         _versionedGeoLookup.Setup(x => x.V1_1).Returns(_geoLookupApi.Object);
         _geoClient.Setup(x => x.GeoLookup).Returns(_versionedGeoLookup.Object);
 
+        _protectedNameService
+            .Setup(x => x.CheckAsync(It.IsAny<ProtectedNameContext>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
         _cache = new MemoryCache(Options.Create(new MemoryCacheOptions()));
 
         _sut = new PlayerConnectedProcessor(
@@ -297,6 +301,106 @@ public class PlayerConnectedProcessorTests
 
         _geoLookupApi.Verify(x => x.GetIpIntelligence(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
         _playersApi.Verify(x => x.UpdatePlayerIpAddress(It.IsAny<UpdatePlayerIpAddressDto>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task ValidNewPlayer_CoD4x_InvokesProtectedNameCheck()
+    {
+        var evt = CreateValidEvent(gameType: "CallOfDuty4x");
+        var message = CreateMessage(evt);
+
+        _playersApi.Setup(x => x.HeadPlayerByGameType(GameType.CallOfDuty4x, "abc123guid"))
+            .ReturnsAsync(NotFoundResult());
+
+        _playersApi.Setup(x => x.CreatePlayer(It.IsAny<CreatePlayerDto>()))
+            .ReturnsAsync(SuccessResult());
+
+        var playerDto = CreatePlayerDto(TestPlayerId);
+        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4x, "abc123guid", PlayerEntityOptions.Tags))
+            .ReturnsAsync(SuccessResult(playerDto));
+
+        await _sut.ProcessPlayerConnected(message, _functionContext.Object);
+
+        _protectedNameService.Verify(x => x.CheckAsync(
+            It.Is<ProtectedNameContext>(ctx =>
+                ctx.ServerId == evt.ServerId &&
+                string.Equals(ctx.GameType, "CallOfDuty4x", StringComparison.OrdinalIgnoreCase) &&
+                ctx.PlayerId == TestPlayerId),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task ValidNewPlayer_NonCoD4x_SkipsProtectedNameCheck()
+    {
+        var evt = CreateValidEvent(gameType: "CallOfDuty4");
+        var message = CreateMessage(evt);
+
+        _playersApi.Setup(x => x.HeadPlayerByGameType(GameType.CallOfDuty4, "abc123guid"))
+            .ReturnsAsync(NotFoundResult());
+
+        _playersApi.Setup(x => x.CreatePlayer(It.IsAny<CreatePlayerDto>()))
+            .ReturnsAsync(SuccessResult());
+
+        var playerDto = CreatePlayerDto(TestPlayerId);
+        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.Tags))
+            .ReturnsAsync(SuccessResult(playerDto));
+
+        await _sut.ProcessPlayerConnected(message, _functionContext.Object);
+
+        _protectedNameService.Verify(x => x.CheckAsync(It.IsAny<ProtectedNameContext>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task ExistingPlayer_CoD4x_InvokesProtectedNameCheck()
+    {
+        var evt = CreateValidEvent(gameType: "CallOfDuty4x");
+        var message = CreateMessage(evt);
+
+        _playersApi.Setup(x => x.HeadPlayerByGameType(GameType.CallOfDuty4x, "abc123guid"))
+            .ReturnsAsync(SuccessResult());
+
+        var playerDto = CreatePlayerDto(TestPlayerId);
+        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4x, "abc123guid", PlayerEntityOptions.Tags))
+            .ReturnsAsync(SuccessResult(playerDto));
+
+        _playersApi.Setup(x => x.RecordPlayerSession(It.IsAny<RecordPlayerSessionDto>()))
+            .ReturnsAsync(SuccessResult());
+
+        _playersApi.Setup(x => x.UpdatePlayerIpAddress(It.IsAny<UpdatePlayerIpAddressDto>()))
+            .ReturnsAsync(SuccessResult());
+
+        await _sut.ProcessPlayerConnected(message, _functionContext.Object);
+
+        _protectedNameService.Verify(x => x.CheckAsync(
+            It.Is<ProtectedNameContext>(ctx =>
+                ctx.ServerId == evt.ServerId &&
+                string.Equals(ctx.GameType, "CallOfDuty4x", StringComparison.OrdinalIgnoreCase) &&
+                ctx.PlayerId == TestPlayerId),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task ExistingPlayer_NonCoD4x_SkipsProtectedNameCheck()
+    {
+        var evt = CreateValidEvent(gameType: "CallOfDuty4");
+        var message = CreateMessage(evt);
+
+        _playersApi.Setup(x => x.HeadPlayerByGameType(GameType.CallOfDuty4, "abc123guid"))
+            .ReturnsAsync(SuccessResult());
+
+        var playerDto = CreatePlayerDto(TestPlayerId);
+        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.Tags))
+            .ReturnsAsync(SuccessResult(playerDto));
+
+        _playersApi.Setup(x => x.RecordPlayerSession(It.IsAny<RecordPlayerSessionDto>()))
+            .ReturnsAsync(SuccessResult());
+
+        _playersApi.Setup(x => x.UpdatePlayerIpAddress(It.IsAny<UpdatePlayerIpAddressDto>()))
+            .ReturnsAsync(SuccessResult());
+
+        await _sut.ProcessPlayerConnected(message, _functionContext.Object);
+
+        _protectedNameService.Verify(x => x.CheckAsync(It.IsAny<ProtectedNameContext>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 }
 

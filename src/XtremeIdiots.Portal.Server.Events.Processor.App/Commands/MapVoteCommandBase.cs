@@ -143,7 +143,9 @@ public abstract class MapVoteCommandBase : IChatCommand
             GameType.Insurgency => _serversClient.InsurgencyRcon.V1.GetCurrentMap(serverId, ct),
             GameType.Rust => _serversClient.RustRcon.V1.GetCurrentMap(serverId, ct),
             GameType.Left4Dead2 => _serversClient.L4d2Rcon.V1.GetCurrentMap(serverId, ct),
-            _ => _serversClient.Rcon.V1.GetCurrentMap(serverId),
+            _ => Task.FromResult(new ApiResult<RconCurrentMapDto>(
+                HttpStatusCode.BadRequest,
+                new ApiResponse<RconCurrentMapDto>(new ApiError("UNSUPPORTED_GAME", $"Unsupported game type: {gameType}"))))
         };
     }
 
@@ -157,6 +159,8 @@ public abstract class MapVoteCommandBase : IChatCommand
                 new ApiResponse<RconCurrentMapDto>(new RconCurrentMapDto(statusResult.Result.Data.MapName!)));
         }
 
-        return await _serversClient.Rcon.V1.GetCurrentMap(serverId).ConfigureAwait(false);
+        return new ApiResult<RconCurrentMapDto>(
+            HttpStatusCode.BadGateway,
+            new ApiResponse<RconCurrentMapDto>(new ApiError("COD4X_STATUS_UNAVAILABLE", "Unable to resolve current map from CoD4x status.")));
     }
 }

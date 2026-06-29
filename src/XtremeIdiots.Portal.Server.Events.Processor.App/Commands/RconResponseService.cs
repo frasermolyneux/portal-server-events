@@ -1,21 +1,26 @@
+using System.Text.RegularExpressions;
+
 using Microsoft.Extensions.Logging;
 
 using MX.Api.Abstractions;
 
-using XtremeIdiots.Portal.Integrations.Servers.Abstractions.Interfaces.V1;
+using XtremeIdiots.Portal.Integrations.Servers.Abstractions.Models.V1.Rcon;
+using XtremeIdiots.Portal.Integrations.Servers.Api.Client.V1;
 
 namespace XtremeIdiots.Portal.Server.Events.Processor.App.Commands;
 
 public sealed class RconResponseService : IRconResponseService
 {
     private static readonly TimeSpan FreshnessThreshold = TimeSpan.FromSeconds(5);
+    private static readonly Regex QuakeColorCodeRegex = new(@"\^[0-9A-Za-z]", RegexOptions.Compiled, TimeSpan.FromSeconds(1));
+    private static readonly Regex NonAlphaNumericRegex = new(@"[^a-z0-9]+", RegexOptions.Compiled, TimeSpan.FromSeconds(1));
 
-    private readonly IRconApi _rconApi;
+    private readonly IServersApiClient _serversApiClient;
     private readonly ILogger<RconResponseService> _logger;
 
-    public RconResponseService(IRconApi rconApi, ILogger<RconResponseService> logger)
+    public RconResponseService(IServersApiClient serversApiClient, ILogger<RconResponseService> logger)
     {
-        _rconApi = rconApi;
+        _serversApiClient = serversApiClient;
         _logger = logger;
     }
 
@@ -28,7 +33,10 @@ public sealed class RconResponseService : IRconResponseService
 
         try
         {
-            var result = await _rconApi.Say(serverId, message);
+            var result = await _serversApiClient.CoD4xRcon.V1.ConSay(
+                serverId,
+                new CoD4xMessageRequestDto { Message = message },
+                ct).ConfigureAwait(false);
 
             if (!result.IsSuccess)
             {
@@ -62,7 +70,7 @@ public sealed class RconResponseService : IRconResponseService
 
         try
         {
-            var statusResult = await _rconApi.GetServerStatus(serverId);
+            var statusResult = await _serversApiClient.CoD4xRcon.V1.Status(serverId, ct).ConfigureAwait(false);
             if (!statusResult.IsSuccess || statusResult.Result?.Data is null)
             {
                 _logger.LogWarning("Unable to resolve player slot for server {ServerId}: {StatusCode}", serverId, statusResult.StatusCode);
@@ -70,7 +78,7 @@ public sealed class RconResponseService : IRconResponseService
             }
 
             var player = statusResult.Result.Data.Players.FirstOrDefault(p =>
-                string.Equals(p.Guid, playerGuid, StringComparison.OrdinalIgnoreCase));
+                string.Equals(p.PlayerIdentifier, playerGuid, StringComparison.OrdinalIgnoreCase));
 
             if (player is null)
             {
@@ -78,13 +86,31 @@ public sealed class RconResponseService : IRconResponseService
                 return false;
             }
 
-            var result = await _rconApi.TellPlayerWithVerification(serverId, player.Num, message, expectedPlayerName);
+            if (!NamesMatch(expectedPlayerName, player))
+            {
+                _logger.LogWarning(
+                    "Resolved player name mismatch for guid {PlayerGuid} on server {ServerId}. Expected {ExpectedPlayerName}, got {ActualPlayerName}",
+                    playerGuid,
+                    serverId,
+                    expectedPlayerName,
+                    player.Name);
+                return false;
+            }
+
+            var result = await _serversApiClient.CoD4xRcon.V1.Tell(
+                serverId,
+                new CoD4xTargetMessageRequestDto
+                {
+                    Target = player.Num.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    Message = message
+                },
+                ct).ConfigureAwait(false);
 
             if (!result.IsSuccess)
             {
                 var errorSummary = SummarizeApiErrors(result);
                 _logger.LogWarning(
-                    "RCON TellPlayerWithVerification failed for server {ServerId}, client {ClientId}: {StatusCode}. Errors: {ErrorSummary}",
+                    "RCON Tell failed for server {ServerId}, client {ClientId}: {StatusCode}. Errors: {ErrorSummary}",
                     serverId,
                     player.Num,
                     result.StatusCode,
@@ -92,12 +118,12 @@ public sealed class RconResponseService : IRconResponseService
                 return false;
             }
 
-            _logger.LogInformation("RCON TellPlayerWithVerification sent to server {ServerId}, client {ClientId}", serverId, player.Num);
+            _logger.LogInformation("RCON Tell sent to server {ServerId}, client {ClientId}", serverId, player.Num);
             return true;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "RCON TellPlayerWithVerification threw for server {ServerId}, player {PlayerGuid}", serverId, playerGuid);
+            _logger.LogError(ex, "RCON Tell threw for server {ServerId}, player {PlayerGuid}", serverId, playerGuid);
             return false;
         }
     }
@@ -118,25 +144,43 @@ public sealed class RconResponseService : IRconResponseService
 
         try
         {
-            var result = await _rconApi.TellPlayerWithVerification(serverId, slotId, message, expectedPlayerName);
-            if (result.IsSuccess)
+            var statusResult = await _serversApiClient.CoD4xRcon.V1.Status(serverId, ct).ConfigureAwait(false);
+            if (statusResult.IsSuccess && statusResult.Result?.Data is not null)
             {
-                _logger.LogInformation("RCON TellPlayerWithVerification sent to server {ServerId}, client {ClientId}", serverId, slotId);
-                return true;
-            }
+                var slotPlayer = statusResult.Result.Data.Players.FirstOrDefault(p => p.Num == slotId);
+                if (slotPlayer is not null
+                    && string.Equals(slotPlayer.PlayerIdentifier, playerGuid, StringComparison.OrdinalIgnoreCase)
+                    && NamesMatch(expectedPlayerName, slotPlayer))
+                {
+                    var sendResult = await _serversApiClient.CoD4xRcon.V1.Tell(
+                        serverId,
+                        new CoD4xTargetMessageRequestDto
+                        {
+                            Target = slotId.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                            Message = message
+                        },
+                        ct).ConfigureAwait(false);
 
-            var errorSummary = SummarizeApiErrors(result);
-            _logger.LogWarning(
-                "RCON TellPlayerWithVerification failed for server {ServerId}, client {ClientId}: {StatusCode}. Errors: {ErrorSummary}. Falling back to guid lookup.",
-                serverId,
-                slotId,
-                result.StatusCode,
-                errorSummary);
+                    if (sendResult.IsSuccess)
+                    {
+                        _logger.LogInformation("RCON Tell sent to server {ServerId}, client {ClientId}", serverId, slotId);
+                        return true;
+                    }
+
+                    var sendErrorSummary = SummarizeApiErrors(sendResult);
+                    _logger.LogWarning(
+                        "RCON Tell failed for server {ServerId}, client {ClientId}: {StatusCode}. Errors: {ErrorSummary}. Falling back to guid lookup.",
+                        serverId,
+                        slotId,
+                        sendResult.StatusCode,
+                        sendErrorSummary);
+                }
+            }
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex,
-                "RCON TellPlayerWithVerification threw for server {ServerId}, client {ClientId}. Falling back to guid lookup.",
+                "RCON Tell threw for server {ServerId}, client {ClientId}. Falling back to guid lookup.",
                 serverId, slotId);
         }
 
@@ -153,6 +197,44 @@ public sealed class RconResponseService : IRconResponseService
         }
 
         return string.Join("; ", errors.Select(static e => e is null ? "<null-error>" : $"{e.Code}:{e.Message}"));
+    }
+
+    private static bool NamesMatch(string? expectedPlayerName, CoD4xStatusPlayerDto player)
+    {
+        if (string.IsNullOrWhiteSpace(expectedPlayerName))
+        {
+            return true;
+        }
+
+        var resolvedName = string.IsNullOrWhiteSpace(player.Name) ? player.RawName : player.Name;
+        return IsLikelySamePlayerName(expectedPlayerName, resolvedName);
+    }
+
+    private static bool IsLikelySamePlayerName(string expectedName, string? resolvedName)
+    {
+        var normalizedExpected = NormalizePlayerName(expectedName);
+        var normalizedResolved = NormalizePlayerName(resolvedName);
+
+        if (normalizedExpected.Length == 0 || normalizedResolved.Length == 0)
+        {
+            return false;
+        }
+
+        return string.Equals(normalizedExpected, normalizedResolved, StringComparison.Ordinal);
+    }
+
+    private static string NormalizePlayerName(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return string.Empty;
+        }
+
+        var withoutColorCodes = QuakeColorCodeRegex.Replace(value, string.Empty);
+        var lowered = withoutColorCodes.ToLowerInvariant();
+        var alphanumericOnly = NonAlphaNumericRegex.Replace(lowered, string.Empty);
+
+        return alphanumericOnly.Trim();
     }
 
     private bool IsFresh(Guid serverId, DateTime eventGeneratedUtc)

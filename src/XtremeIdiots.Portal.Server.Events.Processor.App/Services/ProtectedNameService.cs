@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Text.RegularExpressions;
 
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Configuration;
@@ -7,7 +8,8 @@ using Microsoft.Extensions.Logging;
 using MX.Observability.ApplicationInsights.Auditing;
 using MX.Observability.ApplicationInsights.Auditing.Models;
 
-using XtremeIdiots.Portal.Integrations.Servers.Abstractions.Interfaces.V1;
+using XtremeIdiots.Portal.Integrations.Servers.Abstractions.Models.V1.Rcon;
+using XtremeIdiots.Portal.Integrations.Servers.Api.Client.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Constants.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.AdminActions;
 using XtremeIdiots.Portal.Repository.Api.Client.V1;
@@ -16,7 +18,7 @@ namespace XtremeIdiots.Portal.Server.Events.Processor.App.Services;
 
 public sealed class ProtectedNameService(
     IRepositoryApiClient repositoryApiClient,
-    IRconApi rconApi,
+    IServersApiClient serversApiClient,
     IMemoryCache memoryCache,
     IAuditLogger auditLogger,
     IConfiguration configuration,
@@ -28,6 +30,8 @@ public sealed class ProtectedNameService(
     private const int ActiveBansCheckPageSize = 50;
     private const string ProtectedNameViolationReasonMarker = "Protected Name Violation";
     private static readonly ConcurrentDictionary<string, EnforcementLockEntry> EnforcementLocks = new();
+    private static readonly Regex QuakeColorCodeRegex = new(@"\^[0-9A-Za-z]", RegexOptions.Compiled, TimeSpan.FromSeconds(1));
+    private static readonly Regex NonAlphaNumericRegex = new(@"[^a-z0-9]+", RegexOptions.Compiled, TimeSpan.FromSeconds(1));
 
     private sealed record OwnerPlayerInfo(string Username);
     private sealed record ScopedProtectedName(string Name, Guid PlayerId, GameType OwnerGameType);
@@ -138,6 +142,7 @@ public sealed class ProtectedNameService(
 
                 var reason = $"{ProtectedNameViolationReasonMarker} - using '{protectedName.Name}' which is registered to {ownerUsername}";
                 var createdAdminAction = false;
+                var skipAdminActionCreation = false;
 
                 var lockKey = $"{contextGameType}:{context.PlayerId}";
                 var enforcementLock = await AcquireEnforcementLockAsync(lockKey, ct).ConfigureAwait(false);
@@ -146,13 +151,70 @@ public sealed class ProtectedNameService(
                 {
                     if (await HasActiveProtectedNameEnforcementBanAsync(contextGameType, context.PlayerId, ct).ConfigureAwait(false))
                     {
+                        skipAdminActionCreation = true;
                         logger.LogWarning(
                             "Protected name enforcement duplicate detected for player {PlayerId} ('{Username}') on server {ServerId}; skipping admin action creation and continuing RCON verification",
                             context.PlayerId,
                             context.Username,
                             context.ServerId);
                     }
-                    else
+
+                    var verificationResult = await serversApiClient.CoD4xRcon.V1.Status(context.ServerId, ct).ConfigureAwait(false);
+                    if (!verificationResult.IsSuccess || verificationResult.Result?.Data is null)
+                    {
+                        logger.LogWarning(
+                            "Protected name enforcement could not verify live player state for player {PlayerId} on server {ServerId}. Status: {StatusCode}",
+                            context.PlayerId,
+                            context.ServerId,
+                            verificationResult.StatusCode);
+                        return;
+                    }
+
+                    var slotPlayer = verificationResult.Result.Data.Players.FirstOrDefault(p => p.Num == context.SlotId);
+                    if (slotPlayer is null)
+                    {
+                        logger.LogWarning(
+                            "Protected name enforcement verification failed for player {PlayerId} on server {ServerId}. Slot {SlotId} is no longer connected.",
+                            context.PlayerId,
+                            context.ServerId,
+                            context.SlotId);
+                        return;
+                    }
+
+                    var resolvedName = string.IsNullOrWhiteSpace(slotPlayer.Name) ? slotPlayer.RawName : slotPlayer.Name;
+                    if (!IsLikelySamePlayerName(context.Username, resolvedName))
+                    {
+                        logger.LogWarning(
+                            "Protected name enforcement verification failed for player {PlayerId} on server {ServerId}. Slot {SlotId} now maps to '{ResolvedName}' (expected '{ExpectedName}').",
+                            context.PlayerId,
+                            context.ServerId,
+                            context.SlotId,
+                            resolvedName,
+                            context.Username);
+                        return;
+                    }
+
+                    var banResult = await serversApiClient.CoD4xRcon.V1.BanClient(
+                            context.ServerId,
+                            new CoD4xClientReasonRequestDto
+                            {
+                                ClientId = context.SlotId,
+                                Reason = ProtectedNameViolationReasonMarker
+                            },
+                            ct)
+                        .ConfigureAwait(false);
+
+                    if (!banResult.IsSuccess)
+                    {
+                        logger.LogWarning(
+                            "Protected name enforcement RCON ban failed for player {PlayerId} on server {ServerId}. Status: {StatusCode}",
+                            context.PlayerId,
+                            context.ServerId,
+                            banResult.StatusCode);
+                        return;
+                    }
+
+                    if (!skipAdminActionCreation && !createdAdminAction)
                     {
                         var botAdminId = configuration["ContentSafety:BotAdminId"];
 
@@ -175,9 +237,6 @@ public sealed class ProtectedNameService(
                         TrackViolation(context, protectedName, ownerUsername);
                         createdAdminAction = true;
                     }
-
-                    await rconApi.BanPlayerWithVerification(context.ServerId, context.SlotId, context.Username)
-                        .ConfigureAwait(false);
                 }
                 finally
                 {
@@ -250,6 +309,33 @@ public sealed class ProtectedNameService(
             new MemoryCacheEntryOptions().SetAbsoluteExpiration(CacheDuration));
 
         return scopedItems;
+    }
+
+    private static bool IsLikelySamePlayerName(string expectedName, string? resolvedName)
+    {
+        var normalizedExpected = NormalizePlayerName(expectedName);
+        var normalizedResolved = NormalizePlayerName(resolvedName);
+
+        if (normalizedExpected.Length == 0 || normalizedResolved.Length == 0)
+        {
+            return false;
+        }
+
+        return string.Equals(normalizedExpected, normalizedResolved, StringComparison.Ordinal);
+    }
+
+    private static string NormalizePlayerName(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return string.Empty;
+        }
+
+        var withoutColorCodes = QuakeColorCodeRegex.Replace(value, string.Empty);
+        var lowered = withoutColorCodes.ToLowerInvariant();
+        var alphanumericOnly = NonAlphaNumericRegex.Replace(lowered, string.Empty);
+
+        return alphanumericOnly.Trim();
     }
 
     private async Task<OwnerPlayerInfo?> GetOwnerPlayerAsync(Guid ownerId, CancellationToken ct)

@@ -125,7 +125,7 @@ public class PlayerConnectedProcessor(
                 // Protected name enforcement (best-effort, never blocks player processing)
                 var newPlayerContext = await GetPlayerContext(gameType, playerEvent.PlayerGuid).ConfigureAwait(false);
                 var newPlayerId = newPlayerContext.PlayerId;
-                if (newPlayerId != Guid.Empty)
+                if (newPlayerId != Guid.Empty && string.Equals(playerEvent.GameType, GameType.CallOfDuty4x.ToString(), StringComparison.OrdinalIgnoreCase))
                 {
                     await protectedNameService.CheckAsync(new ProtectedNameContext
                     {
@@ -184,14 +184,17 @@ public class PlayerConnectedProcessor(
             .Build());
 
         // Protected name enforcement (best-effort, never blocks player processing)
-        await protectedNameService.CheckAsync(new ProtectedNameContext
+        if (string.Equals(playerEvent.GameType, GameType.CallOfDuty4x.ToString(), StringComparison.OrdinalIgnoreCase))
         {
-            ServerId = playerEvent.ServerId,
-            GameType = playerEvent.GameType,
-            Username = playerEvent.Username,
-            PlayerId = playerId,
-            SlotId = playerEvent.SlotId
-        }).ConfigureAwait(false);
+            await protectedNameService.CheckAsync(new ProtectedNameContext
+            {
+                ServerId = playerEvent.ServerId,
+                GameType = playerEvent.GameType,
+                Username = playerEvent.Username,
+                PlayerId = playerId,
+                SlotId = playerEvent.SlotId
+            }).ConfigureAwait(false);
+        }
 
         // GeoIP enrichment (best-effort, never blocks player processing)
         var enrichedCountry = await EnrichWithGeoLocation(playerEvent).ConfigureAwait(false);

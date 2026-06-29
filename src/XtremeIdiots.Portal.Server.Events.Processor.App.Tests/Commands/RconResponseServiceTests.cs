@@ -5,14 +5,17 @@ using Moq;
 using MX.Api.Abstractions;
 
 using XtremeIdiots.Portal.Integrations.Servers.Abstractions.Interfaces.V1;
-using XtremeIdiots.Portal.Integrations.Servers.Abstractions.Models.V1;
+using XtremeIdiots.Portal.Integrations.Servers.Abstractions.Models.V1.Rcon;
+using XtremeIdiots.Portal.Integrations.Servers.Api.Client.V1;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Commands;
 
 namespace XtremeIdiots.Portal.Server.Events.Processor.App.Tests.Commands;
 
 public class RconResponseServiceTests
 {
-    private readonly Mock<IRconApi> _rconApi = new();
+    private readonly Mock<IServersApiClient> _serversApiClient = new();
+    private readonly Mock<IVersionedCoD4xRconApi> _versionedCoD4xRconApi = new();
+    private readonly Mock<ICoD4xRconApi> _coD4xRconApi = new();
     private readonly Mock<ILogger<RconResponseService>> _logger = new();
     private readonly RconResponseService _sut;
 
@@ -20,19 +23,25 @@ public class RconResponseServiceTests
 
     public RconResponseServiceTests()
     {
-        _sut = new RconResponseService(_rconApi.Object, _logger.Object);
+        _versionedCoD4xRconApi.Setup(x => x.V1).Returns(_coD4xRconApi.Object);
+        _serversApiClient.Setup(x => x.CoD4xRcon).Returns(_versionedCoD4xRconApi.Object);
+
+        _sut = new RconResponseService(_serversApiClient.Object, _logger.Object);
     }
 
     [Fact]
     public async Task TrySayAsync_WhenFresh_SendsMessage()
     {
-        _rconApi.Setup(x => x.Say(TestServerId, "Hello"))
-            .ReturnsAsync(new ApiResult(System.Net.HttpStatusCode.OK));
+        _coD4xRconApi.Setup(x => x.ConSay(TestServerId, It.IsAny<CoD4xMessageRequestDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<string>(System.Net.HttpStatusCode.OK, new ApiResponse<string>("ok")));
 
         var result = await _sut.TrySayAsync(TestServerId, "Hello", DateTime.UtcNow);
 
         Assert.True(result);
-        _rconApi.Verify(x => x.Say(TestServerId, "Hello"), Times.Once);
+        _coD4xRconApi.Verify(x => x.ConSay(
+            TestServerId,
+            It.Is<CoD4xMessageRequestDto>(r => r.Message == "Hello"),
+            It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -43,158 +52,164 @@ public class RconResponseServiceTests
         var result = await _sut.TrySayAsync(TestServerId, "Hello", staleTime);
 
         Assert.False(result);
-        _rconApi.Verify(x => x.Say(It.IsAny<Guid>(), It.IsAny<string>()), Times.Never);
-    }
-
-    [Fact]
-    public async Task TrySayAsync_WhenRconFails_ReturnsFalse()
-    {
-        _rconApi.Setup(x => x.Say(TestServerId, "Hello"))
-            .ThrowsAsync(new Exception("connection refused"));
-
-        var result = await _sut.TrySayAsync(TestServerId, "Hello", DateTime.UtcNow);
-
-        Assert.False(result);
+        _coD4xRconApi.Verify(x => x.ConSay(It.IsAny<Guid>(), It.IsAny<CoD4xMessageRequestDto>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
     public async Task TryTellAsync_WhenFresh_SendsMessage()
     {
-        _rconApi.Setup(x => x.GetServerStatus(TestServerId))
-            .ReturnsAsync(new ApiResult<ServerRconStatusResponseDto>(
+        _coD4xRconApi.Setup(x => x.Status(TestServerId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<CoD4xStatusResponseDto>(
                 System.Net.HttpStatusCode.OK,
-                new ApiResponse<ServerRconStatusResponseDto>(
-                    new ServerRconStatusResponseDto
-                    {
-                        Players = [new ServerRconPlayerDto { Num = 5, Guid = "guid-1", Name = "PlayerOne" }]
-                    })));
+                new ApiResponse<CoD4xStatusResponseDto>(new CoD4xStatusResponseDto
+                {
+                    Players = [new CoD4xStatusPlayerDto { Num = 5, PlayerIdentifier = "guid-1", Name = "PlayerOne" }]
+                })));
 
-        _rconApi.Setup(x => x.TellPlayerWithVerification(TestServerId, 5, "Hello", "PlayerOne"))
-            .ReturnsAsync(new ApiResult(System.Net.HttpStatusCode.OK));
+        _coD4xRconApi.Setup(x => x.Tell(TestServerId, It.IsAny<CoD4xTargetMessageRequestDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<string>(System.Net.HttpStatusCode.OK, new ApiResponse<string>("ok")));
 
         var result = await _sut.TryTellAsync(TestServerId, "guid-1", "Hello", "PlayerOne", DateTime.UtcNow);
 
         Assert.True(result);
-        _rconApi.Verify(x => x.TellPlayerWithVerification(TestServerId, 5, "Hello", "PlayerOne"), Times.Once);
+        _coD4xRconApi.Verify(x => x.Tell(
+            TestServerId,
+            It.Is<CoD4xTargetMessageRequestDto>(r => r.Target == "5" && r.Message == "Hello"),
+            It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
-    public async Task TryTellAsync_WhenStale_SkipsMessage()
+    public async Task TryTellAsync_WhenExpectedNameDoesNotMatch_ReturnsFalse()
     {
-        var staleTime = DateTime.UtcNow.AddSeconds(-10);
+        _coD4xRconApi.Setup(x => x.Status(TestServerId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<CoD4xStatusResponseDto>(
+                System.Net.HttpStatusCode.OK,
+                new ApiResponse<CoD4xStatusResponseDto>(new CoD4xStatusResponseDto
+                {
+                    Players = [new CoD4xStatusPlayerDto { Num = 5, PlayerIdentifier = "guid-1", Name = "OtherName" }]
+                })));
 
-        var result = await _sut.TryTellAsync(TestServerId, "guid-1", "Hello", "PlayerOne", staleTime);
+        var result = await _sut.TryTellAsync(TestServerId, "guid-1", "Hello", "PlayerOne", DateTime.UtcNow);
 
         Assert.False(result);
-        _rconApi.Verify(x => x.TellPlayerWithVerification(It.IsAny<Guid>(), It.IsAny<int>(), It.IsAny<string>(), It.IsAny<string?>()), Times.Never);
-        _rconApi.Verify(x => x.GetServerStatus(It.IsAny<Guid>()), Times.Never);
+        _coD4xRconApi.Verify(x => x.Tell(It.IsAny<Guid>(), It.IsAny<CoD4xTargetMessageRequestDto>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task TryTellAsync_WhenExpectedNameHasColorCodes_StillSendsMessage()
+    {
+        _coD4xRconApi.Setup(x => x.Status(TestServerId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<CoD4xStatusResponseDto>(
+                System.Net.HttpStatusCode.OK,
+                new ApiResponse<CoD4xStatusResponseDto>(new CoD4xStatusResponseDto
+                {
+                    Players = [new CoD4xStatusPlayerDto { Num = 5, PlayerIdentifier = "guid-1", Name = "PlayerOne" }]
+                })));
+
+        _coD4xRconApi.Setup(x => x.Tell(TestServerId, It.IsAny<CoD4xTargetMessageRequestDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<string>(System.Net.HttpStatusCode.OK, new ApiResponse<string>("ok")));
+
+        var result = await _sut.TryTellAsync(TestServerId, "guid-1", "Hello", "^1Player^7One", DateTime.UtcNow);
+
+        Assert.True(result);
+        _coD4xRconApi.Verify(x => x.Tell(
+            TestServerId,
+            It.Is<CoD4xTargetMessageRequestDto>(r => r.Target == "5" && r.Message == "Hello"),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task TryTellAsync_WhenNameMissing_UsesRawNameForMatch()
+    {
+        _coD4xRconApi.Setup(x => x.Status(TestServerId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<CoD4xStatusResponseDto>(
+                System.Net.HttpStatusCode.OK,
+                new ApiResponse<CoD4xStatusResponseDto>(new CoD4xStatusResponseDto
+                {
+                    Players = [new CoD4xStatusPlayerDto { Num = 5, PlayerIdentifier = "guid-1", Name = string.Empty, RawName = "PlayerOne" }]
+                })));
+
+        _coD4xRconApi.Setup(x => x.Tell(TestServerId, It.IsAny<CoD4xTargetMessageRequestDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<string>(System.Net.HttpStatusCode.OK, new ApiResponse<string>("ok")));
+
+        var result = await _sut.TryTellAsync(TestServerId, "guid-1", "Hello", "PlayerOne", DateTime.UtcNow);
+
+        Assert.True(result);
+        _coD4xRconApi.Verify(x => x.Tell(
+            TestServerId,
+            It.Is<CoD4xTargetMessageRequestDto>(r => r.Target == "5" && r.Message == "Hello"),
+            It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
     public async Task TryTellAsync_WhenPlayerMissing_ReturnsFalse()
     {
-        _rconApi.Setup(x => x.GetServerStatus(TestServerId))
-            .ReturnsAsync(new ApiResult<ServerRconStatusResponseDto>(
+        _coD4xRconApi.Setup(x => x.Status(TestServerId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<CoD4xStatusResponseDto>(
                 System.Net.HttpStatusCode.OK,
-                new ApiResponse<ServerRconStatusResponseDto>(
-                    new ServerRconStatusResponseDto
-                    {
-                        Players = [new ServerRconPlayerDto { Num = 6, Guid = "other-guid", Name = "Other" }]
-                    })));
+                new ApiResponse<CoD4xStatusResponseDto>(new CoD4xStatusResponseDto
+                {
+                    Players = [new CoD4xStatusPlayerDto { Num = 6, PlayerIdentifier = "other-guid", Name = "Other" }]
+                })));
 
         var result = await _sut.TryTellAsync(TestServerId, "guid-1", "Hello", "PlayerOne", DateTime.UtcNow);
 
         Assert.False(result);
-        _rconApi.Verify(x => x.TellPlayerWithVerification(It.IsAny<Guid>(), It.IsAny<int>(), It.IsAny<string>(), It.IsAny<string?>()), Times.Never);
+        _coD4xRconApi.Verify(x => x.Tell(It.IsAny<Guid>(), It.IsAny<CoD4xTargetMessageRequestDto>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
-    public async Task TryTellAsync_WhenStatusCallFails_ReturnsFalse()
+    public async Task TryTellAsync_WithSlot_WhenSlotAndGuidMatch_SendsWithoutFallback()
     {
-        _rconApi.Setup(x => x.GetServerStatus(TestServerId))
-            .ReturnsAsync(new ApiResult<ServerRconStatusResponseDto>(System.Net.HttpStatusCode.BadGateway));
-
-        var result = await _sut.TryTellAsync(TestServerId, "guid-1", "Hello", "PlayerOne", DateTime.UtcNow);
-
-        Assert.False(result);
-        _rconApi.Verify(x => x.TellPlayerWithVerification(It.IsAny<Guid>(), It.IsAny<int>(), It.IsAny<string>(), It.IsAny<string?>()), Times.Never);
-    }
-
-    [Fact]
-    public async Task TryTellAsync_WhenTellReturnsNonSuccess_ReturnsFalse()
-    {
-        _rconApi.Setup(x => x.GetServerStatus(TestServerId))
-            .ReturnsAsync(new ApiResult<ServerRconStatusResponseDto>(
+        _coD4xRconApi.Setup(x => x.Status(TestServerId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<CoD4xStatusResponseDto>(
                 System.Net.HttpStatusCode.OK,
-                new ApiResponse<ServerRconStatusResponseDto>(
-                    new ServerRconStatusResponseDto
-                    {
-                        Players = [new ServerRconPlayerDto { Num = 5, Guid = "guid-1", Name = "PlayerOne" }]
-                    })));
+                new ApiResponse<CoD4xStatusResponseDto>(new CoD4xStatusResponseDto
+                {
+                    Players = [new CoD4xStatusPlayerDto { Num = 5, PlayerIdentifier = "guid-1", Name = "PlayerOne" }]
+                })));
 
-        _rconApi.Setup(x => x.TellPlayerWithVerification(TestServerId, 5, "Hello", "PlayerOne"))
-            .ReturnsAsync(new ApiResult(System.Net.HttpStatusCode.BadRequest));
-
-        var result = await _sut.TryTellAsync(TestServerId, "guid-1", "Hello", "PlayerOne", DateTime.UtcNow);
-
-        Assert.False(result);
-    }
-
-    [Fact]
-    public async Task TryTellAsync_WhenTellThrows_ReturnsFalse()
-    {
-        _rconApi.Setup(x => x.GetServerStatus(TestServerId))
-            .ReturnsAsync(new ApiResult<ServerRconStatusResponseDto>(
-                System.Net.HttpStatusCode.OK,
-                new ApiResponse<ServerRconStatusResponseDto>(
-                    new ServerRconStatusResponseDto
-                    {
-                        Players = [new ServerRconPlayerDto { Num = 5, Guid = "guid-1", Name = "PlayerOne" }]
-                    })));
-
-        _rconApi.Setup(x => x.TellPlayerWithVerification(TestServerId, 5, "Hello", "PlayerOne"))
-            .ThrowsAsync(new InvalidOperationException("boom"));
-
-        var result = await _sut.TryTellAsync(TestServerId, "guid-1", "Hello", "PlayerOne", DateTime.UtcNow);
-
-        Assert.False(result);
-    }
-
-    [Fact]
-    public async Task TryTellAsync_WithSlot_WhenFreshAndTellSucceeds_ReturnsTrue()
-    {
-        _rconApi.Setup(x => x.TellPlayerWithVerification(TestServerId, 5, "Hello", "PlayerOne"))
-            .ReturnsAsync(new ApiResult(System.Net.HttpStatusCode.OK));
+        _coD4xRconApi.Setup(x => x.Tell(TestServerId, It.IsAny<CoD4xTargetMessageRequestDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<string>(System.Net.HttpStatusCode.OK, new ApiResponse<string>("ok")));
 
         var result = await _sut.TryTellAsync(TestServerId, "guid-1", 5, "Hello", "PlayerOne", DateTime.UtcNow);
 
         Assert.True(result);
-        _rconApi.Verify(x => x.GetServerStatus(It.IsAny<Guid>()), Times.Never);
+        _coD4xRconApi.Verify(x => x.Status(TestServerId, It.IsAny<CancellationToken>()), Times.Once);
+        _coD4xRconApi.Verify(x => x.Tell(
+            TestServerId,
+            It.Is<CoD4xTargetMessageRequestDto>(r => r.Target == "5" && r.Message == "Hello"),
+            It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
-    public async Task TryTellAsync_WithSlot_WhenTellFails_FallsBackToGuidLookup()
+    public async Task TryTellAsync_WithSlot_WhenSlotLookupMismatch_FallsBackToGuidLookup()
     {
-        _rconApi.Setup(x => x.TellPlayerWithVerification(TestServerId, 5, "Hello", "PlayerOne"))
-            .ReturnsAsync(new ApiResult(System.Net.HttpStatusCode.BadRequest));
-
-        _rconApi.Setup(x => x.GetServerStatus(TestServerId))
-            .ReturnsAsync(new ApiResult<ServerRconStatusResponseDto>(
+        _coD4xRconApi.SetupSequence(x => x.Status(TestServerId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<CoD4xStatusResponseDto>(
                 System.Net.HttpStatusCode.OK,
-                new ApiResponse<ServerRconStatusResponseDto>(
-                    new ServerRconStatusResponseDto
-                    {
-                        Players = [new ServerRconPlayerDto { Num = 7, Guid = "guid-1", Name = "PlayerOne" }]
-                    })));
+                new ApiResponse<CoD4xStatusResponseDto>(new CoD4xStatusResponseDto
+                {
+                    Players = [new CoD4xStatusPlayerDto { Num = 5, PlayerIdentifier = "other-guid", Name = "Other" }]
+                })))
+            .ReturnsAsync(new ApiResult<CoD4xStatusResponseDto>(
+                System.Net.HttpStatusCode.OK,
+                new ApiResponse<CoD4xStatusResponseDto>(new CoD4xStatusResponseDto
+                {
+                    Players = [new CoD4xStatusPlayerDto { Num = 7, PlayerIdentifier = "guid-1", Name = "PlayerOne" }]
+                })));
 
-        _rconApi.Setup(x => x.TellPlayerWithVerification(TestServerId, 7, "Hello", "PlayerOne"))
-            .ReturnsAsync(new ApiResult(System.Net.HttpStatusCode.OK));
+        _coD4xRconApi.Setup(x => x.Tell(TestServerId, It.IsAny<CoD4xTargetMessageRequestDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<string>(System.Net.HttpStatusCode.OK, new ApiResponse<string>("ok")));
 
         var result = await _sut.TryTellAsync(TestServerId, "guid-1", 5, "Hello", "PlayerOne", DateTime.UtcNow);
 
         Assert.True(result);
-        _rconApi.Verify(x => x.GetServerStatus(TestServerId), Times.Once);
-        _rconApi.Verify(x => x.TellPlayerWithVerification(TestServerId, 7, "Hello", "PlayerOne"), Times.Once);
+        _coD4xRconApi.Verify(x => x.Status(TestServerId, It.IsAny<CancellationToken>()), Times.Exactly(2));
+        _coD4xRconApi.Verify(x => x.Tell(
+            TestServerId,
+            It.Is<CoD4xTargetMessageRequestDto>(r => r.Target == "7" && r.Message == "Hello"),
+            It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -205,7 +220,7 @@ public class RconResponseServiceTests
         var result = await _sut.TryTellAsync(TestServerId, "guid-1", 5, "Hello", "PlayerOne", staleTime);
 
         Assert.False(result);
-        _rconApi.Verify(x => x.TellPlayerWithVerification(It.IsAny<Guid>(), It.IsAny<int>(), It.IsAny<string>(), It.IsAny<string?>()), Times.Never);
-        _rconApi.Verify(x => x.GetServerStatus(It.IsAny<Guid>()), Times.Never);
+        _coD4xRconApi.Verify(x => x.Status(It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+        _coD4xRconApi.Verify(x => x.Tell(It.IsAny<Guid>(), It.IsAny<CoD4xTargetMessageRequestDto>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 }

@@ -83,16 +83,19 @@ public sealed class FuCommand : IChatCommand
             return CommandResult.NotHandled;
         }
 
-        MX.Api.Abstractions.ApiResult<ResolvePlayerResponseDto> resolveResult;
+        ResolvePlayerResponseDto resolution;
         try
         {
-            resolveResult = await _serversClient.Rcon.V1
-                .ResolvePlayer(context.ServerId, new ResolvePlayerRequestDto
-                {
-                    PlayerQuery = playerQuery,
-                    MaxSuggestions = 3
-                }, ct)
+            var statusResult = await _serversClient.CoD4xRcon.V1
+                .Status(context.ServerId, ct)
                 .ConfigureAwait(false);
+
+            if (!statusResult.IsSuccess || statusResult.Result?.Data?.Players is null)
+            {
+                return await FailAsync(context, "Unable to resolve player right now. Please try again.", ct).ConfigureAwait(false);
+            }
+
+            resolution = PlayerResolutionMatcher.ResolvePlayer(statusResult.Result.Data.Players, playerQuery, maxSuggestions: 3);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -100,12 +103,6 @@ public sealed class FuCommand : IChatCommand
             return await FailAsync(context, "Unable to resolve player right now. Please try again.", ct).ConfigureAwait(false);
         }
 
-        if (!resolveResult.IsSuccess || resolveResult.Result?.Data is null)
-        {
-            return await FailAsync(context, "Unable to resolve player right now. Please try again.", ct).ConfigureAwait(false);
-        }
-
-        var resolution = resolveResult.Result.Data;
         if (resolution.Status == ResolvePlayerStatus.NotFound)
         {
             return await FailAsync(context, "No player found.", ct).ConfigureAwait(false);
