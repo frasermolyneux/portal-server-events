@@ -34,7 +34,7 @@
     <PackageReference Include="MX.GeoLocation.Api.Client.V1" Version="1.2.75" />
     <PackageReference Include="MX.InvisionCommunity.Api.Client" Version="1.0.49" />
     <PackageReference Include="XtremeIdiots.Portal.Settings.Contracts.V1" Version="2.1.284" />
-    <PackageReference Include="XtremeIdiots.Portal.Integrations.Servers.Api.Client.V1" Version="2.1.230" />
+    <PackageReference Include="XtremeIdiots.Portal.Integrations.Servers.Api.Client.V1" Version="2.1.232" />
     <PackageReference Include="XtremeIdiots.Portal.Repository.Api.Client.V1" Version="3.0.15" />
   </ItemGroup>
 

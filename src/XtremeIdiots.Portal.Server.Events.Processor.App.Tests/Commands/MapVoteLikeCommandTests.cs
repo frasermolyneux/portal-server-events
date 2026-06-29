@@ -23,8 +23,8 @@ public class MapVoteLikeCommandTests
 {
     private readonly Mock<IRepositoryApiClient> _repoClient = new();
     private readonly Mock<IServersApiClient> _serversClient = new();
-    private readonly Mock<IVersionedRconApi> _versionedRcon = new();
-    private readonly Mock<IRconApi> _rconApi = new();
+    private readonly Mock<IVersionedCod4RconApi> _versionedCod4Rcon = new();
+    private readonly Mock<ICod4RconApi> _cod4RconApi = new();
     private readonly Mock<Repository.Api.Client.V1.IVersionedMapsApi> _versionedMaps = new();
     private readonly Mock<Repository.Abstractions.Interfaces.V1.IMapsApi> _mapsApi = new();
     private readonly Mock<IVersionedGlobalConfigurationsApi> _versionedGlobalConfigs = new();
@@ -43,8 +43,8 @@ public class MapVoteLikeCommandTests
 
     public MapVoteLikeCommandTests()
     {
-        _versionedRcon.Setup(x => x.V1).Returns(_rconApi.Object);
-        _serversClient.Setup(x => x.Rcon).Returns(_versionedRcon.Object);
+        _versionedCod4Rcon.Setup(x => x.V1).Returns(_cod4RconApi.Object);
+        _serversClient.Setup(x => x.Cod4Rcon).Returns(_versionedCod4Rcon.Object);
 
         _versionedMaps.Setup(x => x.V1).Returns(_mapsApi.Object);
         _repoClient.Setup(x => x.Maps).Returns(_versionedMaps.Object);
@@ -95,7 +95,7 @@ public class MapVoteLikeCommandTests
     [Fact]
     public async Task ExecuteAsync_WithValidPlayer_CreatesVoteAndSendsRcon()
     {
-        _rconApi.Setup(x => x.GetCurrentMap(TestServerId))
+        _cod4RconApi.Setup(x => x.GetCurrentMap(TestServerId, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new ApiResult<RconCurrentMapDto>(HttpStatusCode.OK,
                 new ApiResponse<RconCurrentMapDto>(new RconCurrentMapDto("mp_crash"))));
 
@@ -140,7 +140,7 @@ public class MapVoteLikeCommandTests
     [Fact]
     public async Task ExecuteAsync_WhenMapNotFound_ReturnsFailed()
     {
-        _rconApi.Setup(x => x.GetCurrentMap(TestServerId))
+        _cod4RconApi.Setup(x => x.GetCurrentMap(TestServerId, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new ApiResult<RconCurrentMapDto>(HttpStatusCode.OK,
                 new ApiResponse<RconCurrentMapDto>(new RconCurrentMapDto("mp_crash"))));
 
@@ -157,7 +157,7 @@ public class MapVoteLikeCommandTests
     [Fact]
     public async Task ExecuteAsync_WhenMapLookupReturnsNullResult_ReturnsFailed()
     {
-        _rconApi.Setup(x => x.GetCurrentMap(TestServerId))
+        _cod4RconApi.Setup(x => x.GetCurrentMap(TestServerId, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new ApiResult<RconCurrentMapDto>(HttpStatusCode.OK,
                 new ApiResponse<RconCurrentMapDto>(new RconCurrentMapDto("mp_crash"))));
 
@@ -174,7 +174,7 @@ public class MapVoteLikeCommandTests
     [Fact]
     public async Task ExecuteAsync_WhenLiveMapValidationReturnsMissingCurrentMap_StillCreatesVote()
     {
-        _rconApi.Setup(x => x.GetCurrentMap(TestServerId))
+        _cod4RconApi.Setup(x => x.GetCurrentMap(TestServerId, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new ApiResult<RconCurrentMapDto>(HttpStatusCode.OK,
                 new ApiResponse<RconCurrentMapDto>(new RconCurrentMapDto("mp_crash"))));
 
@@ -206,7 +206,7 @@ public class MapVoteLikeCommandTests
     [Fact]
     public async Task ExecuteAsync_WhenStale_VoteCreatedButNoRcon()
     {
-        _rconApi.Setup(x => x.GetCurrentMap(TestServerId))
+        _cod4RconApi.Setup(x => x.GetCurrentMap(TestServerId, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new ApiResult<RconCurrentMapDto>(HttpStatusCode.OK,
                 new ApiResponse<RconCurrentMapDto>(new RconCurrentMapDto("mp_crash"))));
 
@@ -229,7 +229,7 @@ public class MapVoteLikeCommandTests
     [Fact]
     public async Task ExecuteAsync_UsesGlobalPrefix_WhenServerOverrideMissing()
     {
-        _rconApi.Setup(x => x.GetCurrentMap(TestServerId))
+        _cod4RconApi.Setup(x => x.GetCurrentMap(TestServerId, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new ApiResult<RconCurrentMapDto>(HttpStatusCode.OK,
                 new ApiResponse<RconCurrentMapDto>(new RconCurrentMapDto("mp_crash"))));
 
@@ -262,7 +262,7 @@ public class MapVoteLikeCommandTests
     [Fact]
     public async Task ExecuteAsync_UsesDefaultPrefix_WhenGlobalAndServerOverridesMissing()
     {
-        _rconApi.Setup(x => x.GetCurrentMap(TestServerId))
+        _cod4RconApi.Setup(x => x.GetCurrentMap(TestServerId, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new ApiResult<RconCurrentMapDto>(HttpStatusCode.OK,
                 new ApiResponse<RconCurrentMapDto>(new RconCurrentMapDto("mp_crash"))));
 

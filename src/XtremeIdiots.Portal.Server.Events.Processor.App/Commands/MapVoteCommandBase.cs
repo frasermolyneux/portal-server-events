@@ -1,9 +1,13 @@
+using System.Net;
+
 using Microsoft.Extensions.Logging;
 
+using MX.Api.Abstractions;
 using MX.Observability.ApplicationInsights.Auditing;
 using MX.Observability.ApplicationInsights.Auditing.Models;
 
 using XtremeIdiots.Portal.Integrations.Servers.Api.Client.V1;
+using XtremeIdiots.Portal.Integrations.Servers.Abstractions.Models.V1.Rcon;
 using XtremeIdiots.Portal.Repository.Abstractions.Constants.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.Maps;
 using XtremeIdiots.Portal.Repository.Api.Client.V1;
@@ -46,7 +50,12 @@ public abstract class MapVoteCommandBase : IChatCommand
             return CommandResult.Failed("Player not found");
         }
 
-        var mapResult = await _serversClient.Rcon.V1.GetCurrentMap(context.ServerId);
+        if (!Enum.TryParse<GameType>(context.GameType, out var gameType))
+        {
+            return CommandResult.Failed("Invalid game type");
+        }
+
+        var mapResult = await GetCurrentMapAsync(context.ServerId, gameType, ct).ConfigureAwait(false);
 
         if (!mapResult.IsSuccess || mapResult.Result?.Data is null)
         {
@@ -77,11 +86,6 @@ public abstract class MapVoteCommandBase : IChatCommand
             {
                 return CommandResult.Failed(mapValidation.Reason ?? "Map validation failed");
             }
-        }
-
-        if (!Enum.TryParse<GameType>(context.GameType, out var gameType))
-        {
-            return CommandResult.Failed("Invalid game type");
         }
 
         var repoMapResult = await _repositoryClient.Maps.V1.GetMap(gameType, currentMap, ct);
@@ -126,5 +130,33 @@ public abstract class MapVoteCommandBase : IChatCommand
         }
 
         return $"{trimmedPrefix} {message}";
+    }
+
+    private Task<ApiResult<RconCurrentMapDto>> GetCurrentMapAsync(Guid serverId, GameType gameType, CancellationToken ct)
+    {
+        return gameType switch
+        {
+            GameType.CallOfDuty2 => _serversClient.Cod2Rcon.V1.GetCurrentMap(serverId, ct),
+            GameType.CallOfDuty4 => _serversClient.Cod4Rcon.V1.GetCurrentMap(serverId, ct),
+            GameType.CallOfDuty5 => _serversClient.Cod5Rcon.V1.GetCurrentMap(serverId, ct),
+            GameType.CallOfDuty4x => GetCoD4xCurrentMapAsync(serverId, ct),
+            GameType.Insurgency => _serversClient.InsurgencyRcon.V1.GetCurrentMap(serverId, ct),
+            GameType.Rust => _serversClient.RustRcon.V1.GetCurrentMap(serverId, ct),
+            GameType.Left4Dead2 => _serversClient.L4d2Rcon.V1.GetCurrentMap(serverId, ct),
+            _ => _serversClient.Rcon.V1.GetCurrentMap(serverId),
+        };
+    }
+
+    private async Task<ApiResult<RconCurrentMapDto>> GetCoD4xCurrentMapAsync(Guid serverId, CancellationToken ct)
+    {
+        var statusResult = await _serversClient.CoD4xRcon.V1.Status(serverId, ct).ConfigureAwait(false);
+        if (statusResult.IsSuccess && !string.IsNullOrWhiteSpace(statusResult.Result?.Data?.MapName))
+        {
+            return new ApiResult<RconCurrentMapDto>(
+                HttpStatusCode.OK,
+                new ApiResponse<RconCurrentMapDto>(new RconCurrentMapDto(statusResult.Result.Data.MapName!)));
+        }
+
+        return await _serversClient.Rcon.V1.GetCurrentMap(serverId).ConfigureAwait(false);
     }
 }
