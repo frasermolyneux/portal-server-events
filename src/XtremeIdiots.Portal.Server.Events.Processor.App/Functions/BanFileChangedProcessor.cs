@@ -96,8 +96,11 @@ public sealed class BanFileChangedProcessor(
 
             try
             {
-                await ProcessSingleBanAsync(gameType, evt.ServerId, ban, context.CancellationToken).ConfigureAwait(false);
-                processed.Add(ban);
+                var imported = await ProcessSingleBanAsync(gameType, evt.ServerId, ban, context.CancellationToken).ConfigureAwait(false);
+                if (imported)
+                {
+                    processed.Add(ban);
+                }
             }
             catch (Exception ex)
             {
@@ -123,16 +126,24 @@ public sealed class BanFileChangedProcessor(
         var eventData = JsonSerializer.Serialize(new
         {
             Count = bans.Count,
-            Players = bans.Select(b => new { b.PlayerGuid, b.PlayerName }).ToArray()
+            Players = bans.Select(b => new { PlayerGuid = b.PlayerGuid.Trim(), b.PlayerName }).ToArray()
         }, JsonOptions.Default);
 
         try
         {
-            await repositoryApiClient.GameServersEvents.V1
+            var result = await repositoryApiClient.GameServersEvents.V1
                 .CreateGameServerEvent(
                     new CreateGameServerEventDto(serverId, "ManualBanDetected", eventData),
                     ct)
                 .ConfigureAwait(false);
+
+            if (!result.IsSuccess)
+            {
+                logger.LogWarning(
+                    "Failed to write ManualBanDetected game server event for server {ServerId}. Status: {StatusCode}",
+                    serverId,
+                    result.StatusCode);
+            }
         }
         catch (Exception ex)
         {
@@ -140,11 +151,17 @@ public sealed class BanFileChangedProcessor(
         }
     }
 
-    internal async Task ProcessSingleBanAsync(GameType gameType, Guid serverId, DetectedBan ban, CancellationToken ct)
+    internal async Task<bool> ProcessSingleBanAsync(
+        GameType gameType,
+        Guid serverId,
+        DetectedBan ban,
+        CancellationToken ct)
     {
+        var normalizedPlayerGuid = ban.PlayerGuid.Trim();
+
         // Check if player exists
         var playerExistsResponse = await repositoryApiClient.Players.V1
-            .HeadPlayerByGameType(gameType, ban.PlayerGuid)
+            .HeadPlayerByGameType(gameType, normalizedPlayerGuid)
             .ConfigureAwait(false);
 
         Guid playerId;
@@ -152,7 +169,7 @@ public sealed class BanFileChangedProcessor(
         if (playerExistsResponse.IsNotFound)
         {
             // Create the player first
-            var createPlayerDto = new CreatePlayerDto(ban.PlayerName, ban.PlayerGuid, gameType);
+            var createPlayerDto = new CreatePlayerDto(ban.PlayerName, normalizedPlayerGuid, gameType);
 
             var createResult = await repositoryApiClient.Players.V1
                 .CreatePlayer(createPlayerDto)
@@ -166,26 +183,26 @@ public sealed class BanFileChangedProcessor(
             else if (!createResult.IsSuccess)
             {
                 throw new InvalidOperationException(
-                    $"Failed to create player for GUID '{ban.PlayerGuid}'. API returned {createResult.StatusCode}.");
+                    $"Failed to create player for GUID '{normalizedPlayerGuid}'. API returned {createResult.StatusCode}.");
             }
             else
             {
                 auditLogger.LogAudit(AuditEvent.ServerAction("BanPlayerCreated", AuditAction.Create)
                     .WithGameContext(gameType.ToString(), serverId)
-                    .WithPlayer(ban.PlayerGuid, ban.PlayerName)
+                    .WithPlayer(normalizedPlayerGuid, ban.PlayerName)
                     .Build());
             }
         }
 
         // Look up the player to get their ID
         var playerResponse = await repositoryApiClient.Players.V1
-            .GetPlayerByGameType(gameType, ban.PlayerGuid, PlayerEntityOptions.None)
+            .GetPlayerByGameType(gameType, normalizedPlayerGuid, PlayerEntityOptions.None)
             .ConfigureAwait(false);
 
         if (!playerResponse.IsSuccess || playerResponse.Result?.Data is null)
         {
             throw new InvalidOperationException(
-                $"Player not found for GUID '{ban.PlayerGuid}' after creation. Will retry.");
+                $"Player not found for GUID '{normalizedPlayerGuid}' after creation. Will retry.");
         }
 
         var player = playerResponse.Result.Data;
@@ -196,24 +213,36 @@ public sealed class BanFileChangedProcessor(
             .GetAdminActions(gameType, playerId, null, AdminActionFilter.ActiveBans, 0, 1, null, ct)
             .ConfigureAwait(false);
 
-        var hasActiveBan = activeBansResult.IsSuccess &&
-            activeBansResult.Result?.Data?.Items?.Any() == true;
+        if (!activeBansResult.IsSuccess)
+        {
+            logger.LogWarning(
+                "Skipping imported ban for player {PlayerGuid}: failed to check active bans (status {StatusCode})",
+                normalizedPlayerGuid,
+                activeBansResult.StatusCode);
+            return false;
+        }
+
+        var hasActiveBan = activeBansResult.Result?.Data?.Items?.Any() == true;
 
         if (hasActiveBan)
         {
-            logger.LogInformation("Player {PlayerGuid} already has an active ban, skipping", ban.PlayerGuid);
-            return;
+            logger.LogInformation("Player {PlayerGuid} already has an active ban, skipping", normalizedPlayerGuid);
+            return false;
         }
+
+        var adminActionType = AdminActionType.Ban;
+        DateTime? expiresAtUtc = null;
 
         // Create forum topic (best-effort)
         var forumTopicId = await adminActionTopics.CreateTopicForAdminAction(
-            AdminActionType.Ban, gameType, playerId, player.Username,
+            adminActionType, gameType, playerId, player.Username,
             DateTime.UtcNow, "Imported from server ban file", null, ct).ConfigureAwait(false);
 
         // Create the ban admin action
-        var adminAction = new CreateAdminActionDto(playerId, AdminActionType.Ban, "Imported from server ban file")
+        var adminAction = new CreateAdminActionDto(playerId, adminActionType, "Imported from server ban file")
         {
-            ForumTopicId = forumTopicId > 0 ? forumTopicId : null
+            ForumTopicId = forumTopicId > 0 ? forumTopicId : null,
+            Expires = expiresAtUtc
         };
         var adminResult = await repositoryApiClient.AdminActions.V1
             .CreateAdminAction(adminAction, ct)
@@ -222,18 +251,17 @@ public sealed class BanFileChangedProcessor(
         if (adminResult.IsSuccess)
         {
             logger.LogInformation("Created ban for player {PlayerGuid} ({PlayerName}) on server {ServerId}",
-                ban.PlayerGuid, ban.PlayerName, serverId);
+                normalizedPlayerGuid, ban.PlayerName, serverId);
             auditLogger.LogAudit(AuditEvent.ServerAction("BanImported", AuditAction.Import)
                 .WithService("BanFileProcessor")
                 .WithGameContext(gameType.ToString(), serverId)
-                .WithPlayer(ban.PlayerGuid, ban.PlayerName)
+                .WithPlayer(normalizedPlayerGuid, ban.PlayerName)
                 .Build());
+            return true;
         }
-        else
-        {
-            logger.LogWarning("Failed to create ban for player {PlayerGuid}. Status: {StatusCode}",
-                ban.PlayerGuid, adminResult.StatusCode);
-        }
-    }
 
+        logger.LogWarning("Failed to create ban for player {PlayerGuid}. Status: {StatusCode}",
+            normalizedPlayerGuid, adminResult.StatusCode);
+        return false;
+    }
 }

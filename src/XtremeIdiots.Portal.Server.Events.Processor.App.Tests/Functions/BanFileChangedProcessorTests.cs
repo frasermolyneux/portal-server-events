@@ -1,3 +1,6 @@
+using System.Net;
+
+using MX.Api.Abstractions;
 using MX.Observability.ApplicationInsights.Auditing;
 
 using Microsoft.Azure.Functions.Worker;
@@ -8,6 +11,7 @@ using Moq;
 using XtremeIdiots.Portal.Repository.Abstractions.Constants.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Interfaces.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.AdminActions;
+using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.GameServers;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.Players;
 using XtremeIdiots.Portal.Repository.Api.Client.V1;
 using XtremeIdiots.Portal.Server.Events.Abstractions.V1.Events;
@@ -26,6 +30,8 @@ public class BanFileChangedProcessorTests
     private readonly Mock<IPlayersApi> _playersApi = new();
     private readonly Mock<IVersionedAdminActionsApi> _versionedAdminActions = new();
     private readonly Mock<IAdminActionsApi> _adminActionsApi = new();
+    private readonly Mock<IVersionedGameServersEventsApi> _versionedGameServerEvents = new();
+    private readonly Mock<IGameServersEventsApi> _gameServerEventsApi = new();
     private readonly Mock<IAdminActionTopics> _adminActionTopics = new();
     private readonly Mock<IAuditLogger> _auditLogger = new();
     private readonly Mock<FunctionContext> _functionContext = new();
@@ -42,12 +48,19 @@ public class BanFileChangedProcessorTests
         _versionedAdminActions.Setup(x => x.V1).Returns(_adminActionsApi.Object);
         _repoClient.Setup(x => x.AdminActions).Returns(_versionedAdminActions.Object);
 
+        _versionedGameServerEvents.Setup(x => x.V1).Returns(_gameServerEventsApi.Object);
+        _repoClient.Setup(x => x.GameServersEvents).Returns(_versionedGameServerEvents.Object);
+
+        _gameServerEventsApi
+            .Setup(x => x.CreateGameServerEvent(It.IsAny<CreateGameServerEventDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(SuccessResult());
+
         // Default: no active bans found
         _adminActionsApi.Setup(x => x.GetAdminActions(
                 It.IsAny<GameType>(), It.IsAny<Guid>(), It.IsAny<string?>(),
                 It.IsAny<AdminActionFilter?>(), It.IsAny<int>(), It.IsAny<int>(),
                 It.IsAny<AdminActionOrder?>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(SuccessResult(new MX.Api.Abstractions.CollectionModel<AdminActionDto>()));
+            .ReturnsAsync(SuccessResult(new CollectionModel<AdminActionDto>()));
 
         _sut = new BanFileChangedProcessor(_logger.Object, _repoClient.Object, _adminActionTopics.Object, _auditLogger.Object);
     }
@@ -100,6 +113,12 @@ public class BanFileChangedProcessorTests
             dto.Type == AdminActionType.Ban &&
             dto.Text == "Imported from server ban file" &&
             dto.ForumTopicId == 12345), It.IsAny<CancellationToken>()), Times.Once);
+
+        _gameServerEventsApi.Verify(x => x.CreateGameServerEvent(
+            It.Is<CreateGameServerEventDto>(dto =>
+                dto.GameServerId == TestServerId &&
+                dto.EventType == "ManualBanDetected"),
+            It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -332,7 +351,7 @@ public class BanFileChangedProcessorTests
             .ReturnsAsync(SuccessResult(playerDto));
 
         var activeBanDto = new AdminActionDto();
-        var collection = new MX.Api.Abstractions.CollectionModel<AdminActionDto>
+        var collection = new CollectionModel<AdminActionDto>
         {
             Items = [activeBanDto]
         };
@@ -348,5 +367,110 @@ public class BanFileChangedProcessorTests
 
         _adminActionsApi.Verify(x => x.CreateAdminAction(
             It.IsAny<CreateAdminActionDto>(), It.IsAny<CancellationToken>()), Times.Never);
+
+        _gameServerEventsApi.Verify(x => x.CreateGameServerEvent(
+            It.IsAny<CreateGameServerEventDto>(),
+            It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task ActiveBanLookupFailure_DoesNotCreateForumTopicOrAdminAction()
+    {
+        var evt = CreateValidEvent();
+        var message = CreateMessage(evt);
+
+        _playersApi.Setup(x => x.HeadPlayerByGameType(GameType.CallOfDuty4, "abc123guid"))
+            .ReturnsAsync(SuccessResult());
+
+        var playerDto = CreatePlayerDto(TestPlayerId);
+        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.None))
+            .ReturnsAsync(SuccessResult(playerDto));
+
+        _adminActionsApi.Setup(x => x.GetAdminActions(
+                GameType.CallOfDuty4,
+                TestPlayerId,
+                null,
+                AdminActionFilter.ActiveBans,
+                0,
+                1,
+                null,
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<CollectionModel<AdminActionDto>>(
+                HttpStatusCode.InternalServerError,
+                new ApiResponse<CollectionModel<AdminActionDto>>(new ApiError("SERVER_ERROR", "lookup failed"))));
+
+        await _sut.ProcessBanFileChanged(message, _functionContext.Object);
+
+        _adminActionTopics.Verify(x => x.CreateTopicForAdminAction(
+            It.IsAny<AdminActionType>(), It.IsAny<GameType>(), It.IsAny<Guid>(), It.IsAny<string>(),
+            It.IsAny<DateTime>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+
+        _adminActionsApi.Verify(x => x.CreateAdminAction(
+            It.IsAny<CreateAdminActionDto>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task CoD4xBanWithWhitespaceIdentifier_ImportsAsPermanentBan()
+    {
+        // Arrange
+        var evt = CreateValidEvent(
+            gameType: nameof(GameType.CallOfDuty4x),
+            newBans: [new DetectedBan { PlayerGuid = "  abc123guid  ", PlayerName = "TimedBanPlayer" }]);
+
+        var message = CreateMessage(evt);
+
+        _playersApi.Setup(x => x.HeadPlayerByGameType(GameType.CallOfDuty4x, "abc123guid"))
+            .ReturnsAsync(SuccessResult());
+
+        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4x, "abc123guid", PlayerEntityOptions.None))
+            .ReturnsAsync(SuccessResult(CreatePlayerDto(TestPlayerId)));
+
+        _adminActionsApi.Setup(x => x.CreateAdminAction(It.IsAny<CreateAdminActionDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(SuccessResult());
+
+        // Act
+        await _sut.ProcessBanFileChanged(message, _functionContext.Object);
+
+        // Assert
+        _adminActionsApi.Verify(x => x.CreateAdminAction(
+            It.Is<CreateAdminActionDto>(dto =>
+                dto.PlayerId == TestPlayerId &&
+                dto.Type == AdminActionType.Ban &&
+                dto.Expires == null),
+            It.IsAny<CancellationToken>()), Times.Once);
+
+        _gameServerEventsApi.Verify(x => x.CreateGameServerEvent(
+            It.Is<CreateGameServerEventDto>(dto =>
+                dto.GameServerId == TestServerId &&
+                dto.EventType == "ManualBanDetected" &&
+                dto.EventData != null &&
+                dto.EventData.Contains("abc123guid", StringComparison.Ordinal) &&
+                !dto.EventData.Contains("  abc123guid  ", StringComparison.Ordinal)),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task CreateAdminActionFailure_DoesNotEmitManualBanDetectedEvent()
+    {
+        // Arrange
+        var evt = CreateValidEvent();
+        var message = CreateMessage(evt);
+
+        _playersApi.Setup(x => x.HeadPlayerByGameType(GameType.CallOfDuty4, "abc123guid"))
+            .ReturnsAsync(SuccessResult());
+
+        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.None))
+            .ReturnsAsync(SuccessResult(CreatePlayerDto(TestPlayerId)));
+
+        _adminActionsApi.Setup(x => x.CreateAdminAction(It.IsAny<CreateAdminActionDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult(HttpStatusCode.InternalServerError));
+
+        // Act
+        await _sut.ProcessBanFileChanged(message, _functionContext.Object);
+
+        // Assert
+        _gameServerEventsApi.Verify(x => x.CreateGameServerEvent(
+            It.IsAny<CreateGameServerEventDto>(),
+            It.IsAny<CancellationToken>()), Times.Never);
     }
 }
