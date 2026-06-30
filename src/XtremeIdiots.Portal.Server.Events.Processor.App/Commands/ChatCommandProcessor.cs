@@ -166,6 +166,7 @@ public sealed class ChatCommandProcessor : IChatCommandProcessor
             const string denialMessage = "You are not authorized to use this command.";
             var denialSent = await _rconResponseService.TryTellAsync(
                 context.ServerId,
+                context.GameType,
                 context.PlayerGuid,
                 context.SlotId,
                 denialMessage,

@@ -106,7 +106,11 @@ public class MapVoteDislikeCommandTests
         _mapsApi.Setup(x => x.UpsertMapVote(It.IsAny<UpsertMapVoteDto>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new ApiResult(HttpStatusCode.OK));
 
-        _rconService.Setup(x => x.TrySayAsync(TestServerId, It.IsAny<string>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
+        _rconService.Setup(x => x.TrySayAsync(
+                TestServerId,
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(true);
 
         var result = await _sut.ExecuteAsync(CreateContext());
@@ -120,6 +124,7 @@ public class MapVoteDislikeCommandTests
 
         _rconService.Verify(x => x.TrySayAsync(
             TestServerId,
+                It.IsAny<string>(),
             It.Is<string>(s => s.StartsWith("^1[ServerBot]^7 ") && s.Contains("DISLIKE")),
             It.IsAny<DateTime>(),
             It.IsAny<CancellationToken>()), Times.Once);
@@ -181,6 +186,7 @@ public class MapVoteDislikeCommandTests
             It.IsAny<CancellationToken>()), Times.Once);
         _rconService.Verify(x => x.TrySayAsync(
             TestServerId,
+                It.IsAny<string>(),
             It.Is<string>(s => s.Contains("DISLIKE")),
             It.IsAny<DateTime>(),
             It.IsAny<CancellationToken>()), Times.Once);
@@ -200,7 +206,11 @@ public class MapVoteDislikeCommandTests
         _mapsApi.Setup(x => x.UpsertMapVote(It.IsAny<UpsertMapVoteDto>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new ApiResult(HttpStatusCode.OK));
 
-        _rconService.Setup(x => x.TrySayAsync(TestServerId, It.IsAny<string>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
+        _rconService.Setup(x => x.TrySayAsync(
+                TestServerId,
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(false);
 
         var result = await _sut.ExecuteAsync(CreateContext());

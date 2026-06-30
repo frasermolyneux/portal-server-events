@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging;
 
 using XtremeIdiots.Portal.Integrations.Servers.Abstractions.Models.V1.Rcon;
 using XtremeIdiots.Portal.Integrations.Servers.Api.Client.V1;
+using XtremeIdiots.Portal.Repository.Abstractions.Constants.V1;
 using XtremeIdiots.Portal.Repository.Api.Client.V1;
 
 namespace XtremeIdiots.Portal.Server.Events.Processor.App.Commands;
@@ -86,16 +87,13 @@ public sealed class FuCommand : IChatCommand
         ResolvePlayerResponseDto resolution;
         try
         {
-            var statusResult = await _serversClient.CoD4xRcon.V1
-                .Status(context.ServerId, ct)
-                .ConfigureAwait(false);
-
-            if (!statusResult.IsSuccess || statusResult.Result?.Data?.Players is null)
+            var players = await GetStatusPlayersAsync(context.ServerId, context.GameType, ct).ConfigureAwait(false);
+            if (players is null)
             {
                 return await FailAsync(context, "Unable to resolve player right now. Please try again.", ct).ConfigureAwait(false);
             }
 
-            resolution = PlayerResolutionMatcher.ResolvePlayer(statusResult.Result.Data.Players, playerQuery, maxSuggestions: 3);
+            resolution = PlayerResolutionMatcher.ResolvePlayer(players, playerQuery, maxSuggestions: 3);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -126,7 +124,7 @@ public sealed class FuCommand : IChatCommand
         var response = BuildPrefixedMessage(prefix, renderedMessage);
 
         var saySent = await _rconResponseService
-            .TrySayAsync(context.ServerId, response, context.EventGeneratedUtc, ct)
+            .TrySayAsync(context.ServerId, context.GameType, response, context.EventGeneratedUtc, ct)
             .ConfigureAwait(false);
 
         if (!saySent)
@@ -154,6 +152,7 @@ public sealed class FuCommand : IChatCommand
     {
         var sent = await _rconResponseService.TryTellAsync(
             context.ServerId,
+            context.GameType,
             context.PlayerGuid,
             context.SlotId,
             reason,
@@ -180,6 +179,84 @@ public sealed class FuCommand : IChatCommand
         return string.IsNullOrWhiteSpace(trimmedPrefix)
             ? message
             : $"{trimmedPrefix} {message}";
+    }
+
+    private async Task<IReadOnlyList<CoD4xStatusPlayerDto>?> GetStatusPlayersAsync(Guid serverId, string gameType, CancellationToken ct)
+    {
+        if (!Enum.TryParse<GameType>(gameType, true, out var parsedGameType))
+        {
+            return null;
+        }
+
+        if (parsedGameType == GameType.CallOfDuty2)
+        {
+            var statusResult = await _serversClient.Cod2Rcon.V1.Status(serverId, ct).ConfigureAwait(false);
+            if (!statusResult.IsSuccess || statusResult.Result?.Data?.Players is null)
+            {
+                return null;
+            }
+
+            return statusResult.Result.Data.Players
+                .Select(static p => new CoD4xStatusPlayerDto
+                {
+                    Num = p.Num,
+                    PlayerIdentifier = p.Guid,
+                    Name = p.Name,
+                    RawName = p.Name
+                })
+                .ToList();
+        }
+
+        if (parsedGameType == GameType.CallOfDuty4)
+        {
+            var statusResult = await _serversClient.Cod4Rcon.V1.Status(serverId, ct).ConfigureAwait(false);
+            if (!statusResult.IsSuccess || statusResult.Result?.Data?.Players is null)
+            {
+                return null;
+            }
+
+            return statusResult.Result.Data.Players
+                .Select(static p => new CoD4xStatusPlayerDto
+                {
+                    Num = p.Num,
+                    PlayerIdentifier = p.Guid,
+                    Name = p.Name,
+                    RawName = p.Name
+                })
+                .ToList();
+        }
+
+        if (parsedGameType == GameType.CallOfDuty5)
+        {
+            var statusResult = await _serversClient.Cod5Rcon.V1.Status(serverId, ct).ConfigureAwait(false);
+            if (!statusResult.IsSuccess || statusResult.Result?.Data?.Players is null)
+            {
+                return null;
+            }
+
+            return statusResult.Result.Data.Players
+                .Select(static p => new CoD4xStatusPlayerDto
+                {
+                    Num = p.Num,
+                    PlayerIdentifier = p.Guid,
+                    Name = p.Name,
+                    RawName = p.Name
+                })
+                .ToList();
+        }
+
+        if (parsedGameType == GameType.CallOfDuty4x)
+        {
+            var statusResult = await _serversClient.CoD4xRcon.V1.Status(serverId, ct).ConfigureAwait(false);
+            if (!statusResult.IsSuccess || statusResult.Result?.Data?.Players is null)
+            {
+                return null;
+            }
+
+            return statusResult.Result.Data.Players.ToList();
+        }
+
+        return null;
     }
 
     internal static IReadOnlyList<string> ResolveMessagesFromSettings(JsonElement? settings)

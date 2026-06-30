@@ -29,6 +29,7 @@ public class ChatCommandProcessorTests
             .Setup(x => x.TryTellAsync(
                 It.IsAny<Guid>(),
                 It.IsAny<string>(),
+                It.IsAny<string>(),
                 It.IsAny<int>(),
                 It.IsAny<string>(),
                 It.IsAny<string?>(),
@@ -233,9 +234,10 @@ public class ChatCommandProcessorTests
         Assert.True(result.Denied);
         command.Verify(c => c.ExecuteAsync(It.IsAny<CommandContext>(), It.IsAny<CancellationToken>()), Times.Never);
         _rconResponseService.Verify(x => x.TryTellAsync(
-            It.IsAny<Guid>(),
-            It.IsAny<string>(),
-            It.IsAny<int>(),
+                It.IsAny<Guid>(),
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<int>(),
             "You are not authorized to use this command.",
             It.IsAny<string?>(),
             It.IsAny<DateTime>(),
@@ -539,9 +541,10 @@ public class ChatCommandProcessorTests
         Assert.True(result.Success);
         Assert.Equal("Available commands: !commands, !register", result.ResponseMessage);
         _rconResponseService.Verify(x => x.TryTellAsync(
-            It.IsAny<Guid>(),
-            It.IsAny<string>(),
-            It.IsAny<int>(),
+                It.IsAny<Guid>(),
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<int>(),
             "Available commands: !commands, !register",
             It.IsAny<string?>(),
             It.IsAny<DateTime>(),

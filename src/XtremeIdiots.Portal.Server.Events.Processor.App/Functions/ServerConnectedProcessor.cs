@@ -82,7 +82,7 @@ public class ServerConnectedProcessor(
             ?? "unknown";
 
         var startupMessage = BuildPrefixedMessage(prefix, $"Server Events is now online (version {version})");
-        await rconResponseService.TrySayAsync(serverEvent.ServerId, startupMessage, DateTime.UtcNow, context.CancellationToken)
+        await rconResponseService.TrySayAsync(serverEvent.ServerId, serverEvent.GameType, startupMessage, serverEvent.EventGeneratedUtc, context.CancellationToken)
             .ConfigureAwait(false);
 
         auditLogger.LogAudit(AuditEvent.ServerAction("ServerConnected", AuditAction.Connect)

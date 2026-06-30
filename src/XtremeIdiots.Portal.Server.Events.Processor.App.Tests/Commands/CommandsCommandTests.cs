@@ -30,6 +30,7 @@ public class CommandsCommandTests
             .Setup(x => x.TryTellAsync(
                 It.IsAny<Guid>(),
                 It.IsAny<string>(),
+                It.IsAny<string>(),
                 It.IsAny<int>(),
                 It.IsAny<string>(),
                 It.IsAny<string?>(),
@@ -65,6 +66,7 @@ public class CommandsCommandTests
 
         _rconResponseService.Verify(x => x.TryTellAsync(
             TestServerId,
+                It.IsAny<string>(),
             "abc123",
             3,
             "Available commands: !commands, !dislike, !like, !register",
@@ -93,6 +95,7 @@ public class CommandsCommandTests
 
         _rconResponseService.Verify(x => x.TryTellAsync(
             TestServerId,
+                It.IsAny<string>(),
             "abc123",
             3,
             "Available commands: !commands, !dislike, !fu, !like, !register",
@@ -120,6 +123,7 @@ public class CommandsCommandTests
 
         _rconResponseService.Verify(x => x.TryTellAsync(
             TestServerId,
+                It.IsAny<string>(),
             "abc123",
             3,
             "Available commands: !commands, !dislike, !like, !register",
@@ -139,6 +143,7 @@ public class CommandsCommandTests
 
         _rconResponseService.Verify(x => x.TryTellAsync(
             TestServerId,
+                It.IsAny<string>(),
             "abc123",
             3,
             "Usage: !commands",

@@ -63,7 +63,11 @@ public class ServerConnectedProcessorTests
                 }))));
 
         _rconResponseService
-            .Setup(x => x.TrySayAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
+            .Setup(x => x.TrySayAsync(
+                It.IsAny<Guid>(),
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(true);
 
         _sut = new ServerConnectedProcessor(_logger.Object, _repoClient.Object, _auditLogger.Object, _rconResponseService.Object);
@@ -97,8 +101,9 @@ public class ServerConnectedProcessorTests
 
         _rconResponseService.Verify(x => x.TrySayAsync(
             TestServerId,
+            evt.GameType,
             It.Is<string>(s => s.StartsWith("^2[ServerBot]^7 Server Events is now online (version ")),
-            It.IsAny<DateTime>(),
+            evt.EventGeneratedUtc,
             It.IsAny<CancellationToken>()), Times.Once);
     }
 
@@ -111,7 +116,11 @@ public class ServerConnectedProcessorTests
         await _sut.ProcessServerConnected(message, _functionContext.Object);
 
         _eventsApi.Verify(x => x.CreateGameServerEvent(It.IsAny<CreateGameServerEventDto>(), It.IsAny<CancellationToken>()), Times.Never);
-        _rconResponseService.Verify(x => x.TrySayAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()), Times.Never);
+        _rconResponseService.Verify(x => x.TrySayAsync(
+                It.IsAny<Guid>(),
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<DateTime>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -123,7 +132,11 @@ public class ServerConnectedProcessorTests
         await _sut.ProcessServerConnected(message, _functionContext.Object);
 
         _eventsApi.Verify(x => x.CreateGameServerEvent(It.IsAny<CreateGameServerEventDto>(), It.IsAny<CancellationToken>()), Times.Never);
-        _rconResponseService.Verify(x => x.TrySayAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()), Times.Never);
+        _rconResponseService.Verify(x => x.TrySayAsync(
+                It.IsAny<Guid>(),
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<DateTime>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -134,7 +147,11 @@ public class ServerConnectedProcessorTests
         await _sut.ProcessServerConnected(message, _functionContext.Object);
 
         _eventsApi.Verify(x => x.CreateGameServerEvent(It.IsAny<CreateGameServerEventDto>(), It.IsAny<CancellationToken>()), Times.Never);
-        _rconResponseService.Verify(x => x.TrySayAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()), Times.Never);
+        _rconResponseService.Verify(x => x.TrySayAsync(
+                It.IsAny<Guid>(),
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<DateTime>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -156,8 +173,9 @@ public class ServerConnectedProcessorTests
 
         _rconResponseService.Verify(x => x.TrySayAsync(
             TestServerId,
+            evt.GameType,
             It.Is<string>(s => s.StartsWith("^5[GlobalBot]^7 Server Events is now online (version ")),
-            It.IsAny<DateTime>(),
+            evt.EventGeneratedUtc,
             It.IsAny<CancellationToken>()), Times.Once);
     }
 
@@ -186,8 +204,9 @@ public class ServerConnectedProcessorTests
 
         _rconResponseService.Verify(x => x.TrySayAsync(
             TestServerId,
+            evt.GameType,
             It.Is<string>(s => s.StartsWith("^4[^1>XI< BOT^4]^7 Server Events is now online (version ")),
-            It.IsAny<DateTime>(),
+            evt.EventGeneratedUtc,
             It.IsAny<CancellationToken>()), Times.Once);
     }
 

@@ -157,6 +157,7 @@ public sealed class RegisterCommand : IChatCommand
     {
         var sent = await _rconResponseService.TryTellAsync(
             context.ServerId,
+            context.GameType,
             context.PlayerGuid,
             context.SlotId,
             message,

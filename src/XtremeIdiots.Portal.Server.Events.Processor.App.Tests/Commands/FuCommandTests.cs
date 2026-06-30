@@ -24,6 +24,12 @@ public class FuCommandTests
     private readonly Mock<IChatCommandSettingsProvider> _settingsProvider = new();
     private readonly FuMessageTemplateRenderer _templateRenderer = new();
     private readonly Mock<IServersApiClient> _serversClient = new();
+    private readonly Mock<IVersionedCod2RconApi> _versionedCod2Rcon = new();
+    private readonly Mock<ICod2RconApi> _cod2RconApi = new();
+    private readonly Mock<IVersionedCod4RconApi> _versionedCod4Rcon = new();
+    private readonly Mock<ICod4RconApi> _cod4RconApi = new();
+    private readonly Mock<IVersionedCod5RconApi> _versionedCod5Rcon = new();
+    private readonly Mock<ICod5RconApi> _cod5RconApi = new();
     private readonly Mock<IVersionedCoD4xRconApi> _versionedCoD4xRcon = new();
     private readonly Mock<ICoD4xRconApi> _coD4xRconApi = new();
     private readonly Mock<IRepositoryApiClient> _repositoryClient = new();
@@ -38,6 +44,15 @@ public class FuCommandTests
 
     public FuCommandTests()
     {
+        _versionedCod2Rcon.Setup(x => x.V1).Returns(_cod2RconApi.Object);
+        _serversClient.Setup(x => x.Cod2Rcon).Returns(_versionedCod2Rcon.Object);
+
+        _versionedCod4Rcon.Setup(x => x.V1).Returns(_cod4RconApi.Object);
+        _serversClient.Setup(x => x.Cod4Rcon).Returns(_versionedCod4Rcon.Object);
+
+        _versionedCod5Rcon.Setup(x => x.V1).Returns(_cod5RconApi.Object);
+        _serversClient.Setup(x => x.Cod5Rcon).Returns(_versionedCod5Rcon.Object);
+
         _versionedCoD4xRcon.Setup(x => x.V1).Returns(_coD4xRconApi.Object);
         _serversClient.Setup(x => x.CoD4xRcon).Returns(_versionedCoD4xRcon.Object);
 
@@ -69,6 +84,7 @@ public class FuCommandTests
             .Setup(x => x.TryTellAsync(
                 It.IsAny<Guid>(),
                 It.IsAny<string>(),
+                It.IsAny<string>(),
                 It.IsAny<int>(),
                 It.IsAny<string>(),
                 It.IsAny<string?>(),
@@ -79,6 +95,7 @@ public class FuCommandTests
         _rconResponseService
             .Setup(x => x.TrySayAsync(
                 It.IsAny<Guid>(),
+                It.IsAny<string>(),
                 It.IsAny<string>(),
                 It.IsAny<DateTime>(),
                 It.IsAny<CancellationToken>()))
@@ -104,6 +121,7 @@ public class FuCommandTests
 
         _rconResponseService.Verify(x => x.TryTellAsync(
             TestServerId,
+                It.IsAny<string>(),
             "abc123",
             3,
             "Usage: !fu <player name>",
@@ -111,7 +129,11 @@ public class FuCommandTests
             It.IsAny<DateTime>(),
             It.IsAny<CancellationToken>()), Times.Once);
 
-        _rconResponseService.Verify(x => x.TrySayAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()), Times.Never);
+        _rconResponseService.Verify(x => x.TrySayAsync(
+                It.IsAny<Guid>(),
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<DateTime>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -135,11 +157,16 @@ public class FuCommandTests
 
         Assert.False(result.Handled);
 
-        _rconResponseService.Verify(x => x.TrySayAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()), Times.Never);
+        _rconResponseService.Verify(x => x.TrySayAsync(
+                It.IsAny<Guid>(),
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<DateTime>(), It.IsAny<CancellationToken>()), Times.Never);
         _rconResponseService.Verify(x => x.TryTellAsync(
-            It.IsAny<Guid>(),
-            It.IsAny<string>(),
-            It.IsAny<int>(),
+                It.IsAny<Guid>(),
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<int>(),
             It.IsAny<string>(),
             It.IsAny<string?>(),
             It.IsAny<DateTime>(),
@@ -174,11 +201,16 @@ public class FuCommandTests
         var result = await _sut.ExecuteAsync(CreateContext("!fu target"));
 
         Assert.False(result.Handled);
-        _rconResponseService.Verify(x => x.TrySayAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()), Times.Never);
+        _rconResponseService.Verify(x => x.TrySayAsync(
+                It.IsAny<Guid>(),
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<DateTime>(), It.IsAny<CancellationToken>()), Times.Never);
         _rconResponseService.Verify(x => x.TryTellAsync(
-            It.IsAny<Guid>(),
-            It.IsAny<string>(),
-            It.IsAny<int>(),
+                It.IsAny<Guid>(),
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<int>(),
             It.IsAny<string>(),
             It.IsAny<string?>(),
             It.IsAny<DateTime>(),
@@ -187,6 +219,144 @@ public class FuCommandTests
 
     [Fact]
     public async Task ExecuteAsync_WhenResolved_SendsPublicSayWithRenderedName()
+    {
+        _cod4RconApi
+            .Setup(x => x.Status(TestServerId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<RconStatusResponseDto>(HttpStatusCode.OK, new ApiResponse<RconStatusResponseDto>(new RconStatusResponseDto
+            {
+                Players =
+                [
+                    new RconStatusPlayerDto
+                    {
+                        Num = 4,
+                        Guid = "target-guid",
+                        Name = "^3Target^7"
+                    }
+                ]
+            })));
+
+        var result = await _sut.ExecuteAsync(CreateContext("!fu target"));
+
+        Assert.True(result.Handled);
+        Assert.True(result.Success);
+        Assert.Equal("^2[ServerBot]^7 ^1FU^7 ^3Target^7", result.ResponseMessage);
+
+        _rconResponseService.Verify(x => x.TrySayAsync(
+            TestServerId,
+                It.IsAny<string>(),
+            "^2[ServerBot]^7 ^1FU^7 ^3Target^7",
+            It.IsAny<DateTime>(),
+            It.IsAny<CancellationToken>()), Times.Once);
+
+        _rconResponseService.Verify(x => x.TryTellAsync(
+                It.IsAny<Guid>(),
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<int>(),
+            It.IsAny<string>(),
+            It.IsAny<string?>(),
+            It.IsAny<DateTime>(),
+            It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WhenTemplateHasNoToken_LeavesTemplateUnchanged()
+    {
+        _settingsProvider
+            .Setup(x => x.GetEffectiveSettingsAsync(TestServerId, "fu", false, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(CreateEnabledFuSettings(["owned"]));
+
+        _cod4RconApi
+            .Setup(x => x.Status(TestServerId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<RconStatusResponseDto>(HttpStatusCode.OK, new ApiResponse<RconStatusResponseDto>(new RconStatusResponseDto
+            {
+                Players =
+                [
+                    new RconStatusPlayerDto
+                    {
+                        Num = 4,
+                        Guid = "target-guid",
+                        Name = "Target"
+                    }
+                ]
+            })));
+
+        var result = await _sut.ExecuteAsync(CreateContext("!fu target"));
+
+        Assert.True(result.Success);
+        Assert.Equal("^2[ServerBot]^7 owned", result.ResponseMessage);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WhenResolvedForCallOfDuty2_UsesCod2Status()
+    {
+        _cod2RconApi
+            .Setup(x => x.Status(TestServerId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<RconStatusResponseDto>(HttpStatusCode.OK, new ApiResponse<RconStatusResponseDto>(new RconStatusResponseDto
+            {
+                Players =
+                [
+                    new RconStatusPlayerDto
+                    {
+                        Num = 4,
+                        Guid = "target-guid",
+                        Name = "^3Target^7"
+                    }
+                ]
+            })));
+
+        var result = await _sut.ExecuteAsync(CreateContext("!fu target", "CallOfDuty2"));
+
+        Assert.True(result.Handled);
+        Assert.True(result.Success);
+        _cod2RconApi.Verify(x => x.Status(TestServerId, It.IsAny<CancellationToken>()), Times.Once);
+        _cod4RconApi.Verify(x => x.Status(It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+        _cod5RconApi.Verify(x => x.Status(It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+        _coD4xRconApi.Verify(x => x.Status(It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+        _rconResponseService.Verify(x => x.TrySayAsync(
+            TestServerId,
+            "CallOfDuty2",
+            It.IsAny<string>(),
+            It.IsAny<DateTime>(),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WhenResolvedForCallOfDuty5_UsesCod5Status()
+    {
+        _cod5RconApi
+            .Setup(x => x.Status(TestServerId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<RconStatusResponseDto>(HttpStatusCode.OK, new ApiResponse<RconStatusResponseDto>(new RconStatusResponseDto
+            {
+                Players =
+                [
+                    new RconStatusPlayerDto
+                    {
+                        Num = 4,
+                        Guid = "target-guid",
+                        Name = "^3Target^7"
+                    }
+                ]
+            })));
+
+        var result = await _sut.ExecuteAsync(CreateContext("!fu target", "CallOfDuty5"));
+
+        Assert.True(result.Handled);
+        Assert.True(result.Success);
+        _cod5RconApi.Verify(x => x.Status(TestServerId, It.IsAny<CancellationToken>()), Times.Once);
+        _cod2RconApi.Verify(x => x.Status(It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+        _cod4RconApi.Verify(x => x.Status(It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+        _coD4xRconApi.Verify(x => x.Status(It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+        _rconResponseService.Verify(x => x.TrySayAsync(
+            TestServerId,
+            "CallOfDuty5",
+            It.IsAny<string>(),
+            It.IsAny<DateTime>(),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WhenResolvedForCallOfDuty4x_UsesCod4xStatus()
     {
         _coD4xRconApi
             .Setup(x => x.Status(TestServerId, It.IsAny<CancellationToken>()))
@@ -203,62 +373,28 @@ public class FuCommandTests
                 ]
             })));
 
-        var result = await _sut.ExecuteAsync(CreateContext("!fu target"));
+        var result = await _sut.ExecuteAsync(CreateContext("!fu target", "CallOfDuty4x"));
 
         Assert.True(result.Handled);
         Assert.True(result.Success);
-        Assert.Equal("^2[ServerBot]^7 ^1FU^7 ^3Target^7", result.ResponseMessage);
-
+        _coD4xRconApi.Verify(x => x.Status(TestServerId, It.IsAny<CancellationToken>()), Times.Once);
+        _cod2RconApi.Verify(x => x.Status(It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+        _cod4RconApi.Verify(x => x.Status(It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+        _cod5RconApi.Verify(x => x.Status(It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
         _rconResponseService.Verify(x => x.TrySayAsync(
             TestServerId,
-            "^2[ServerBot]^7 ^1FU^7 ^3Target^7",
+            "CallOfDuty4x",
+            It.IsAny<string>(),
             It.IsAny<DateTime>(),
             It.IsAny<CancellationToken>()), Times.Once);
-
-        _rconResponseService.Verify(x => x.TryTellAsync(
-            It.IsAny<Guid>(),
-            It.IsAny<string>(),
-            It.IsAny<int>(),
-            It.IsAny<string>(),
-            It.IsAny<string?>(),
-            It.IsAny<DateTime>(),
-            It.IsAny<CancellationToken>()), Times.Never);
-    }
-
-    [Fact]
-    public async Task ExecuteAsync_WhenTemplateHasNoToken_LeavesTemplateUnchanged()
-    {
-        _settingsProvider
-            .Setup(x => x.GetEffectiveSettingsAsync(TestServerId, "fu", false, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(CreateEnabledFuSettings(["owned"]));
-
-        _coD4xRconApi
-            .Setup(x => x.Status(TestServerId, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new ApiResult<CoD4xStatusResponseDto>(HttpStatusCode.OK, new ApiResponse<CoD4xStatusResponseDto>(new CoD4xStatusResponseDto
-            {
-                Players =
-                [
-                    new CoD4xStatusPlayerDto
-                    {
-                        Num = 4,
-                        PlayerIdentifier = "target-guid",
-                        Name = "Target"
-                    }
-                ]
-            })));
-
-        var result = await _sut.ExecuteAsync(CreateContext("!fu target"));
-
-        Assert.True(result.Success);
-        Assert.Equal("^2[ServerBot]^7 owned", result.ResponseMessage);
     }
 
     [Fact]
     public async Task ExecuteAsync_WhenNotFound_SendsPrivateTellOnly()
     {
-        _coD4xRconApi
+        _cod4RconApi
             .Setup(x => x.Status(TestServerId, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new ApiResult<CoD4xStatusResponseDto>(HttpStatusCode.OK, new ApiResponse<CoD4xStatusResponseDto>(new CoD4xStatusResponseDto
+            .ReturnsAsync(new ApiResult<RconStatusResponseDto>(HttpStatusCode.OK, new ApiResponse<RconStatusResponseDto>(new RconStatusResponseDto
             {
                 Players = []
             })));
@@ -271,6 +407,7 @@ public class FuCommandTests
 
         _rconResponseService.Verify(x => x.TryTellAsync(
             TestServerId,
+                It.IsAny<string>(),
             "abc123",
             3,
             "No player found.",
@@ -278,20 +415,24 @@ public class FuCommandTests
             It.IsAny<DateTime>(),
             It.IsAny<CancellationToken>()), Times.Once);
 
-        _rconResponseService.Verify(x => x.TrySayAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()), Times.Never);
+        _rconResponseService.Verify(x => x.TrySayAsync(
+                It.IsAny<Guid>(),
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<DateTime>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
     public async Task ExecuteAsync_WhenAmbiguous_SendsPrivateTellWithSuggestionsOnly()
     {
-        _coD4xRconApi
+        _cod4RconApi
             .Setup(x => x.Status(TestServerId, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new ApiResult<CoD4xStatusResponseDto>(HttpStatusCode.OK, new ApiResponse<CoD4xStatusResponseDto>(new CoD4xStatusResponseDto
+            .ReturnsAsync(new ApiResult<RconStatusResponseDto>(HttpStatusCode.OK, new ApiResponse<RconStatusResponseDto>(new RconStatusResponseDto
             {
                 Players =
                 [
-                    new CoD4xStatusPlayerDto { Num = 3, PlayerIdentifier = "g1", Name = "Name1" },
-                    new CoD4xStatusPlayerDto { Num = 5, PlayerIdentifier = "g2", Name = "Name2" }
+                    new RconStatusPlayerDto { Num = 3, Guid = "g1", Name = "Name1" },
+                    new RconStatusPlayerDto { Num = 5, Guid = "g2", Name = "Name2" }
                 ]
             })));
 
@@ -303,6 +444,7 @@ public class FuCommandTests
 
         _rconResponseService.Verify(x => x.TryTellAsync(
             TestServerId,
+                It.IsAny<string>(),
             "abc123",
             3,
             "No exact player found. Did you mean: Name1 (slot 3), Name2 (slot 5)",
@@ -310,13 +452,17 @@ public class FuCommandTests
             It.IsAny<DateTime>(),
             It.IsAny<CancellationToken>()), Times.Once);
 
-        _rconResponseService.Verify(x => x.TrySayAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()), Times.Never);
+        _rconResponseService.Verify(x => x.TrySayAsync(
+                It.IsAny<Guid>(),
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<DateTime>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
     public async Task ExecuteAsync_WhenResolvePlayerThrows_SendsPrivateTellOnly()
     {
-        _coD4xRconApi
+        _cod4RconApi
             .Setup(x => x.Status(TestServerId, It.IsAny<CancellationToken>()))
             .ThrowsAsync(new InvalidOperationException("timeout"));
 
@@ -328,6 +474,7 @@ public class FuCommandTests
 
         _rconResponseService.Verify(x => x.TryTellAsync(
             TestServerId,
+                It.IsAny<string>(),
             "abc123",
             3,
             "Unable to resolve player right now. Please try again.",
@@ -335,13 +482,17 @@ public class FuCommandTests
             It.IsAny<DateTime>(),
             It.IsAny<CancellationToken>()), Times.Once);
 
-        _rconResponseService.Verify(x => x.TrySayAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()), Times.Never);
+        _rconResponseService.Verify(x => x.TrySayAsync(
+                It.IsAny<Guid>(),
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<DateTime>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
-    private static CommandContext CreateContext(string message) => new()
+    private static CommandContext CreateContext(string message, string gameType = "CallOfDuty4") => new()
     {
         ServerId = TestServerId,
-        GameType = "CallOfDuty4",
+        GameType = gameType,
         PlayerGuid = "abc123",
         Username = "Issuer",
         SlotId = 3,

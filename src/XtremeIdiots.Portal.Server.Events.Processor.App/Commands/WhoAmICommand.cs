@@ -88,6 +88,7 @@ public sealed class WhoAmICommand : IChatCommand
 
         var sent = await _rconResponseService.TryTellAsync(
             context.ServerId,
+            context.GameType,
             context.PlayerGuid,
             context.SlotId,
             response,
@@ -114,6 +115,7 @@ public sealed class WhoAmICommand : IChatCommand
     {
         var sent = await _rconResponseService.TryTellAsync(
             context.ServerId,
+            context.GameType,
             context.PlayerGuid,
             context.SlotId,
             reason,

@@ -114,6 +114,7 @@ public abstract class MapVoteCommandBase : IChatCommand
 
         await _rconService.TrySayAsync(
             context.ServerId,
+            context.GameType,
             responseMessage,
             context.EventGeneratedUtc,
             ct);

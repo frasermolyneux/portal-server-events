@@ -97,6 +97,7 @@ public sealed class CommandsCommand : IChatCommand
     {
         return await _rconResponseService.TryTellAsync(
             context.ServerId,
+            context.GameType,
             context.PlayerGuid,
             context.SlotId,
             message,

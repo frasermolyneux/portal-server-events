@@ -45,6 +45,7 @@ public class WhoAmICommandTests
             .Setup(x => x.TryTellAsync(
                 It.IsAny<Guid>(),
                 It.IsAny<string>(),
+                It.IsAny<string>(),
                 It.IsAny<int>(),
                 It.IsAny<string>(),
                 It.IsAny<string?>(),
@@ -102,6 +103,7 @@ public class WhoAmICommandTests
 
         _rconResponseService.Verify(x => x.TryTellAsync(
             TestServerId,
+                It.IsAny<string>(),
             "abc123",
             7,
             "Your name is ProfileName, ip is 203.0.113.50, location is London, United Kingdom, your roles are GameAdmin, HeadAdmin.",
@@ -123,6 +125,7 @@ public class WhoAmICommandTests
 
         _rconResponseService.Verify(x => x.TryTellAsync(
             TestServerId,
+                It.IsAny<string>(),
             "abc123",
             7,
             "Usage: !whoami",
@@ -160,6 +163,7 @@ public class WhoAmICommandTests
 
         _rconResponseService.Verify(x => x.TryTellAsync(
             TestServerId,
+                It.IsAny<string>(),
             "abc123",
             7,
             "Your name is ProfileName, ip is 198.51.100.10, location is unknown, your roles are none.",
@@ -211,6 +215,7 @@ public class WhoAmICommandTests
         _rconResponseService
             .Setup(x => x.TryTellAsync(
                 It.IsAny<Guid>(),
+                It.IsAny<string>(),
                 It.IsAny<string>(),
                 It.IsAny<int>(),
                 It.IsAny<string>(),

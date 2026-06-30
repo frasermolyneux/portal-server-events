@@ -43,6 +43,7 @@ public class RegisterCommandTests
             .Setup(x => x.TryTellAsync(
                 It.IsAny<Guid>(),
                 It.IsAny<string>(),
+                It.IsAny<string>(),
                 It.IsAny<int>(),
                 It.IsAny<string>(),
                 It.IsAny<string?>(),
@@ -78,6 +79,7 @@ public class RegisterCommandTests
 
         _rconResponseService.Verify(x => x.TryTellAsync(
             TestServerId,
+                It.IsAny<string>(),
             "abc123",
             3,
             "Player context unavailable",
@@ -116,6 +118,7 @@ public class RegisterCommandTests
 
         _rconResponseService.Verify(x => x.TryTellAsync(
             TestServerId,
+                It.IsAny<string>(),
             "abc123",
             3,
             "Registration successful. Your account is now linked.",
@@ -170,6 +173,7 @@ public class RegisterCommandTests
 
         _rconResponseService.Verify(x => x.TryTellAsync(
             TestServerId,
+                It.IsAny<string>(),
             "abc123",
             3,
             "Player is already linked to a different profile",
@@ -193,6 +197,7 @@ public class RegisterCommandTests
 
         _rconResponseService.Verify(x => x.TryTellAsync(
             TestServerId,
+                It.IsAny<string>(),
             "abc123",
             3,
             "Activation code is invalid, expired, inactive, or exhausted",
@@ -216,6 +221,7 @@ public class RegisterCommandTests
 
         _rconResponseService.Verify(x => x.TryTellAsync(
             TestServerId,
+                It.IsAny<string>(),
             "abc123",
             3,
             "Registration failed due to a temporary error. Please try again.",
@@ -247,6 +253,7 @@ public class RegisterCommandTests
 
         _rconResponseService.Verify(x => x.TryTellAsync(
             TestServerId,
+                It.IsAny<string>(),
             "abc123",
             3,
             "Too many !register attempts. Please wait 42 seconds and try again.",

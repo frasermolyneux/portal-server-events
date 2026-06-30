@@ -106,7 +106,11 @@ public class MapVoteLikeCommandTests
         _mapsApi.Setup(x => x.UpsertMapVote(It.IsAny<UpsertMapVoteDto>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new ApiResult(HttpStatusCode.OK));
 
-        _rconService.Setup(x => x.TrySayAsync(TestServerId, It.IsAny<string>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
+        _rconService.Setup(x => x.TrySayAsync(
+                TestServerId,
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(true);
 
         var result = await _sut.ExecuteAsync(CreateContext());
@@ -120,6 +124,7 @@ public class MapVoteLikeCommandTests
 
         _rconService.Verify(x => x.TrySayAsync(
             TestServerId,
+                It.IsAny<string>(),
             It.Is<string>(s => s.StartsWith("^2[ServerBot]^7 ") && s.Contains("LIKE")),
             It.IsAny<DateTime>(),
             It.IsAny<CancellationToken>()), Times.Once);
@@ -198,6 +203,7 @@ public class MapVoteLikeCommandTests
             It.IsAny<CancellationToken>()), Times.Once);
         _rconService.Verify(x => x.TrySayAsync(
             TestServerId,
+                It.IsAny<string>(),
             It.Is<string>(s => s.Contains("LIKE")),
             It.IsAny<DateTime>(),
             It.IsAny<CancellationToken>()), Times.Once);
@@ -217,7 +223,11 @@ public class MapVoteLikeCommandTests
         _mapsApi.Setup(x => x.UpsertMapVote(It.IsAny<UpsertMapVoteDto>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new ApiResult(HttpStatusCode.OK));
 
-        _rconService.Setup(x => x.TrySayAsync(TestServerId, It.IsAny<string>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
+        _rconService.Setup(x => x.TrySayAsync(
+                TestServerId,
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(false);
 
         var result = await _sut.ExecuteAsync(CreateContext());
@@ -246,7 +256,11 @@ public class MapVoteLikeCommandTests
                 HttpStatusCode.OK,
                 new ApiResponse<CollectionModel<ConfigurationDto>>(new CollectionModel<ConfigurationDto>(Array.Empty<ConfigurationDto>()))));
 
-        _rconService.Setup(x => x.TrySayAsync(TestServerId, It.IsAny<string>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
+        _rconService.Setup(x => x.TrySayAsync(
+                TestServerId,
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(true);
 
         var result = await _sut.ExecuteAsync(CreateContext());
@@ -254,6 +268,7 @@ public class MapVoteLikeCommandTests
         Assert.True(result.Success);
         _rconService.Verify(x => x.TrySayAsync(
             TestServerId,
+                It.IsAny<string>(),
             It.Is<string>(s => s.StartsWith("^5[GlobalBot]^7 ") && s.Contains("LIKE")),
             It.IsAny<DateTime>(),
             It.IsAny<CancellationToken>()), Times.Once);
@@ -285,7 +300,11 @@ public class MapVoteLikeCommandTests
                 HttpStatusCode.OK,
                 new ApiResponse<CollectionModel<ConfigurationDto>>(new CollectionModel<ConfigurationDto>(Array.Empty<ConfigurationDto>()))));
 
-        _rconService.Setup(x => x.TrySayAsync(TestServerId, It.IsAny<string>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
+        _rconService.Setup(x => x.TrySayAsync(
+                TestServerId,
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(true);
 
         var result = await _sut.ExecuteAsync(CreateContext());
@@ -293,6 +312,7 @@ public class MapVoteLikeCommandTests
         Assert.True(result.Success);
         _rconService.Verify(x => x.TrySayAsync(
             TestServerId,
+                It.IsAny<string>(),
             It.Is<string>(s => s.StartsWith("^4[^1>XI< BOT^4]^7 ") && s.Contains("LIKE")),
             It.IsAny<DateTime>(),
             It.IsAny<CancellationToken>()), Times.Once);
