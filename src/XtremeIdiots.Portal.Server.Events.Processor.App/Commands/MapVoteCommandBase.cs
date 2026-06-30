@@ -156,7 +156,7 @@ public abstract class MapVoteCommandBase : IChatCommand
         {
             return new ApiResult<RconCurrentMapDto>(
                 HttpStatusCode.OK,
-                new ApiResponse<RconCurrentMapDto>(new RconCurrentMapDto(statusResult.Result.Data.MapName!)));
+                new ApiResponse<RconCurrentMapDto>(new RconCurrentMapDto(statusResult.Result.Data.MapName)));
         }
 
         return new ApiResult<RconCurrentMapDto>(
