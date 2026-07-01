@@ -1,4 +1,5 @@
 using MX.Observability.ApplicationInsights.Auditing;
+using System.Net;
 
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Caching.Memory;
@@ -13,6 +14,7 @@ using MX.Api.Abstractions;
 using XtremeIdiots.Portal.Repository.Abstractions.Constants.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Interfaces.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.ChatMessages;
+using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.Configurations;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.ConnectedPlayers;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.GameServers;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.Players;
@@ -20,6 +22,7 @@ using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.UserProfiles;
 using XtremeIdiots.Portal.Repository.Api.Client.V1;
 using XtremeIdiots.Portal.Server.Events.Abstractions.V1.Events;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Functions;
+using XtremeIdiots.Portal.Settings.Contracts.V1.Contracts.Cod4xPlugin;
 
 using XtremeIdiots.Portal.Server.Events.Processor.App.Commands;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Moderation;
@@ -42,6 +45,10 @@ public class ChatMessageProcessorTests
     private readonly Mock<IConnectedPlayersApi> _connectedPlayersApi = new();
     private readonly Mock<IVersionedUserProfileApi> _versionedUserProfiles = new();
     private readonly Mock<IUserProfileApi> _userProfilesApi = new();
+    private readonly Mock<IVersionedGameServerConfigurationsApi> _versionedServerConfigs = new();
+    private readonly Mock<IGameServerConfigurationsApi> _serverConfigsApi = new();
+    private readonly Mock<IVersionedGlobalConfigurationsApi> _versionedGlobalConfigs = new();
+    private readonly Mock<IGlobalConfigurationsApi> _globalConfigsApi = new();
     private readonly IMemoryCache _cache;
     private readonly Mock<IAuditLogger> _auditLogger = new();
     private readonly Mock<FunctionContext> _functionContext = new();
@@ -70,6 +77,12 @@ public class ChatMessageProcessorTests
         _versionedUserProfiles.Setup(x => x.V1).Returns(_userProfilesApi.Object);
         _repoClient.Setup(x => x.UserProfiles).Returns(_versionedUserProfiles.Object);
 
+        _versionedServerConfigs.Setup(x => x.V1).Returns(_serverConfigsApi.Object);
+        _repoClient.Setup(x => x.GameServerConfigurations).Returns(_versionedServerConfigs.Object);
+
+        _versionedGlobalConfigs.Setup(x => x.V1).Returns(_globalConfigsApi.Object);
+        _repoClient.Setup(x => x.GlobalConfigurations).Returns(_versionedGlobalConfigs.Object);
+
         _connectedPlayersApi
             .Setup(x => x.GetConnectedPlayers(
                 It.IsAny<Guid?>(),
@@ -83,6 +96,14 @@ public class ChatMessageProcessorTests
 
         _commandProcessor.Setup(x => x.ProcessAsync(It.IsAny<CommandContext>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(CommandResult.NotHandled);
+
+        _serverConfigsApi
+            .Setup(x => x.GetConfigurations(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(SuccessResult(new CollectionModel<ConfigurationDto>([])));
+
+        _globalConfigsApi
+            .Setup(x => x.GetConfigurations(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(SuccessResult(new CollectionModel<ConfigurationDto>([])));
 
         _cache = new MemoryCache(Options.Create(new MemoryCacheOptions()));
 
@@ -354,6 +375,76 @@ public class ChatMessageProcessorTests
     }
 
     [Fact]
+    public async Task CoD4xPluginEnabled_SkipsBackendCommandExecutionAndStillModerates()
+    {
+        var evt = CreateValidEvent(gameType: "CallOfDuty4x", chatMessage: "!commands");
+        var message = CreateMessage(evt);
+
+        var playerDto = CreatePlayerDto(TestPlayerId);
+        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4x, "abc123guid", PlayerEntityOptions.Tags))
+            .ReturnsAsync(SuccessResult(playerDto));
+
+        _chatApi.Setup(x => x.CreateChatMessage(It.IsAny<CreateChatMessageDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(SuccessResult());
+
+        _serverConfigsApi
+            .Setup(x => x.GetConfigurations(TestServerId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(SuccessResult(new CollectionModel<ConfigurationDto>([
+                CreateConfigurationDto(
+                    Cod4xPluginSettingsConstants.Namespace,
+                                        /*lang=json,strict*/ """
+                                        {
+                                            "schemaVersion": 1,
+                                            "enabled": true
+                                        }
+                                        """)
+            ])));
+
+        await _sut.ProcessChatMessage(message, _functionContext.Object);
+
+        _commandProcessor.Verify(x => x.ProcessAsync(It.IsAny<CommandContext>(), It.IsAny<CancellationToken>()), Times.Never);
+        _eventsApi.Verify(x => x.CreateGameServerEvent(It.IsAny<CreateGameServerEventDto>(), It.IsAny<CancellationToken>()), Times.Never);
+        _moderationPipeline.Verify(x => x.RunAsync(It.IsAny<ModerationContext>(), It.IsAny<CancellationToken>()), Times.Once);
+        _chatApi.Verify(x => x.CreateChatMessage(It.IsAny<CreateChatMessageDto>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task CoD4xPluginGlobalEnabled_WhenServerSettingsApiFails_SkipsBackendCommandExecution()
+    {
+        var evt = CreateValidEvent(gameType: "CallOfDuty4x", chatMessage: "!commands");
+        var message = CreateMessage(evt);
+
+        var playerDto = CreatePlayerDto(TestPlayerId);
+        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4x, "abc123guid", PlayerEntityOptions.Tags))
+            .ReturnsAsync(SuccessResult(playerDto));
+
+        _chatApi.Setup(x => x.CreateChatMessage(It.IsAny<CreateChatMessageDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(SuccessResult());
+
+        _globalConfigsApi
+            .Setup(x => x.GetConfigurations(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(SuccessResult(new CollectionModel<ConfigurationDto>([
+                CreateConfigurationDto(
+                    Cod4xPluginSettingsConstants.Namespace,
+                    /*lang=json,strict*/ """
+                    {
+                      "schemaVersion": 1,
+                      "enabled": true
+                    }
+                    """)
+            ])));
+
+        _serverConfigsApi
+            .Setup(x => x.GetConfigurations(TestServerId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<CollectionModel<ConfigurationDto>>(HttpStatusCode.InternalServerError));
+
+        await _sut.ProcessChatMessage(message, _functionContext.Object);
+
+        _commandProcessor.Verify(x => x.ProcessAsync(It.IsAny<CommandContext>(), It.IsAny<CancellationToken>()), Times.Never);
+        _moderationPipeline.Verify(x => x.RunAsync(It.IsAny<ModerationContext>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
     public async Task DeniedCommand_PersistsChatCommandDeniedEvent()
     {
         var evt = CreateValidEvent(chatMessage: "!admin");
@@ -448,4 +539,15 @@ public class ChatMessageProcessorTests
 
         _moderationPipeline.Verify(x => x.RunAsync(It.IsAny<ModerationContext>(), It.IsAny<CancellationToken>()), Times.Once);
     }
+
+    private static ConfigurationDto CreateConfigurationDto(string ns, string configurationJson)
+    {
+        var dto = new ConfigurationDto();
+        SetConfigProperty(dto, nameof(ConfigurationDto.Namespace), ns);
+        SetConfigProperty(dto, nameof(ConfigurationDto.Configuration), configurationJson);
+        return dto;
+    }
+
+    private static void SetConfigProperty(ConfigurationDto dto, string propertyName, object? value) =>
+        typeof(ConfigurationDto).GetProperty(propertyName)!.SetValue(dto, value);
 }

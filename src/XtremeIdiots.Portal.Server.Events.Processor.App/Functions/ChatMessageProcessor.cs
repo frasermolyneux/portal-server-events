@@ -86,6 +86,14 @@ public class ChatMessageProcessor(
             return;
         }
 
+        var pluginOwnsCommandExecution = false;
+        if (gameType == GameType.CallOfDuty4x)
+        {
+            pluginOwnsCommandExecution = await Cod4xPluginSourceResolver
+                .IsPluginSourceEnabledAsync(repositoryApiClient, memoryCache, logger, chatEvent.ServerId, context.CancellationToken)
+                .ConfigureAwait(false);
+        }
+
         var eventAge = DateTime.UtcNow - chatEvent.EventGeneratedUtc;
         if (eventAge > DelayWarningThreshold)
         {
@@ -131,31 +139,40 @@ public class ChatMessageProcessor(
             .WithPlayer(chatEvent.PlayerGuid, chatEvent.Username)
             .Build());
 
-        // Process commands after persisting the chat message
-        var commandContext = new CommandContext
+        if (!pluginOwnsCommandExecution)
         {
-            ServerId = chatEvent.ServerId,
-            GameType = chatEvent.GameType,
-            PlayerGuid = chatEvent.PlayerGuid,
-            Username = chatEvent.Username,
-            SlotId = chatEvent.SlotId,
-            Message = chatEvent.Message,
-            EventGeneratedUtc = chatEvent.EventGeneratedUtc,
-            EventPublishedUtc = chatEvent.EventPublishedUtc,
-            SequenceId = chatEvent.SequenceId,
-            PlayerId = playerId,
-            AuthorizationSnapshot = playerContext.Value.AuthorizationSnapshot
-        };
+            // Process commands after persisting the chat message.
+            var commandContext = new CommandContext
+            {
+                ServerId = chatEvent.ServerId,
+                GameType = chatEvent.GameType,
+                PlayerGuid = chatEvent.PlayerGuid,
+                Username = chatEvent.Username,
+                SlotId = chatEvent.SlotId,
+                Message = chatEvent.Message,
+                EventGeneratedUtc = chatEvent.EventGeneratedUtc,
+                EventPublishedUtc = chatEvent.EventPublishedUtc,
+                SequenceId = chatEvent.SequenceId,
+                PlayerId = playerId,
+                AuthorizationSnapshot = playerContext.Value.AuthorizationSnapshot
+            };
 
-        var commandResult = await chatCommandProcessor.ProcessAsync(commandContext, context.CancellationToken).ConfigureAwait(false);
+            var commandResult = await chatCommandProcessor.ProcessAsync(commandContext, context.CancellationToken).ConfigureAwait(false);
 
-        if (commandResult.Handled)
+            if (commandResult.Handled)
+            {
+                logger.LogInformation("Command processed for {Username}: Success={Success}",
+                    chatEvent.Username, commandResult.Success);
+
+                await TryPersistChatCommandExecutionEventAsync(chatEvent, commandContext, commandResult, context.CancellationToken)
+                    .ConfigureAwait(false);
+            }
+        }
+        else
         {
-            logger.LogInformation("Command processed for {Username}: Success={Success}",
-                chatEvent.Username, commandResult.Success);
-
-            await TryPersistChatCommandExecutionEventAsync(chatEvent, commandContext, commandResult, context.CancellationToken)
-                .ConfigureAwait(false);
+            logger.LogDebug(
+                "Skipping backend command execution for plugin-enabled CoD4x server {ServerId}",
+                chatEvent.ServerId);
         }
 
         // Run moderation pipeline (never throws)

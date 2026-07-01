@@ -13,12 +13,14 @@ using MX.GeoLocation.Api.Client.V1;
 
 using XtremeIdiots.Portal.Repository.Abstractions.Constants.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Interfaces.V1;
+using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.Configurations;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.Players;
 using XtremeIdiots.Portal.Repository.Api.Client.V1;
 using XtremeIdiots.Portal.Server.Events.Abstractions.V1.Events;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Commands;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Functions;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Services;
+using XtremeIdiots.Portal.Settings.Contracts.V1.Contracts.Cod4xPlugin;
 
 using static XtremeIdiots.Portal.Server.Events.Processor.App.Tests.ServiceBusTestHelpers;
 
@@ -33,6 +35,10 @@ public class PlayerConnectedProcessorTests
     private readonly Mock<MX.GeoLocation.Abstractions.Interfaces.V1_1.IGeoLookupApi> _geoLookupApi = new();
     private readonly Mock<IVersionedPlayersApi> _versionedPlayers = new();
     private readonly Mock<IPlayersApi> _playersApi = new();
+    private readonly Mock<IVersionedGameServerConfigurationsApi> _versionedServerConfigs = new();
+    private readonly Mock<IGameServerConfigurationsApi> _serverConfigsApi = new();
+    private readonly Mock<IVersionedGlobalConfigurationsApi> _versionedGlobalConfigs = new();
+    private readonly Mock<IGlobalConfigurationsApi> _globalConfigsApi = new();
     private readonly Mock<IProtectedNameService> _protectedNameService = new();
     private readonly Mock<IWelcomeMessageOrchestrator> _welcomeMessageOrchestrator = new();
     private readonly IMemoryCache _cache;
@@ -48,12 +54,26 @@ public class PlayerConnectedProcessorTests
         _versionedPlayers.Setup(x => x.V1).Returns(_playersApi.Object);
         _repoClient.Setup(x => x.Players).Returns(_versionedPlayers.Object);
 
+        _versionedServerConfigs.Setup(x => x.V1).Returns(_serverConfigsApi.Object);
+        _repoClient.Setup(x => x.GameServerConfigurations).Returns(_versionedServerConfigs.Object);
+
+        _versionedGlobalConfigs.Setup(x => x.V1).Returns(_globalConfigsApi.Object);
+        _repoClient.Setup(x => x.GlobalConfigurations).Returns(_versionedGlobalConfigs.Object);
+
         _versionedGeoLookup.Setup(x => x.V1_1).Returns(_geoLookupApi.Object);
         _geoClient.Setup(x => x.GeoLookup).Returns(_versionedGeoLookup.Object);
 
         _protectedNameService
             .Setup(x => x.CheckAsync(It.IsAny<ProtectedNameContext>(), It.IsAny<CancellationToken>()))
             .Returns(Task.CompletedTask);
+
+        _serverConfigsApi
+            .Setup(x => x.GetConfigurations(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(SuccessResult(new CollectionModel<ConfigurationDto>([])));
+
+        _globalConfigsApi
+            .Setup(x => x.GetConfigurations(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(SuccessResult(new CollectionModel<ConfigurationDto>([])));
 
         _cache = new MemoryCache(Options.Create(new MemoryCacheOptions()));
 
@@ -402,5 +422,108 @@ public class PlayerConnectedProcessorTests
 
         _protectedNameService.Verify(x => x.CheckAsync(It.IsAny<ProtectedNameContext>(), It.IsAny<CancellationToken>()), Times.Never);
     }
+
+    [Fact]
+    public async Task ExistingPlayer_CoD4xPluginEnabled_SkipsWelcomeOrchestration()
+    {
+        var evt = CreateValidEvent(gameType: "CallOfDuty4x");
+        var message = CreateMessage(evt);
+
+        _playersApi.Setup(x => x.HeadPlayerByGameType(GameType.CallOfDuty4x, "abc123guid"))
+            .ReturnsAsync(SuccessResult());
+
+        var playerDto = CreatePlayerDto(TestPlayerId);
+        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4x, "abc123guid", PlayerEntityOptions.Tags))
+            .ReturnsAsync(SuccessResult(playerDto));
+
+        _playersApi.Setup(x => x.RecordPlayerSession(It.IsAny<RecordPlayerSessionDto>()))
+            .ReturnsAsync(SuccessResult());
+
+        _playersApi.Setup(x => x.UpdatePlayerIpAddress(It.IsAny<UpdatePlayerIpAddressDto>()))
+            .ReturnsAsync(SuccessResult());
+
+        _serverConfigsApi
+            .Setup(x => x.GetConfigurations(TestServerId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(SuccessResult(new CollectionModel<ConfigurationDto>([
+                CreateConfigurationDto(
+                    Cod4xPluginSettingsConstants.Namespace,
+                                        /*lang=json,strict*/ """
+                                        {
+                                            "schemaVersion": 1,
+                                            "enabled": true
+                                        }
+                                        """)
+            ])));
+
+        _welcomeMessageOrchestrator
+            .Setup(x => x.ProcessAsync(It.IsAny<PlayerConnectedEvent>(), It.IsAny<GameType>(), It.IsAny<string[]>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
+        await _sut.ProcessPlayerConnected(message, _functionContext.Object);
+
+        _welcomeMessageOrchestrator.Verify(
+            x => x.ProcessAsync(It.IsAny<PlayerConnectedEvent>(), It.IsAny<GameType>(), It.IsAny<string[]>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task ExistingPlayer_CoD4xPluginDisabled_ExecutesWelcomeOrchestration()
+    {
+        var evt = CreateValidEvent(gameType: "CallOfDuty4x");
+        var message = CreateMessage(evt);
+
+        _playersApi.Setup(x => x.HeadPlayerByGameType(GameType.CallOfDuty4x, "abc123guid"))
+            .ReturnsAsync(SuccessResult());
+
+        var playerDto = CreatePlayerDto(TestPlayerId);
+        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4x, "abc123guid", PlayerEntityOptions.Tags))
+            .ReturnsAsync(SuccessResult(playerDto));
+
+        _playersApi.Setup(x => x.RecordPlayerSession(It.IsAny<RecordPlayerSessionDto>()))
+            .ReturnsAsync(SuccessResult());
+
+        _playersApi.Setup(x => x.UpdatePlayerIpAddress(It.IsAny<UpdatePlayerIpAddressDto>()))
+            .ReturnsAsync(SuccessResult());
+
+        _serverConfigsApi
+            .Setup(x => x.GetConfigurations(TestServerId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(SuccessResult(new CollectionModel<ConfigurationDto>([
+                CreateConfigurationDto(
+                    Cod4xPluginSettingsConstants.Namespace,
+                                        /*lang=json,strict*/ """
+                                        {
+                                            "schemaVersion": 1,
+                                            "enabled": false
+                                        }
+                                        """)
+            ])));
+
+        _welcomeMessageOrchestrator
+            .Setup(x => x.ProcessAsync(It.IsAny<PlayerConnectedEvent>(), It.IsAny<GameType>(), It.IsAny<string[]>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
+        await _sut.ProcessPlayerConnected(message, _functionContext.Object);
+
+        _welcomeMessageOrchestrator.Verify(
+            x => x.ProcessAsync(
+                It.Is<PlayerConnectedEvent>(e => e.ServerId == evt.ServerId &&
+                                             string.Equals(e.PlayerGuid, evt.PlayerGuid, StringComparison.Ordinal)),
+                GameType.CallOfDuty4x,
+                It.IsAny<string[]>(),
+                It.IsAny<string?>(),
+                It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    private static ConfigurationDto CreateConfigurationDto(string ns, string configurationJson)
+    {
+        var dto = new ConfigurationDto();
+        SetConfigProperty(dto, nameof(ConfigurationDto.Namespace), ns);
+        SetConfigProperty(dto, nameof(ConfigurationDto.Configuration), configurationJson);
+        return dto;
+    }
+
+    private static void SetConfigProperty(ConfigurationDto dto, string propertyName, object? value) =>
+        typeof(ConfigurationDto).GetProperty(propertyName)!.SetValue(dto, value);
 }
 

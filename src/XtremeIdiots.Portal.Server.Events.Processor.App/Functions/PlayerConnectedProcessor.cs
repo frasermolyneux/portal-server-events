@@ -83,6 +83,14 @@ public class PlayerConnectedProcessor(
             return;
         }
 
+        var pluginOwnsWelcomeExecution = false;
+        if (gameType == GameType.CallOfDuty4x)
+        {
+            pluginOwnsWelcomeExecution = await Cod4xPluginSourceResolver
+                .IsPluginSourceEnabledAsync(repositoryApiClient, memoryCache, logger, playerEvent.ServerId, context.CancellationToken)
+                .ConfigureAwait(false);
+        }
+
         using var scope = logger.BeginScope(new Dictionary<string, object>
         {
             ["GameType"] = playerEvent.GameType,
@@ -138,7 +146,7 @@ public class PlayerConnectedProcessor(
                 }
 
                 var country = await EnrichWithGeoLocation(playerEvent).ConfigureAwait(false);
-                await TryProcessWelcomeMessage(playerEvent, gameType, newPlayerContext.Tags, country).ConfigureAwait(false);
+                await TryProcessWelcomeMessage(playerEvent, gameType, newPlayerContext.Tags, country, pluginOwnsWelcomeExecution).ConfigureAwait(false);
                 return;
             }
             else
@@ -198,7 +206,7 @@ public class PlayerConnectedProcessor(
 
         // GeoIP enrichment (best-effort, never blocks player processing)
         var enrichedCountry = await EnrichWithGeoLocation(playerEvent).ConfigureAwait(false);
-        await TryProcessWelcomeMessage(playerEvent, gameType, playerContext.Tags, enrichedCountry).ConfigureAwait(false);
+        await TryProcessWelcomeMessage(playerEvent, gameType, playerContext.Tags, enrichedCountry, pluginOwnsWelcomeExecution).ConfigureAwait(false);
     }
 
     private async Task<string?> EnrichWithGeoLocation(PlayerConnectedEvent playerEvent)
@@ -322,8 +330,17 @@ public class PlayerConnectedProcessor(
         PlayerConnectedEvent playerEvent,
         GameType gameType,
         string[] playerTags,
-        string? country)
+        string? country,
+        bool pluginOwnsWelcomeExecution)
     {
+        if (pluginOwnsWelcomeExecution)
+        {
+            logger.LogDebug(
+                "Skipping backend welcome-message orchestration for plugin-enabled CoD4x server {ServerId}",
+                playerEvent.ServerId);
+            return;
+        }
+
         try
         {
             await welcomeMessageOrchestrator
