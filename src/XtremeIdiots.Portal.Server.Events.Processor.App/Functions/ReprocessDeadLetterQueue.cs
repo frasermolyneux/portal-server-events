@@ -27,7 +27,10 @@ public class ReprocessDeadLetterQueue(
         Queues.ServerConnected,
         Queues.MapChange,
         Queues.ServerStatus,
-        Queues.BanFileChanged
+        Queues.BanFileChanged,
+        Queues.BanApplied,
+        Queues.BanLiftApplied,
+        Queues.BanSyncFailed
     };
 
     [Function(nameof(ReprocessDeadLetterQueue))]

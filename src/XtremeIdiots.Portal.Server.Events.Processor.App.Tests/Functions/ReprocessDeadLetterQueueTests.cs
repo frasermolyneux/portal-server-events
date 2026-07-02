@@ -71,6 +71,31 @@ public class ReprocessDeadLetterQueueTests
         Assert.Equal(HttpStatusCode.BadRequest, result.StatusCode);
     }
 
+    [Theory]
+    [InlineData("ban-applied")]
+    [InlineData("ban-lift-applied")]
+    [InlineData("ban-sync-failed")]
+    public async Task Run_DryRun_NewBanLifecycleQueues_AreAccepted(string queueName)
+    {
+        var mockReceiver = new Mock<ServiceBusReceiver>();
+        mockReceiver.Setup(r => r.PeekMessagesAsync(It.IsAny<int>(), It.IsAny<long>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<ServiceBusReceivedMessage>().AsReadOnly() as IReadOnlyList<ServiceBusReceivedMessage>);
+
+        _serviceBusClient.Setup(c => c.CreateReceiver(
+                queueName,
+                It.Is<ServiceBusReceiverOptions>(o => o.SubQueue == SubQueue.DeadLetter)))
+            .Returns(mockReceiver.Object);
+
+        var req = CreateRequest($"https://localhost/api/v1/ReprocessDeadLetterQueue?queueName={queueName}&dryRun=true");
+
+        var result = await _sut.Run(req, _functionContext.Object);
+
+        Assert.Equal(HttpStatusCode.OK, result.StatusCode);
+        _serviceBusClient.Verify(c => c.CreateReceiver(
+            queueName,
+            It.Is<ServiceBusReceiverOptions>(o => o.SubQueue == SubQueue.DeadLetter)), Times.Once);
+    }
+
     [Fact]
     public async Task Run_DryRun_PeeksOnly()
     {

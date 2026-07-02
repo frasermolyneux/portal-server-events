@@ -6,6 +6,7 @@ using Microsoft.FeatureManagement;
 
 using Moq;
 
+using XtremeIdiots.Portal.Server.Events.Abstractions.V1;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Functions;
 
 namespace XtremeIdiots.Portal.Server.Events.Processor.App.Tests.Functions;
@@ -44,6 +45,7 @@ public class AutoReplayDeadLetterQueuesTests
     {
         _featureManager.Setup(f => f.IsEnabledAsync("ServerEvents.AutoDlqReplay"))
             .ReturnsAsync(true);
+        var seenQueues = new List<string>();
 
         // Setup empty receivers for all queues (no DLQ messages)
         var mockReceiver = new Mock<ServiceBusReceiver>();
@@ -53,6 +55,7 @@ public class AutoReplayDeadLetterQueuesTests
         _serviceBusClient.Setup(c => c.CreateReceiver(
                 It.IsAny<string>(),
                 It.Is<ServiceBusReceiverOptions>(o => o.SubQueue == SubQueue.DeadLetter)))
+            .Callback<string, ServiceBusReceiverOptions>((queueName, _) => seenQueues.Add(queueName))
             .Returns(mockReceiver.Object);
 
         var mockSender = new Mock<ServiceBusSender>();
@@ -61,10 +64,26 @@ public class AutoReplayDeadLetterQueuesTests
 
         await _sut.Run(CreateTimerInfo(), _functionContext.Object);
 
-        // Should have created receivers for all 7 queues
+        // Should have created receivers for all 10 queues
         _serviceBusClient.Verify(c => c.CreateReceiver(
             It.IsAny<string>(),
-            It.Is<ServiceBusReceiverOptions>(o => o.SubQueue == SubQueue.DeadLetter)), Times.Exactly(7));
+            It.Is<ServiceBusReceiverOptions>(o => o.SubQueue == SubQueue.DeadLetter)), Times.Exactly(10));
+
+        var expectedQueues = new HashSet<string>(StringComparer.Ordinal)
+        {
+            Queues.PlayerConnected,
+            Queues.PlayerDisconnected,
+            Queues.ChatMessage,
+            Queues.ServerConnected,
+            Queues.MapChange,
+            Queues.ServerStatus,
+            Queues.BanFileChanged,
+            Queues.BanApplied,
+            Queues.BanLiftApplied,
+            Queues.BanSyncFailed
+        };
+
+        Assert.Equal(expectedQueues, seenQueues.ToHashSet(StringComparer.Ordinal));
     }
 
     [Fact]
@@ -92,6 +111,9 @@ public class AutoReplayDeadLetterQueuesTests
             .Returns(emptyReceiver.Object)
             .Returns(emptyReceiver.Object)
             .Returns(emptyReceiver.Object)
+            .Returns(emptyReceiver.Object)
+            .Returns(emptyReceiver.Object)
+            .Returns(emptyReceiver.Object)
             .Returns(emptyReceiver.Object);
 
         var mockSender = new Mock<ServiceBusSender>();
@@ -101,10 +123,10 @@ public class AutoReplayDeadLetterQueuesTests
         // Should NOT throw — it logs the error and continues
         await _sut.Run(CreateTimerInfo(), _functionContext.Object);
 
-        // Should still have tried all 7 queues
+        // Should still have tried all 10 queues
         _serviceBusClient.Verify(c => c.CreateReceiver(
             It.IsAny<string>(),
-            It.Is<ServiceBusReceiverOptions>(o => o.SubQueue == SubQueue.DeadLetter)), Times.Exactly(7));
+            It.Is<ServiceBusReceiverOptions>(o => o.SubQueue == SubQueue.DeadLetter)), Times.Exactly(10));
     }
 
     [Fact]
