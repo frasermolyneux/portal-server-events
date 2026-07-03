@@ -12,23 +12,61 @@ resource "azurerm_api_management_api" "cod4x_ingest" {
   subscription_required = false
 }
 
-resource "azurerm_api_management_api_operation" "cod4x_ingest_events_post" {
-  count = local.cod4x_ingest_enabled ? 1 : 0
+locals {
+  cod4x_ingest_event_operations = {
+    player_connected = {
+      operation_id = "post-events-player-connected"
+      display_name = "Post Player Connected Events"
+      queue_name   = "player-connected"
+    }
+    player_disconnected = {
+      operation_id = "post-events-player-disconnected"
+      display_name = "Post Player Disconnected Events"
+      queue_name   = "player-disconnected"
+    }
+    chat_message = {
+      operation_id = "post-events-chat-message"
+      display_name = "Post Chat Message Events"
+      queue_name   = "chat-message"
+    }
+    server_connected = {
+      operation_id = "post-events-server-connected"
+      display_name = "Post Server Connected Events"
+      queue_name   = "server-connected"
+    }
+    map_change = {
+      operation_id = "post-events-map-change"
+      display_name = "Post Map Change Events"
+      queue_name   = "map-change"
+    }
+    server_status = {
+      operation_id = "post-events-server-status"
+      display_name = "Post Server Status Events"
+      queue_name   = "server-status"
+    }
+    ban_file_changed = {
+      operation_id = "post-events-ban-file-changed"
+      display_name = "Post Ban File Changed Events"
+      queue_name   = "ban-file-changed"
+    }
+    player_ip_resolved = {
+      operation_id = "post-events-player-ip-resolved"
+      display_name = "Post Player IP Resolved Events"
+      queue_name   = "player-ip-resolved"
+    }
+  }
+}
 
-  operation_id        = "post-events-by-type"
+resource "azurerm_api_management_api_operation" "cod4x_ingest_events_post" {
+  for_each = local.cod4x_ingest_enabled ? local.cod4x_ingest_event_operations : {}
+
+  operation_id        = each.value.operation_id
   api_name            = azurerm_api_management_api.cod4x_ingest[0].name
   api_management_name = local.api_management.name
   resource_group_name = local.api_management.resource_group_name
-  display_name        = "Post Events By Type"
+  display_name        = each.value.display_name
   method              = "POST"
-  url_template        = "/events/{eventType}"
-
-  template_parameter {
-    name        = "eventType"
-    required    = true
-    type        = "string"
-    description = "Event type route segment used to map to a Service Bus queue."
-  }
+  url_template        = "/events/${each.value.queue_name}"
 
   request {
     description = "Array of server event envelopes of the same event type."
@@ -54,23 +92,18 @@ resource "azurerm_api_management_api_operation" "cod4x_ingest_events_post" {
   }
 
   response {
-    status_code = 429
-    description = "Too Many Requests"
-  }
-
-  response {
     status_code = 502
     description = "Service Bus forwarding failed"
   }
 }
 
 resource "azurerm_api_management_api_operation_policy" "cod4x_ingest_events_post" {
-  count = local.cod4x_ingest_enabled ? 1 : 0
+  for_each = local.cod4x_ingest_enabled ? local.cod4x_ingest_event_operations : {}
 
   api_name            = azurerm_api_management_api.cod4x_ingest[0].name
   api_management_name = local.api_management.name
   resource_group_name = local.api_management.resource_group_name
-  operation_id        = azurerm_api_management_api_operation.cod4x_ingest_events_post[0].operation_id
+  operation_id        = azurerm_api_management_api_operation.cod4x_ingest_events_post[each.key].operation_id
 
   xml_content = <<XML
 <policies>
@@ -78,11 +111,17 @@ resource "azurerm_api_management_api_operation_policy" "cod4x_ingest_events_post
     <base />
     <validate-jwt header-name="Authorization"
                   failed-validation-httpcode="401"
-                  failed-validation-error-message="Unauthorized">
+                  failed-validation-error-message="JWT validation was unsuccessful"
+                  require-expiration-time="true"
+                  require-scheme="Bearer"
+                  require-signed-tokens="true">
       <openid-config url="https://login.microsoftonline.com/${var.portal_environments_state.tenant_id}/v2.0/.well-known/openid-configuration" />
       <audiences>
         <audience>${local.server_events_api.application.primary_identifier_uri}</audience>
       </audiences>
+      <issuers>
+        <issuer>https://sts.windows.net/${var.portal_environments_state.tenant_id}/</issuer>
+      </issuers>
       <required-claims>
         <claim name="roles" match="any">
           <value>ServiceAccount</value>
@@ -90,173 +129,14 @@ resource "azurerm_api_management_api_operation_policy" "cod4x_ingest_events_post
       </required-claims>
     </validate-jwt>
 
-    <set-variable name="requestBodyJson" value="@(context.Request.Body.As&lt;string&gt;(preserveContent: true))" />
-    <set-variable name="requestBodyIsArray" value="@{
-      var body = (string)context.Variables[&quot;requestBodyJson&quot;];
-      if (string.IsNullOrWhiteSpace(body))
-      {
-        return false;
-      }
-
-      try
-      {
-        Newtonsoft.Json.Linq.JArray.Parse(body);
-        return true;
-      }
-      catch
-      {
-        return false;
-      }
-    }" />
-
-    <choose>
-      <when condition="@(!(bool)context.Variables[&quot;requestBodyIsArray&quot;])">
-        <return-response>
-          <set-status code="400" reason="Bad Request" />
-          <set-header name="Content-Type" exists-action="override">
-            <value>application/json</value>
-          </set-header>
-          <set-body>{&quot;error&quot;:&quot;Request body must be a JSON array.&quot;}</set-body>
-        </return-response>
-      </when>
-    </choose>
-
-    <set-variable name="requestBodyCount" value="@{
-      var body = (string)context.Variables[&quot;requestBodyJson&quot;];
-      return Newtonsoft.Json.Linq.JArray.Parse(body).Count;
-    }" />
-
-    <choose>
-      <when condition="@((int)context.Variables[&quot;requestBodyCount&quot;] == 0)">
-        <return-response>
-          <set-status code="400" reason="Bad Request" />
-          <set-header name="Content-Type" exists-action="override">
-            <value>application/json</value>
-          </set-header>
-          <set-body>{&quot;error&quot;:&quot;At least one event is required.&quot;}</set-body>
-        </return-response>
-      </when>
-      <when condition="@((int)context.Variables[&quot;requestBodyCount&quot;] &gt; 100)">
-        <return-response>
-          <set-status code="400" reason="Bad Request" />
-          <set-header name="Content-Type" exists-action="override">
-            <value>application/json</value>
-          </set-header>
-          <set-body>{&quot;error&quot;:&quot;Batch too large. Maximum is 100 events.&quot;}</set-body>
-        </return-response>
-      </when>
-    </choose>
-
-    <set-variable name="requestBodyMissingRequiredFields" value="@{
-      var body = (string)context.Variables[&quot;requestBodyJson&quot;];
-      var payload = Newtonsoft.Json.Linq.JArray.Parse(body);
-
-      foreach (var item in payload)
-      {
-        var eventItem = item as Newtonsoft.Json.Linq.JObject;
-        if (eventItem == null)
-        {
-          return true;
-        }
-
-        var serverIdToken = eventItem[&quot;serverId&quot;] ?? eventItem[&quot;ServerId&quot;];
-        if (serverIdToken == null || serverIdToken.Type != Newtonsoft.Json.Linq.JTokenType.String || string.IsNullOrWhiteSpace((string)serverIdToken))
-        {
-          return true;
-        }
-
-        if ((eventItem[&quot;eventGeneratedUtc&quot;] == null &amp;&amp; eventItem[&quot;EventGeneratedUtc&quot;] == null) ||
-            (eventItem[&quot;eventPublishedUtc&quot;] == null &amp;&amp; eventItem[&quot;EventPublishedUtc&quot;] == null) ||
-            (eventItem[&quot;gameType&quot;] == null &amp;&amp; eventItem[&quot;GameType&quot;] == null) ||
-            (eventItem[&quot;sequenceId&quot;] == null &amp;&amp; eventItem[&quot;SequenceId&quot;] == null))
-        {
-          return true;
-        }
-      }
-
-      return false;
-    }" />
-
-    <choose>
-      <when condition="@((bool)context.Variables[&quot;requestBodyMissingRequiredFields&quot;])">
-        <return-response>
-          <set-status code="400" reason="Bad Request" />
-          <set-header name="Content-Type" exists-action="override">
-            <value>application/json</value>
-          </set-header>
-          <set-body>{&quot;error&quot;:&quot;One or more events are missing required fields.&quot;}</set-body>
-        </return-response>
-      </when>
-    </choose>
-
-    <set-variable name="eventType" value="@((string)context.Request.MatchedParameters[&quot;eventType&quot;])" />
-
-    <choose>
-      <when condition="@((string)context.Variables[&quot;eventType&quot;] == &quot;player-connected&quot;)">
-        <set-variable name="queueName" value="player-connected" />
-      </when>
-      <when condition="@((string)context.Variables[&quot;eventType&quot;] == &quot;player-disconnected&quot;)">
-        <set-variable name="queueName" value="player-disconnected" />
-      </when>
-      <when condition="@((string)context.Variables[&quot;eventType&quot;] == &quot;chat-message&quot;)">
-        <set-variable name="queueName" value="chat-message" />
-      </when>
-      <when condition="@((string)context.Variables[&quot;eventType&quot;] == &quot;server-connected&quot;)">
-        <set-variable name="queueName" value="server-connected" />
-      </when>
-      <when condition="@((string)context.Variables[&quot;eventType&quot;] == &quot;map-change&quot;)">
-        <set-variable name="queueName" value="map-change" />
-      </when>
-      <when condition="@((string)context.Variables[&quot;eventType&quot;] == &quot;server-status&quot;)">
-        <set-variable name="queueName" value="server-status" />
-      </when>
-      <when condition="@((string)context.Variables[&quot;eventType&quot;] == &quot;ban-file-changed&quot;)">
-        <set-variable name="queueName" value="ban-file-changed" />
-      </when>
-      <when condition="@((string)context.Variables[&quot;eventType&quot;] == &quot;player-ip-resolved&quot;)">
-        <set-variable name="queueName" value="player-ip-resolved" />
-      </when>
-      <otherwise>
-        <return-response>
-          <set-status code="400" reason="Bad Request" />
-          <set-header name="Content-Type" exists-action="override">
-            <value>application/json</value>
-          </set-header>
-          <set-body>{&quot;error&quot;:&quot;Unsupported event type.&quot;}</set-body>
-        </return-response>
-      </otherwise>
-    </choose>
-
-    <set-variable name="rateLimitServerKey" value="@{
-      var body = (string)context.Variables[&quot;requestBodyJson&quot;];
-      var payload = Newtonsoft.Json.Linq.JArray.Parse(body);
-
-      if (payload.Count == 0)
-      {
-        return null;
-      }
-
-      var first = payload[0] as Newtonsoft.Json.Linq.JObject;
-      if (first == null)
-      {
-        return null;
-      }
-
-      var serverIdToken = first[&quot;serverId&quot;] ?? first[&quot;ServerId&quot;];
-      return serverIdToken == null ? null : (string)serverIdToken;
-    }" />
-
-    <rate-limit-by-key calls="120" renewal-period="60" counter-key="@{
-      var serverKey = context.Variables[&quot;rateLimitServerKey&quot;] as string;
-      return string.IsNullOrWhiteSpace(serverKey) ? &quot;unknown&quot; : serverKey;
-    }" />
+    <set-variable name="requestBodyJson" value="@(context.Request.Body.As&lt;string&gt;(true))" />
 
     <authentication-managed-identity resource="https://servicebus.azure.net/"
                                      client-id="${local.managed_identities.api_management.client_id}"
                                      output-token-variable-name="serviceBusToken" />
 
     <send-request mode="new" response-variable-name="serviceBusResponse" timeout="20" ignore-error="false">
-      <set-url>@("https://${local.servicebus.fqdn}/" + (string)context.Variables[&quot;queueName&quot;] + "/messages")</set-url>
+      <set-url>@("https://${local.servicebus.fqdn}/${each.value.queue_name}/messages")</set-url>
       <set-method>POST</set-method>
       <set-header name="Authorization" exists-action="override">
         <value>@("Bearer " + (string)context.Variables[&quot;serviceBusToken&quot;])</value>
