@@ -1,14 +1,3 @@
-resource "azurerm_api_management_named_value" "ingest_servicebus_namespace_fqdn" {
-  count = local.cod4x_ingest_enabled ? 1 : 0
-
-  name                = "cod4x-ingest-servicebus-namespace-fqdn"
-  resource_group_name = local.api_management.resource_group_name
-  api_management_name = local.api_management.name
-  display_name        = "cod4x-ingest-servicebus-namespace-fqdn"
-  value               = local.servicebus.fqdn
-  secret              = false
-}
-
 resource "azurerm_api_management_api" "cod4x_ingest" {
   count = local.cod4x_ingest_enabled ? 1 : 0
 
@@ -111,7 +100,7 @@ resource "azurerm_api_management_api_operation_policy" "cod4x_ingest_events_post
 
       try
       {
-        JArray.Parse(body);
+        Newtonsoft.Json.Linq.JArray.Parse(body);
         return true;
       }
       catch
@@ -134,7 +123,7 @@ resource "azurerm_api_management_api_operation_policy" "cod4x_ingest_events_post
 
     <set-variable name="requestBodyCount" value="@{
       var body = (string)context.Variables[&quot;requestBodyJson&quot;];
-      return JArray.Parse(body).Count;
+      return Newtonsoft.Json.Linq.JArray.Parse(body).Count;
     }" />
 
     <choose>
@@ -160,18 +149,18 @@ resource "azurerm_api_management_api_operation_policy" "cod4x_ingest_events_post
 
     <set-variable name="requestBodyMissingRequiredFields" value="@{
       var body = (string)context.Variables[&quot;requestBodyJson&quot;];
-      var payload = JArray.Parse(body);
+      var payload = Newtonsoft.Json.Linq.JArray.Parse(body);
 
       foreach (var item in payload)
       {
-        var eventItem = item as JObject;
+        var eventItem = item as Newtonsoft.Json.Linq.JObject;
         if (eventItem == null)
         {
           return true;
         }
 
         var serverIdToken = eventItem[&quot;serverId&quot;] ?? eventItem[&quot;ServerId&quot;];
-        if (serverIdToken == null || serverIdToken.Type != JTokenType.String || string.IsNullOrWhiteSpace((string)serverIdToken))
+        if (serverIdToken == null || serverIdToken.Type != Newtonsoft.Json.Linq.JTokenType.String || string.IsNullOrWhiteSpace((string)serverIdToken))
         {
           return true;
         }
@@ -240,14 +229,14 @@ resource "azurerm_api_management_api_operation_policy" "cod4x_ingest_events_post
 
     <set-variable name="rateLimitServerKey" value="@{
       var body = (string)context.Variables[&quot;requestBodyJson&quot;];
-      var payload = JArray.Parse(body);
+      var payload = Newtonsoft.Json.Linq.JArray.Parse(body);
 
       if (payload.Count == 0)
       {
         return null;
       }
 
-      var first = payload[0] as JObject;
+      var first = payload[0] as Newtonsoft.Json.Linq.JObject;
       if (first == null)
       {
         return null;
@@ -267,7 +256,7 @@ resource "azurerm_api_management_api_operation_policy" "cod4x_ingest_events_post
                                      output-token-variable-name="serviceBusToken" />
 
     <send-request mode="new" response-variable-name="serviceBusResponse" timeout="20" ignore-error="false">
-      <set-url>@("https://{{${azurerm_api_management_named_value.ingest_servicebus_namespace_fqdn[0].name}}}/" + (string)context.Variables[&quot;queueName&quot;] + "/messages")</set-url>
+      <set-url>@("https://${local.servicebus.fqdn}/" + (string)context.Variables[&quot;queueName&quot;] + "/messages")</set-url>
       <set-method>POST</set-method>
       <set-header name="Authorization" exists-action="override">
         <value>@("Bearer " + (string)context.Variables[&quot;serviceBusToken&quot;])</value>
@@ -276,21 +265,21 @@ resource "azurerm_api_management_api_operation_policy" "cod4x_ingest_events_post
         <value>application/vnd.microsoft.servicebus.json</value>
       </set-header>
       <set-body>@{
-        var payload = JArray.Parse((string)context.Variables[&quot;requestBodyJson&quot;]);
-        var batch = new JArray();
+        var payload = Newtonsoft.Json.Linq.JArray.Parse((string)context.Variables[&quot;requestBodyJson&quot;]);
+        var batch = new Newtonsoft.Json.Linq.JArray();
 
         foreach (var item in payload)
         {
           var messageIdToken = item[&quot;messageId&quot;] ?? item[&quot;MessageId&quot;];
-          var messageId = messageIdToken == null ? Guid.NewGuid().ToString(&quot;D&quot;) : (string)messageIdToken;
+          var messageId = messageIdToken == null ? System.Guid.NewGuid().ToString(&quot;D&quot;) : (string)messageIdToken;
 
-          batch.Add(new JObject(
-            new JProperty(&quot;Body&quot;, item.ToString(Newtonsoft.Json.Formatting.None)),
-            new JProperty(&quot;BrokerProperties&quot;, new JObject(new JProperty(&quot;MessageId&quot;, messageId)))
+          batch.Add(new Newtonsoft.Json.Linq.JObject(
+            new Newtonsoft.Json.Linq.JProperty(&quot;Body&quot;, item.ToString()),
+            new Newtonsoft.Json.Linq.JProperty(&quot;BrokerProperties&quot;, new Newtonsoft.Json.Linq.JObject(new Newtonsoft.Json.Linq.JProperty(&quot;MessageId&quot;, messageId)))
           ));
         }
 
-        return batch.ToString(Newtonsoft.Json.Formatting.None);
+        return batch.ToString();
       }</set-body>
     </send-request>
 
