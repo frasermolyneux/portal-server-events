@@ -15,6 +15,9 @@ locals {
   }
 
   app_configuration_endpoint = data.terraform_remote_state.portal_environments.outputs.app_configuration.endpoint
+  api_management             = data.terraform_remote_state.portal_environments.outputs.api_management
+  server_events_api          = try(data.terraform_remote_state.portal_environments.outputs.server_events_api, null)
+  cod4x_ingest_enabled       = local.server_events_api != null
 
   managed_identities     = data.terraform_remote_state.portal_environments.outputs.managed_identities
   server_events_identity = local.managed_identities["server_events"]
