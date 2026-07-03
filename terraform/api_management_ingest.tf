@@ -101,10 +101,27 @@ resource "azurerm_api_management_api_operation_policy" "cod4x_ingest_events_post
       </required-claims>
     </validate-jwt>
 
-    <set-variable name="requestBody" value="@(context.Request.Body.As&lt;JArray&gt;(preserveContent: true))" />
+    <set-variable name="requestBodyJson" value="@(context.Request.Body.As&lt;string&gt;(preserveContent: true))" />
+    <set-variable name="requestBodyIsArray" value="@{
+      var body = (string)context.Variables[&quot;requestBodyJson&quot;];
+      if (string.IsNullOrWhiteSpace(body))
+      {
+        return false;
+      }
+
+      try
+      {
+        var parsed = JToken.Parse(body);
+        return parsed is JArray;
+      }
+      catch
+      {
+        return false;
+      }
+    }" />
 
     <choose>
-      <when condition="@(context.Variables.GetValueOrDefault&lt;JArray&gt;(&quot;requestBody&quot;) == null)">
+      <when condition="@(!(bool)context.Variables[&quot;requestBodyIsArray&quot;])">
         <return-response>
           <set-status code="400" reason="Bad Request" />
           <set-header name="Content-Type" exists-action="override">
@@ -113,7 +130,15 @@ resource "azurerm_api_management_api_operation_policy" "cod4x_ingest_events_post
           <set-body>{&quot;error&quot;:&quot;Request body must be a JSON array.&quot;}</set-body>
         </return-response>
       </when>
-      <when condition="@(((JArray)context.Variables[&quot;requestBody&quot;]).Count == 0)">
+    </choose>
+
+    <set-variable name="requestBodyCount" value="@{
+      var body = (string)context.Variables[&quot;requestBodyJson&quot;];
+      return JArray.Parse(body).Count;
+    }" />
+
+    <choose>
+      <when condition="@((int)context.Variables[&quot;requestBodyCount&quot;] == 0)">
         <return-response>
           <set-status code="400" reason="Bad Request" />
           <set-header name="Content-Type" exists-action="override">
@@ -122,7 +147,7 @@ resource "azurerm_api_management_api_operation_policy" "cod4x_ingest_events_post
           <set-body>{&quot;error&quot;:&quot;At least one event is required.&quot;}</set-body>
         </return-response>
       </when>
-      <when condition="@(((JArray)context.Variables[&quot;requestBody&quot;]).Count &gt; 100)">
+      <when condition="@((int)context.Variables[&quot;requestBodyCount&quot;] &gt; 100)">
         <return-response>
           <set-status code="400" reason="Bad Request" />
           <set-header name="Content-Type" exists-action="override">
@@ -131,7 +156,35 @@ resource "azurerm_api_management_api_operation_policy" "cod4x_ingest_events_post
           <set-body>{&quot;error&quot;:&quot;Batch too large. Maximum is 100 events.&quot;}</set-body>
         </return-response>
       </when>
-      <when condition="@(((JArray)context.Variables[&quot;requestBody&quot;]).Any(e =&gt; (e[&quot;eventGeneratedUtc&quot;] == null &amp;&amp; e[&quot;EventGeneratedUtc&quot;] == null) || (e[&quot;eventPublishedUtc&quot;] == null &amp;&amp; e[&quot;EventPublishedUtc&quot;] == null) || (e[&quot;serverId&quot;] == null &amp;&amp; e[&quot;ServerId&quot;] == null) || (e[&quot;gameType&quot;] == null &amp;&amp; e[&quot;GameType&quot;] == null) || (e[&quot;sequenceId&quot;] == null &amp;&amp; e[&quot;SequenceId&quot;] == null)))">
+    </choose>
+
+    <set-variable name="requestBodyMissingRequiredFields" value="@{
+      var body = (string)context.Variables[&quot;requestBodyJson&quot;];
+      var payload = JArray.Parse(body);
+
+      foreach (var item in payload)
+      {
+        var eventItem = item as JObject;
+        if (eventItem == null)
+        {
+          return true;
+        }
+
+        if ((eventItem[&quot;eventGeneratedUtc&quot;] == null &amp;&amp; eventItem[&quot;EventGeneratedUtc&quot;] == null) ||
+            (eventItem[&quot;eventPublishedUtc&quot;] == null &amp;&amp; eventItem[&quot;EventPublishedUtc&quot;] == null) ||
+            (eventItem[&quot;serverId&quot;] == null &amp;&amp; eventItem[&quot;ServerId&quot;] == null) ||
+            (eventItem[&quot;gameType&quot;] == null &amp;&amp; eventItem[&quot;GameType&quot;] == null) ||
+            (eventItem[&quot;sequenceId&quot;] == null &amp;&amp; eventItem[&quot;SequenceId&quot;] == null))
+        {
+          return true;
+        }
+      }
+
+      return false;
+    }" />
+
+    <choose>
+      <when condition="@((bool)context.Variables[&quot;requestBodyMissingRequiredFields&quot;])">
         <return-response>
           <set-status code="400" reason="Bad Request" />
           <set-header name="Content-Type" exists-action="override">
@@ -180,22 +233,31 @@ resource "azurerm_api_management_api_operation_policy" "cod4x_ingest_events_post
       </otherwise>
     </choose>
 
-    <rate-limit-by-key calls="120" renewal-period="60" counter-key="@{
-      var events = (JArray)context.Variables[&quot;requestBody&quot;];
-      var serverId = (string)null;
-      if (events.Count &gt; 0)
+    <set-variable name="rateLimitServerKey" value="@{
+      var body = (string)context.Variables[&quot;requestBodyJson&quot;];
+      var payload = JArray.Parse(body);
+
+      if (payload.Count == 0)
       {
-        var first = (JObject)events[0];
-        var serverIdToken = first[&quot;serverId&quot;] ?? first[&quot;ServerId&quot;];
-        if (serverIdToken != null)
-        {
-          serverId = (string)serverIdToken;
-        }
+        return null;
       }
-      return string.IsNullOrWhiteSpace(serverId) ? (context.Request.IpAddress ?? &quot;unknown&quot;) : serverId;
+
+      var first = payload[0] as JObject;
+      if (first == null)
+      {
+        return null;
+      }
+
+      var serverIdToken = first[&quot;serverId&quot;] ?? first[&quot;ServerId&quot;];
+      return serverIdToken == null ? null : (string)serverIdToken;
     }" />
 
-    <authentication-managed-identity resource="https://servicebus.azure.net"
+    <rate-limit-by-key calls="120" renewal-period="60" counter-key="@{
+      var serverKey = context.Variables[&quot;rateLimitServerKey&quot;] as string;
+      return string.IsNullOrWhiteSpace(serverKey) ? (context.Request.IpAddress ?? &quot;unknown&quot;) : serverKey;
+    }" />
+
+    <authentication-managed-identity resource="https://servicebus.azure.net/"
                                      client-id="${local.managed_identities["api_management"].client_id}"
                                      output-token-variable-name="serviceBusToken" />
 
@@ -209,7 +271,7 @@ resource "azurerm_api_management_api_operation_policy" "cod4x_ingest_events_post
         <value>application/vnd.microsoft.servicebus.json</value>
       </set-header>
       <set-body>@{
-        var payload = (JArray)context.Variables[&quot;requestBody&quot;];
+        var payload = JArray.Parse((string)context.Variables[&quot;requestBodyJson&quot;]);
         var batch = new JArray();
 
         foreach (var item in payload)
