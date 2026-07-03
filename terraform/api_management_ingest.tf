@@ -111,8 +111,8 @@ resource "azurerm_api_management_api_operation_policy" "cod4x_ingest_events_post
 
       try
       {
-        var parsed = JToken.Parse(body);
-        return parsed is JArray;
+        JArray.Parse(body);
+        return true;
       }
       catch
       {
@@ -170,9 +170,14 @@ resource "azurerm_api_management_api_operation_policy" "cod4x_ingest_events_post
           return true;
         }
 
+        var serverIdToken = eventItem[&quot;serverId&quot;] ?? eventItem[&quot;ServerId&quot;];
+        if (serverIdToken == null || serverIdToken.Type != JTokenType.String || string.IsNullOrWhiteSpace((string)serverIdToken))
+        {
+          return true;
+        }
+
         if ((eventItem[&quot;eventGeneratedUtc&quot;] == null &amp;&amp; eventItem[&quot;EventGeneratedUtc&quot;] == null) ||
             (eventItem[&quot;eventPublishedUtc&quot;] == null &amp;&amp; eventItem[&quot;EventPublishedUtc&quot;] == null) ||
-            (eventItem[&quot;serverId&quot;] == null &amp;&amp; eventItem[&quot;ServerId&quot;] == null) ||
             (eventItem[&quot;gameType&quot;] == null &amp;&amp; eventItem[&quot;GameType&quot;] == null) ||
             (eventItem[&quot;sequenceId&quot;] == null &amp;&amp; eventItem[&quot;SequenceId&quot;] == null))
         {
@@ -254,11 +259,11 @@ resource "azurerm_api_management_api_operation_policy" "cod4x_ingest_events_post
 
     <rate-limit-by-key calls="120" renewal-period="60" counter-key="@{
       var serverKey = context.Variables[&quot;rateLimitServerKey&quot;] as string;
-      return string.IsNullOrWhiteSpace(serverKey) ? (context.Request.IpAddress ?? &quot;unknown&quot;) : serverKey;
+      return string.IsNullOrWhiteSpace(serverKey) ? &quot;unknown&quot; : serverKey;
     }" />
 
     <authentication-managed-identity resource="https://servicebus.azure.net/"
-                                     client-id="${local.managed_identities["api_management"].client_id}"
+                                     client-id="${local.managed_identities.api_management.client_id}"
                                      output-token-variable-name="serviceBusToken" />
 
     <send-request mode="new" response-variable-name="serviceBusResponse" timeout="20" ignore-error="false">
