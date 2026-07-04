@@ -91,6 +91,7 @@ public class PlayerConnectedProcessorTests
         string? gameType = null,
         string? playerGuid = null,
         string? username = null,
+        string? steamId = null,
         string? ipAddress = null,
         Guid? serverId = null,
         DateTime? eventGeneratedUtc = null) => new()
@@ -102,6 +103,7 @@ public class PlayerConnectedProcessorTests
             SequenceId = 1,
             PlayerGuid = playerGuid ?? "abc123guid",
             Username = username ?? "TestPlayer",
+            SteamId = steamId,
             IpAddress = ipAddress ?? "192.168.1.1",
             SlotId = 0
         };
@@ -109,7 +111,7 @@ public class PlayerConnectedProcessorTests
     [Fact]
     public async Task ValidNewPlayer_CreatesPlayer()
     {
-        var evt = CreateValidEvent();
+        var evt = CreateValidEvent(steamId: "76561198000000001");
         var message = CreateMessage(evt);
 
         _playersApi.Setup(x => x.HeadPlayerByGameType(GameType.CallOfDuty4, "abc123guid"))
@@ -127,13 +129,14 @@ public class PlayerConnectedProcessorTests
         _playersApi.Verify(x => x.CreatePlayer(It.Is<CreatePlayerDto>(dto =>
             dto.Username == "TestPlayer" &&
             dto.Guid == "abc123guid" &&
+            dto.SteamId == "76561198000000001" &&
             dto.IpAddress == "192.168.1.1")), Times.Once);
     }
 
     [Fact]
     public async Task ExistingPlayer_UpdatesPlayer()
     {
-        var evt = CreateValidEvent();
+        var evt = CreateValidEvent(steamId: "76561198000000002");
         var message = CreateMessage(evt);
 
         _playersApi.Setup(x => x.HeadPlayerByGameType(GameType.CallOfDuty4, "abc123guid"))
@@ -153,7 +156,8 @@ public class PlayerConnectedProcessorTests
 
         _playersApi.Verify(x => x.RecordPlayerSession(It.Is<RecordPlayerSessionDto>(dto =>
             dto.PlayerId == TestPlayerId &&
-            dto.Username == "TestPlayer")), Times.Once);
+            dto.Username == "TestPlayer" &&
+            dto.SteamId == "76561198000000002")), Times.Once);
 
         _playersApi.Verify(x => x.UpdatePlayerIpAddress(It.Is<UpdatePlayerIpAddressDto>(dto =>
             dto.PlayerId == TestPlayerId &&

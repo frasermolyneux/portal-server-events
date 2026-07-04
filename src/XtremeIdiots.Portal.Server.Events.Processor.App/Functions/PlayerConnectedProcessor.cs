@@ -110,6 +110,7 @@ public class PlayerConnectedProcessor(
                 playerEvent.PlayerGuid,
                 gameType)
             {
+                SteamId = playerEvent.SteamId,
                 IpAddress = playerEvent.IpAddress
             };
 
@@ -166,7 +167,7 @@ public class PlayerConnectedProcessor(
                 $"Player not found after HEAD success for Guid '{playerEvent.PlayerGuid}'. Will retry.");
         }
 
-        var sessionDto = new RecordPlayerSessionDto(playerId, playerEvent.Username);
+        var sessionDto = new RecordPlayerSessionDto(playerId, playerEvent.Username, playerEvent.SteamId);
 
         await repositoryApiClient.Players.V1.RecordPlayerSession(sessionDto).ConfigureAwait(false);
 
