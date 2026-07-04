@@ -27,6 +27,7 @@ public class ChatMessageProcessor(
     IRepositoryApiClient repositoryApiClient,
     IMemoryCache memoryCache,
     IAuditLogger auditLogger,
+    ICod4xPluginCommandExecutionPolicy cod4xPluginCommandExecutionPolicy,
     IChatCommandProcessor chatCommandProcessor,
     IChatModerationPipeline moderationPipeline,
     IConfiguration configuration)
@@ -86,13 +87,9 @@ public class ChatMessageProcessor(
             return;
         }
 
-        var pluginOwnsCommandExecution = false;
-        if (gameType == GameType.CallOfDuty4x)
-        {
-            pluginOwnsCommandExecution = await Cod4xPluginSourceResolver
-                .IsPluginSourceEnabledAsync(repositoryApiClient, memoryCache, logger, chatEvent.ServerId, context.CancellationToken)
-                .ConfigureAwait(false);
-        }
+        var skipBackendCommandExecution = await cod4xPluginCommandExecutionPolicy
+            .ShouldSkipBackendExecutionAsync(chatEvent.ServerId, chatEvent.GameType, chatEvent.Message, context.CancellationToken)
+            .ConfigureAwait(false);
 
         var eventAge = DateTime.UtcNow - chatEvent.EventGeneratedUtc;
         if (eventAge > DelayWarningThreshold)
@@ -139,7 +136,7 @@ public class ChatMessageProcessor(
             .WithPlayer(chatEvent.PlayerGuid, chatEvent.Username)
             .Build());
 
-        if (!pluginOwnsCommandExecution)
+        if (!skipBackendCommandExecution)
         {
             // Process commands after persisting the chat message.
             var commandContext = new CommandContext
@@ -171,7 +168,7 @@ public class ChatMessageProcessor(
         else
         {
             logger.LogDebug(
-                "Skipping backend command execution for plugin-enabled CoD4x server {ServerId}",
+                "Skipping backend command execution for plugin-enabled CoD4x server {ServerId} because command is enabled in-server",
                 chatEvent.ServerId);
         }
 
