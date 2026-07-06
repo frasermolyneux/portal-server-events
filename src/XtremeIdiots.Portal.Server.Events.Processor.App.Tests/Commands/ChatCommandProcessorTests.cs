@@ -4,6 +4,7 @@ using Moq;
 
 using MX.Observability.ApplicationInsights.Auditing;
 
+using XtremeIdiots.Portal.Repository.Abstractions.Constants.V1;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Commands;
 
 namespace XtremeIdiots.Portal.Server.Events.Processor.App.Tests.Commands;
@@ -105,6 +106,50 @@ public class ChatCommandProcessorTests
         var result = await sut.ProcessAsync(CreateContext("!unknown"));
 
         Assert.False(result.Handled);
+    }
+
+    [Fact]
+    public async Task ProcessAsync_WhenCommandGameTypeIsUnsupported_ReturnsNotHandled()
+    {
+        var command = new Mock<IChatCommand>();
+        command.Setup(c => c.Prefix).Returns("!commands");
+        command.Setup(c => c.Metadata).Returns(new ChatCommandMetadata
+        {
+            Name = "commands",
+            Prefix = "!commands",
+            Usage = "!commands",
+            SupportedGameTypes = [GameType.CallOfDuty4x]
+        });
+
+        var sut = new ChatCommandProcessor([command.Object], _parser, _authorizationService.Object, _idempotencyStore.Object, _clock.Object, _settingsProvider.Object, _rconResponseService.Object, _auditLogger.Object, _logger.Object);
+
+        var result = await sut.ProcessAsync(CreateContext("!commands") with { GameType = nameof(GameType.CallOfDuty4) });
+
+        Assert.False(result.Handled);
+        command.Verify(c => c.ExecuteAsync(It.IsAny<CommandContext>(), It.IsAny<CancellationToken>()), Times.Never);
+        _settingsProvider.Verify(x => x.GetEffectiveSettingsAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task ProcessAsync_WhenCommandGameTypeIsUnparseable_ReturnsNotHandled()
+    {
+        var command = new Mock<IChatCommand>();
+        command.Setup(c => c.Prefix).Returns("!commands");
+        command.Setup(c => c.Metadata).Returns(new ChatCommandMetadata
+        {
+            Name = "commands",
+            Prefix = "!commands",
+            Usage = "!commands",
+            SupportedGameTypes = [GameType.CallOfDuty4x]
+        });
+
+        var sut = new ChatCommandProcessor([command.Object], _parser, _authorizationService.Object, _idempotencyStore.Object, _clock.Object, _settingsProvider.Object, _rconResponseService.Object, _auditLogger.Object, _logger.Object);
+
+        var result = await sut.ProcessAsync(CreateContext("!commands") with { GameType = "CallOfDutyX" });
+
+        Assert.False(result.Handled);
+        command.Verify(c => c.ExecuteAsync(It.IsAny<CommandContext>(), It.IsAny<CancellationToken>()), Times.Never);
+        _settingsProvider.Verify(x => x.GetEffectiveSettingsAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]

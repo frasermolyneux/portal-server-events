@@ -1,3 +1,5 @@
+using XtremeIdiots.Portal.Repository.Abstractions.Constants.V1;
+
 namespace XtremeIdiots.Portal.Server.Events.Processor.App.Commands;
 
 public sealed record ChatCommandDescriptor(
@@ -8,10 +10,28 @@ public sealed record ChatCommandDescriptor(
     bool IsMutating)
 {
     public IReadOnlyList<string>? Aliases { get; init; }
+
+    public IReadOnlyList<GameType>? SupportedGameTypes { get; init; }
 }
 
 public static class ChatCommandDescriptorCatalog
 {
+    public static bool SupportsGameType(ChatCommandDescriptor descriptor, string gameType)
+    {
+        return SupportsGameType(descriptor.SupportedGameTypes, gameType);
+    }
+
+    public static bool SupportsGameType(IReadOnlyList<GameType>? supportedGameTypes, string gameType)
+    {
+        if (supportedGameTypes is null || supportedGameTypes.Count == 0)
+        {
+            return true;
+        }
+
+        return Enum.TryParse<GameType>(gameType, ignoreCase: true, out var parsedGameType)
+            && supportedGameTypes.Contains(parsedGameType);
+    }
+
     public static ChatCommandDescriptor Commands { get; } = new(
         Name: "commands",
         Prefix: "!commands",

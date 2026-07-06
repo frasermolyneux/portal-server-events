@@ -100,6 +100,17 @@ public sealed class ChatCommandProcessor : IChatCommandProcessor
             return CommandResult.NotHandled;
         }
 
+        var descriptor = ChatCommandDescriptorCatalog.All.FirstOrDefault(descriptor =>
+            string.Equals(descriptor.Name, command.Metadata.Name, StringComparison.OrdinalIgnoreCase));
+
+        var supportedGameTypes = command.Metadata.SupportedGameTypes
+            ?? descriptor?.SupportedGameTypes;
+
+        if (!ChatCommandDescriptorCatalog.SupportsGameType(supportedGameTypes, context.GameType))
+        {
+            return CommandResult.NotHandled;
+        }
+
         var canonicalCommand = parseResult.Command with
         {
             PrefixToken = command.Prefix,

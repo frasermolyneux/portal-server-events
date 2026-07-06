@@ -36,6 +36,17 @@ public sealed class ChatCommandCatalog : IChatCommandCatalog
         var enabled = new List<ChatCommandDefinition>(metadata.Length);
         foreach (var command in metadata)
         {
+            var descriptor = ChatCommandDescriptorCatalog.All.FirstOrDefault(descriptor =>
+                string.Equals(descriptor.Name, command.Name, StringComparison.OrdinalIgnoreCase));
+
+            var supportedGameTypes = command.SupportedGameTypes
+                ?? descriptor?.SupportedGameTypes;
+
+            if (!ChatCommandDescriptorCatalog.SupportsGameType(supportedGameTypes, context.GameType))
+            {
+                continue;
+            }
+
             var commandSettings = await _settingsProvider
                 .GetEffectiveSettingsAsync(context.ServerId, command.Name, command.IsMutating, ct)
                 .ConfigureAwait(false);

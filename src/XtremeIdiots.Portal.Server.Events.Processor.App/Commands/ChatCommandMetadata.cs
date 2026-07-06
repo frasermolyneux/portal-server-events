@@ -1,3 +1,5 @@
+using XtremeIdiots.Portal.Repository.Abstractions.Constants.V1;
+
 namespace XtremeIdiots.Portal.Server.Events.Processor.App.Commands;
 
 public sealed record ChatCommandMetadata
@@ -11,4 +13,5 @@ public sealed record ChatCommandMetadata
     public string? RequiredPolicy { get; init; }
     public string? FeatureFlag { get; init; }
     public IReadOnlyList<string>? Aliases { get; init; }
+    public IReadOnlyList<GameType>? SupportedGameTypes { get; init; }
 }

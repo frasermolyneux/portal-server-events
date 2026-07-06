@@ -4,6 +4,7 @@ using System.Text.Json;
 
 using Moq;
 
+using XtremeIdiots.Portal.Repository.Abstractions.Constants.V1;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Commands;
 
 namespace XtremeIdiots.Portal.Server.Events.Processor.App.Tests.Commands;
@@ -294,6 +295,80 @@ public class ChatCommandCatalogTests
             It.IsAny<CancellationToken>()), Times.Once);
     }
 
+    [Fact]
+    public async Task GetAvailableCommandsAsync_WhenCommandGameTypeIsUnsupported_HidesCommand()
+    {
+        var settingsProvider = new Mock<IChatCommandSettingsProvider>();
+        settingsProvider
+            .Setup(x => x.GetEffectiveSettingsAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Guid _, string commandName, bool _, CancellationToken _) => new EffectiveChatCommandSettings
+            {
+                CommandName = commandName,
+                Enabled = true,
+                FreshnessSeconds = 5,
+                EnabledSource = SettingsValueSource.Hardcoded,
+                FreshnessSource = SettingsValueSource.Hardcoded,
+                AuthorizationSource = SettingsValueSource.Hardcoded,
+                PayloadSource = SettingsValueSource.Hardcoded
+            });
+
+        var services = new ServiceCollection();
+        services.AddTransient<IChatCommand>(_ => new TestChatCommand(
+            "commands",
+            "!commands",
+            "!commands",
+            supportedGameTypes: [GameType.CallOfDuty4x]));
+
+        var authorizationService = new Mock<ICommandAuthorizationService>();
+        authorizationService
+            .Setup(x => x.AuthorizeAsync(It.IsAny<CommandAuthorizationContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(CommandAuthorizationResult.Allow());
+
+        var logger = new Mock<ILogger<ChatCommandCatalog>>();
+        var sut = new ChatCommandCatalog(services.BuildServiceProvider(), settingsProvider.Object, authorizationService.Object, logger.Object);
+
+        var result = await sut.GetAvailableCommandsAsync(CreateContext() with { GameType = nameof(GameType.CallOfDuty4) });
+
+        Assert.Empty(result);
+    }
+
+    [Fact]
+    public async Task GetAvailableCommandsAsync_WhenGameTypeIsUnparseableAndCommandHasGameTypeConstraints_HidesCommand()
+    {
+        var settingsProvider = new Mock<IChatCommandSettingsProvider>();
+        settingsProvider
+            .Setup(x => x.GetEffectiveSettingsAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Guid _, string commandName, bool _, CancellationToken _) => new EffectiveChatCommandSettings
+            {
+                CommandName = commandName,
+                Enabled = true,
+                FreshnessSeconds = 5,
+                EnabledSource = SettingsValueSource.Hardcoded,
+                FreshnessSource = SettingsValueSource.Hardcoded,
+                AuthorizationSource = SettingsValueSource.Hardcoded,
+                PayloadSource = SettingsValueSource.Hardcoded
+            });
+
+        var services = new ServiceCollection();
+        services.AddTransient<IChatCommand>(_ => new TestChatCommand(
+            "commands",
+            "!commands",
+            "!commands",
+            supportedGameTypes: [GameType.CallOfDuty4x]));
+
+        var authorizationService = new Mock<ICommandAuthorizationService>();
+        authorizationService
+            .Setup(x => x.AuthorizeAsync(It.IsAny<CommandAuthorizationContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(CommandAuthorizationResult.Allow());
+
+        var logger = new Mock<ILogger<ChatCommandCatalog>>();
+        var sut = new ChatCommandCatalog(services.BuildServiceProvider(), settingsProvider.Object, authorizationService.Object, logger.Object);
+
+        var result = await sut.GetAvailableCommandsAsync(CreateContext() with { GameType = "CallOfDutyX" });
+
+        Assert.Empty(result);
+    }
+
     private static ChatCommandCatalog CreateSut(IChatCommandSettingsProvider settingsProvider)
     {
         var services = new ServiceCollection();
@@ -312,7 +387,13 @@ public class ChatCommandCatalogTests
         return new ChatCommandCatalog(services.BuildServiceProvider(), settingsProvider, authorizationService.Object, logger.Object);
     }
 
-    private sealed class TestChatCommand(string name, string prefix, string usage, string? featureFlag = null, string? requiredPolicy = null) : IChatCommand
+    private sealed class TestChatCommand(
+        string name,
+        string prefix,
+        string usage,
+        string? featureFlag = null,
+        string? requiredPolicy = null,
+        IReadOnlyList<GameType>? supportedGameTypes = null) : IChatCommand
     {
         public string Prefix => prefix;
 
@@ -322,7 +403,8 @@ public class ChatCommandCatalogTests
             Prefix = prefix,
             Usage = usage,
             FeatureFlag = featureFlag,
-            RequiredPolicy = requiredPolicy
+            RequiredPolicy = requiredPolicy,
+            SupportedGameTypes = supportedGameTypes
         };
 
         public Task<CommandResult> ExecuteAsync(CommandContext context, CancellationToken ct = default)
