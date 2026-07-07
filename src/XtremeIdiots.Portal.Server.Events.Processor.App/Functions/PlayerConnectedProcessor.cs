@@ -111,7 +111,7 @@ public class PlayerConnectedProcessor(
                 gameType)
             {
                 SteamId = playerEvent.SteamId,
-                IpAddress = playerEvent.IpAddress
+                IpAddress = IpAddressGuard.IsPersistable(playerEvent.IpAddress) ? playerEvent.IpAddress : null
             };
 
             var createResult = await repositoryApiClient.Players.V1
@@ -172,7 +172,7 @@ public class PlayerConnectedProcessor(
         await repositoryApiClient.Players.V1.RecordPlayerSession(sessionDto).ConfigureAwait(false);
 
         // Persist IP separately if available at connect time
-        if (!string.IsNullOrWhiteSpace(playerEvent.IpAddress))
+        if (IpAddressGuard.IsPersistable(playerEvent.IpAddress))
         {
             try
             {
@@ -212,7 +212,7 @@ public class PlayerConnectedProcessor(
 
     private async Task<string?> EnrichWithGeoLocation(PlayerConnectedEvent playerEvent)
     {
-        if (string.IsNullOrWhiteSpace(playerEvent.IpAddress))
+        if (!IpAddressGuard.IsPersistable(playerEvent.IpAddress))
         {
             return null;
         }

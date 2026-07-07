@@ -17,6 +17,7 @@ using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.Players;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.RecentPlayers;
 using XtremeIdiots.Portal.Server.Events.Abstractions.V1;
 using XtremeIdiots.Portal.Server.Events.Abstractions.V1.Events;
+using XtremeIdiots.Portal.Server.Events.Processor.App.Services;
 
 namespace XtremeIdiots.Portal.Server.Events.Processor.App.Functions;
 
@@ -105,7 +106,7 @@ public sealed class ServerStatusProcessor(
                 var livePlayer = new CreateLivePlayerDto
                 {
                     Name = player.Username,
-                    IpAddress = player.IpAddress,
+                    IpAddress = IpAddressGuard.IsPersistable(player.IpAddress) ? player.IpAddress : null,
                     GameType = gameType,
                     Num = player.SlotId,
                     GameServerId = evt.ServerId,
@@ -133,7 +134,7 @@ public sealed class ServerStatusProcessor(
                 }
 
                 // IP Intelligence enrichment (best-effort per player)
-                if (!string.IsNullOrWhiteSpace(player.IpAddress))
+                if (IpAddressGuard.IsPersistable(player.IpAddress))
                 {
                     try
                     {

@@ -14,6 +14,7 @@ using XtremeIdiots.Portal.Repository.Abstractions.Constants.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.Players;
 using XtremeIdiots.Portal.Server.Events.Abstractions.V1;
 using XtremeIdiots.Portal.Server.Events.Abstractions.V1.Events;
+using XtremeIdiots.Portal.Server.Events.Processor.App.Services;
 
 namespace XtremeIdiots.Portal.Server.Events.Processor.App.Functions;
 
@@ -58,6 +59,13 @@ public class PlayerIpResolvedProcessor(
         {
             logger.LogWarning("PlayerIpResolved missing required fields. GameType: {GameType}, PlayerGuid: {PlayerGuid}, IpAddress: {IpAddress}",
                 evt.GameType, evt.PlayerGuid, evt.IpAddress);
+            return;
+        }
+
+        if (!IpAddressGuard.IsPersistable(evt.IpAddress))
+        {
+            logger.LogWarning("PlayerIpResolved has non-persistable placeholder IP {IpAddress}. ServerId: {ServerId}, PlayerGuid: {PlayerGuid}",
+                evt.IpAddress, evt.ServerId, evt.PlayerGuid);
             return;
         }
 

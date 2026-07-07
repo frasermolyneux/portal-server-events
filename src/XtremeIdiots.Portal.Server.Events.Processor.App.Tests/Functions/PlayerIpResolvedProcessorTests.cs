@@ -113,6 +113,20 @@ public class PlayerIpResolvedProcessorTests
         _playersApi.Verify(x => x.GetPlayerByGameType(It.IsAny<GameType>(), It.IsAny<string>(), It.IsAny<PlayerEntityOptions>()), Times.Never);
     }
 
+    [Theory]
+    [InlineData("0.0.0.0")]
+    [InlineData("::")]
+    public async Task PlaceholderIpAddress_SkipsPersistence(string ipAddress)
+    {
+        var evt = CreateValidEvent(ipAddress: ipAddress);
+        var message = CreateMessage(evt);
+
+        await _sut.ProcessPlayerIpResolved(message, _functionContext.Object);
+
+        _playersApi.Verify(x => x.GetPlayerByGameType(It.IsAny<GameType>(), It.IsAny<string>(), It.IsAny<PlayerEntityOptions>()), Times.Never);
+        _playersApi.Verify(x => x.UpdatePlayerIpAddress(It.IsAny<UpdatePlayerIpAddressDto>()), Times.Never);
+    }
+
     [Fact]
     public async Task MissingPlayerGuid_LogsWarningAndReturns()
     {
