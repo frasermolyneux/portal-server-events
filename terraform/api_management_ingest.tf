@@ -249,7 +249,7 @@ resource "azurerm_api_management_api_operation_policy" "cod4x_ingest_active_bans
       <value>@("Bearer " + (string)context.Variables[&quot;repositoryToken&quot;])</value>
     </set-header>
     <set-backend-service base-url="${local.repository_api.api_management.endpoint}" />
-    <rewrite-uri template="/v1.0/admin-actions?filter=ActiveBans&amp;order=CreatedDesc" copy-unmatched-params="true" />
+    <rewrite-uri template="/v1/admin-actions?filter=ActiveBans&amp;order=CreatedDesc" copy-unmatched-params="true" />
   </inbound>
   <backend>
     <base />
