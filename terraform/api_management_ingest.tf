@@ -9,7 +9,19 @@ resource "azurerm_api_management_api" "cod4x_ingest" {
   path                = "ingest"
   protocols           = ["https"]
 
-  subscription_required = false
+  subscription_required = true
+}
+
+# Membership of the CoD4x Plugin product (defined in portal-environments). The
+# product carries the subscription key the plugin authenticates with; scoping the
+# product to only this API keeps the key least-privilege.
+resource "azurerm_api_management_product_api" "cod4x_ingest" {
+  count = local.cod4x_ingest_enabled ? 1 : 0
+
+  api_name            = azurerm_api_management_api.cod4x_ingest[0].name
+  product_id          = local.cod4x_plugin_api.product_id
+  api_management_name = local.api_management.name
+  resource_group_name = local.api_management.resource_group_name
 }
 
 locals {
@@ -109,26 +121,6 @@ resource "azurerm_api_management_api_operation_policy" "cod4x_ingest_events_post
 <policies>
   <inbound>
     <base />
-    <validate-jwt header-name="Authorization"
-                  failed-validation-httpcode="401"
-                  failed-validation-error-message="JWT validation was unsuccessful"
-                  require-expiration-time="true"
-                  require-scheme="Bearer"
-                  require-signed-tokens="true">
-      <openid-config url="https://login.microsoftonline.com/${var.portal_environments_state.tenant_id}/v2.0/.well-known/openid-configuration" />
-      <audiences>
-        <audience>${local.server_events_api.application.primary_identifier_uri}</audience>
-      </audiences>
-      <issuers>
-        <issuer>https://sts.windows.net/${var.portal_environments_state.tenant_id}/</issuer>
-      </issuers>
-      <required-claims>
-        <claim name="roles" match="any">
-          <value>ServiceAccount</value>
-        </claim>
-      </required-claims>
-    </validate-jwt>
-
     <set-variable name="requestBodyJson" value="@(context.Request.Body.As&lt;string&gt;(true))" />
 
     <authentication-managed-identity resource="https://servicebus.azure.net/"
@@ -188,3 +180,87 @@ resource "azurerm_api_management_api_operation_policy" "cod4x_ingest_events_post
 </policies>
 XML
 }
+
+# Ban reads for the plugin. The CoD4x HTTP stack cannot carry a bearer JWT, so the
+# plugin reads active bans through this proxy operation instead of calling the
+# Repository API directly. APIM authenticates to the Repository API with its managed
+# identity (which already holds the ServiceAccount app role), keeping the plugin on
+# the short subscription-key header only.
+resource "azurerm_api_management_api_operation" "cod4x_ingest_active_bans_get" {
+  count = local.cod4x_ingest_enabled ? 1 : 0
+
+  operation_id        = "get-active-bans"
+  api_name            = azurerm_api_management_api.cod4x_ingest[0].name
+  api_management_name = local.api_management.name
+  resource_group_name = local.api_management.resource_group_name
+  display_name        = "Get Active Bans"
+  method              = "GET"
+  url_template        = "/active-bans"
+
+  request {
+    description = "Returns active bans for the requested game type, proxied to the Repository API."
+
+    query_parameter {
+      name     = "gameType"
+      required = true
+      type     = "string"
+    }
+
+    query_parameter {
+      name     = "skipEntries"
+      required = false
+      type     = "integer"
+    }
+
+    query_parameter {
+      name     = "takeEntries"
+      required = false
+      type     = "integer"
+    }
+  }
+
+  response {
+    status_code = 200
+    description = "OK"
+  }
+
+  response {
+    status_code = 502
+    description = "Repository API request failed"
+  }
+}
+
+resource "azurerm_api_management_api_operation_policy" "cod4x_ingest_active_bans_get" {
+  count = local.cod4x_ingest_enabled ? 1 : 0
+
+  api_name            = azurerm_api_management_api.cod4x_ingest[0].name
+  api_management_name = local.api_management.name
+  resource_group_name = local.api_management.resource_group_name
+  operation_id        = azurerm_api_management_api_operation.cod4x_ingest_active_bans_get[0].operation_id
+
+  xml_content = <<XML
+<policies>
+  <inbound>
+    <base />
+    <authentication-managed-identity resource="${local.repository_api.application.primary_identifier_uri}"
+                                     client-id="${local.managed_identities.api_management.client_id}"
+                                     output-token-variable-name="repositoryToken" />
+    <set-header name="Authorization" exists-action="override">
+      <value>@("Bearer " + (string)context.Variables[&quot;repositoryToken&quot;])</value>
+    </set-header>
+    <set-backend-service base-url="${local.repository_api.api_management.endpoint}" />
+    <rewrite-uri template="/v1.0/admin-actions?gameType={gameType}&amp;filter=ActiveBans&amp;skipEntries={skipEntries}&amp;takeEntries={takeEntries}&amp;order=CreatedDesc" copy-unmatched-params="false" />
+  </inbound>
+  <backend>
+    <base />
+  </backend>
+  <outbound>
+    <base />
+  </outbound>
+  <on-error>
+    <base />
+  </on-error>
+</policies>
+XML
+}
+
