@@ -33,7 +33,7 @@
     <PackageReference Include="MX.Observability.ApplicationInsights.WorkerService" Version="1.1.24" />
     <PackageReference Include="MX.GeoLocation.Api.Client.V1" Version="1.2.89" />
     <PackageReference Include="MX.InvisionCommunity.Api.Client" Version="1.0.55" />
-    <PackageReference Include="XtremeIdiots.Portal.Settings.Contracts.V1" Version="4.0.8" />
+    <PackageReference Include="XtremeIdiots.Portal.Settings.Contracts.V1" Version="4.1.1" />
     <PackageReference Include="XtremeIdiots.Portal.Integrations.Servers.Abstractions.V1" Version="4.1.1" />
     <PackageReference Include="XtremeIdiots.Portal.Integrations.Servers.Api.Client.V1" Version="4.1.1" />
     <PackageReference Include="XtremeIdiots.Portal.Repository.Api.Client.V1" Version="4.0.8" />

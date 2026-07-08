@@ -205,4 +205,23 @@ public class WelcomeMessageOrchestratorTests
         _cod4RconApi.Verify(x => x.Status(TestServerId, It.IsAny<CancellationToken>()), Times.Once);
         _cod4RconApi.Verify(x => x.Say(It.IsAny<Guid>(), It.IsAny<SayRequest>(), It.IsAny<CancellationToken>()), Times.Never);
     }
+
+    [Fact]
+    public async Task ProcessAsync_PublicRule_RendersAllTokens()
+    {
+        SetupSettings(WelcomeMessageVisibility.Public,
+            "^1{name}^7 {country} {ipaddress} [{tags}] {guid} {steamid} {playercount}");
+        _cod4RconApi.Setup(x => x.Status(TestServerId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(StatusWith(2, "guid-1", "ResolvedName"));
+        _cod4RconApi.Setup(x => x.Say(TestServerId, It.IsAny<SayRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult(HttpStatusCode.OK));
+
+        await _sut.ProcessAsync(CreateEvent("CallOfDuty4", "guid-1", 2), GameType.CallOfDuty4, ["Veteran", "Donator"], "GB");
+
+        // SteamId is unset on the test event, so {steamid} renders empty (two spaces before player count).
+        _cod4RconApi.Verify(x => x.Say(
+            TestServerId,
+            It.Is<SayRequest>(r => r.Message == "^1ResolvedName^7 GB 1.2.3.4 [Veteran, Donator] guid-1  1"),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
 }

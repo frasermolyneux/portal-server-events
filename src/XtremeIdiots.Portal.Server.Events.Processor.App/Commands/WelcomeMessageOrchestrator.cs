@@ -106,7 +106,19 @@ public sealed class WelcomeMessageOrchestrator : IWelcomeMessageOrchestrator
             }
 
             var messageCountry = string.IsNullOrWhiteSpace(country) ? settings.CountryFallback : country;
-            var renderedMessage = _renderer.Render(winner.MessageTemplate, verification.PlayerName ?? playerEvent.Username, messageCountry);
+            var tokenValues = new WelcomeMessageTokenValues
+            {
+                Name = verification.PlayerName ?? playerEvent.Username,
+                Country = messageCountry,
+                IpAddress = playerEvent.IpAddress,
+                Tags = string.Join(", ", playerTags.Where(static tag => !string.IsNullOrWhiteSpace(tag))),
+                PlayerGuid = playerEvent.PlayerGuid,
+                SteamId = playerEvent.SteamId ?? string.Empty,
+                PlayerCount = verification.PlayerCount >= 0
+                    ? verification.PlayerCount.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                    : string.Empty
+            };
+            var renderedMessage = _renderer.Render(winner.MessageTemplate, tokenValues);
 
             var deliveryResult = winner.Visibility == WelcomeMessageVisibility.Public
                 ? await SendPublicAsync(gameType, playerEvent.ServerId, renderedMessage, ct).ConfigureAwait(false)
@@ -171,12 +183,13 @@ public sealed class WelcomeMessageOrchestrator : IWelcomeMessageOrchestrator
                 return VerificationResult.FromFailure("StatusUnavailable");
             }
 
-            var player = statusResult.Result.Data.Players.FirstOrDefault(p =>
+            var players = statusResult.Result.Data.Players;
+            var player = players.FirstOrDefault(p =>
                 string.Equals(p.Guid, playerEvent.PlayerGuid, StringComparison.OrdinalIgnoreCase));
 
             return player is null
                 ? VerificationResult.FromFailure("PlayerNotConnected")
-                : VerificationResult.FromSuccess(player.Num, player.Name);
+                : VerificationResult.FromSuccess(player.Num, player.Name, players.Count);
         }
 
         if (gameType == GameType.CallOfDuty4)
@@ -187,12 +200,13 @@ public sealed class WelcomeMessageOrchestrator : IWelcomeMessageOrchestrator
                 return VerificationResult.FromFailure("StatusUnavailable");
             }
 
-            var player = statusResult.Result.Data.Players.FirstOrDefault(p =>
+            var players = statusResult.Result.Data.Players;
+            var player = players.FirstOrDefault(p =>
                 string.Equals(p.Guid, playerEvent.PlayerGuid, StringComparison.OrdinalIgnoreCase));
 
             return player is null
                 ? VerificationResult.FromFailure("PlayerNotConnected")
-                : VerificationResult.FromSuccess(player.Num, player.Name);
+                : VerificationResult.FromSuccess(player.Num, player.Name, players.Count);
         }
 
         if (gameType == GameType.CallOfDuty5)
@@ -203,12 +217,13 @@ public sealed class WelcomeMessageOrchestrator : IWelcomeMessageOrchestrator
                 return VerificationResult.FromFailure("StatusUnavailable");
             }
 
-            var player = statusResult.Result.Data.Players.FirstOrDefault(p =>
+            var players = statusResult.Result.Data.Players;
+            var player = players.FirstOrDefault(p =>
                 string.Equals(p.Guid, playerEvent.PlayerGuid, StringComparison.OrdinalIgnoreCase));
 
             return player is null
                 ? VerificationResult.FromFailure("PlayerNotConnected")
-                : VerificationResult.FromSuccess(player.Num, player.Name);
+                : VerificationResult.FromSuccess(player.Num, player.Name, players.Count);
         }
 
         if (gameType == GameType.CallOfDuty4x)
@@ -229,7 +244,7 @@ public sealed class WelcomeMessageOrchestrator : IWelcomeMessageOrchestrator
 
             // Match RconResponseService: colour-coded CoD4x names live in RawName when Name is blank.
             var resolvedName = string.IsNullOrWhiteSpace(player.Name) ? player.RawName : player.Name;
-            return VerificationResult.FromSuccess(player.Num, string.IsNullOrWhiteSpace(resolvedName) ? null : resolvedName);
+            return VerificationResult.FromSuccess(player.Num, string.IsNullOrWhiteSpace(resolvedName) ? null : resolvedName, statusResult.Result.Data.Players.Count);
         }
 
         return VerificationResult.FromFailure("UnsupportedGameType");
@@ -283,10 +298,10 @@ public sealed class WelcomeMessageOrchestrator : IWelcomeMessageOrchestrator
             ruleId ?? string.Empty);
     }
 
-    private sealed record VerificationResult(bool Success, int SlotId, string? PlayerName, string? Reason)
+    private sealed record VerificationResult(bool Success, int SlotId, string? PlayerName, int PlayerCount, string? Reason)
     {
-        public static VerificationResult FromSuccess(int slotId, string? playerName) => new(true, slotId, playerName, null);
+        public static VerificationResult FromSuccess(int slotId, string? playerName, int playerCount) => new(true, slotId, playerName, playerCount, null);
 
-        public static VerificationResult FromFailure(string reason) => new(false, -1, null, reason);
+        public static VerificationResult FromFailure(string reason) => new(false, -1, null, -1, reason);
     }
 }
