@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Logging;
 
+using MX.Api.Abstractions;
 using MX.Observability.ApplicationInsights.Auditing;
 using MX.Observability.ApplicationInsights.Auditing.Models;
 
@@ -42,7 +43,7 @@ public sealed class WelcomeMessageOrchestrator : IWelcomeMessageOrchestrator
         string? country,
         CancellationToken ct = default)
     {
-        if (gameType != GameType.CallOfDuty4x)
+        if (!IsSupportedGameType(gameType))
         {
             LogSkipped("UnsupportedGameType", playerEvent, gameType, null);
             return;
@@ -97,7 +98,7 @@ public sealed class WelcomeMessageOrchestrator : IWelcomeMessageOrchestrator
                 await Task.Delay(TimeSpan.FromSeconds(winner.ConnectionDelaySeconds), ct).ConfigureAwait(false);
             }
 
-            var verification = await VerifyPlayerStillConnected(playerEvent, ct).ConfigureAwait(false);
+            var verification = await VerifyPlayerStillConnected(playerEvent, gameType, ct).ConfigureAwait(false);
             if (!verification.Success)
             {
                 LogSkipped(verification.Reason ?? "PlayerVerificationFailed", playerEvent, gameType, winner.Id);
@@ -108,18 +109,8 @@ public sealed class WelcomeMessageOrchestrator : IWelcomeMessageOrchestrator
             var renderedMessage = _renderer.Render(winner.MessageTemplate, verification.PlayerName ?? playerEvent.Username, messageCountry);
 
             var deliveryResult = winner.Visibility == WelcomeMessageVisibility.Public
-                ? await _serversApiClient.CoD4xRcon.V1.Say(
-                    playerEvent.ServerId,
-                    new CoD4xMessageRequestDto { Message = renderedMessage },
-                    ct).ConfigureAwait(false)
-                : await _serversApiClient.CoD4xRcon.V1.Tell(
-                    playerEvent.ServerId,
-                    new CoD4xTargetMessageRequestDto
-                    {
-                        Target = verification.SlotId.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                        Message = renderedMessage
-                    },
-                    ct).ConfigureAwait(false);
+                ? await SendPublicAsync(gameType, playerEvent.ServerId, renderedMessage, ct).ConfigureAwait(false)
+                : await SendPrivateAsync(gameType, playerEvent.ServerId, verification.SlotId, renderedMessage, ct).ConfigureAwait(false);
 
             if (!deliveryResult.IsSuccess)
             {
@@ -170,25 +161,116 @@ public sealed class WelcomeMessageOrchestrator : IWelcomeMessageOrchestrator
             .FirstOrDefault();
     }
 
-    private async Task<VerificationResult> VerifyPlayerStillConnected(PlayerConnectedEvent playerEvent, CancellationToken ct)
+    private async Task<VerificationResult> VerifyPlayerStillConnected(PlayerConnectedEvent playerEvent, GameType gameType, CancellationToken ct)
     {
-        var statusResult = await _serversApiClient.CoD4xRcon.V1.Status(playerEvent.ServerId, ct).ConfigureAwait(false);
-        if (!statusResult.IsSuccess || statusResult.Result?.Data is null)
+        if (gameType == GameType.CallOfDuty2)
         {
-            return VerificationResult.FromFailure("StatusUnavailable");
+            var statusResult = await _serversApiClient.Cod2Rcon.V1.Status(playerEvent.ServerId, ct).ConfigureAwait(false);
+            if (!statusResult.IsSuccess || statusResult.Result?.Data is null)
+            {
+                return VerificationResult.FromFailure("StatusUnavailable");
+            }
+
+            var player = statusResult.Result.Data.Players.FirstOrDefault(p =>
+                string.Equals(p.Guid, playerEvent.PlayerGuid, StringComparison.OrdinalIgnoreCase));
+
+            return player is null
+                ? VerificationResult.FromFailure("PlayerNotConnected")
+                : VerificationResult.FromSuccess(player.Num, player.Name);
         }
 
-        var players = statusResult.Result.Data.Players;
-        var byGuid = players.FirstOrDefault(p =>
-            string.Equals(p.PlayerIdentifier, playerEvent.PlayerGuid, StringComparison.OrdinalIgnoreCase));
-
-        if (byGuid is null)
+        if (gameType == GameType.CallOfDuty4)
         {
-            return VerificationResult.FromFailure("PlayerNotConnected");
+            var statusResult = await _serversApiClient.Cod4Rcon.V1.Status(playerEvent.ServerId, ct).ConfigureAwait(false);
+            if (!statusResult.IsSuccess || statusResult.Result?.Data is null)
+            {
+                return VerificationResult.FromFailure("StatusUnavailable");
+            }
+
+            var player = statusResult.Result.Data.Players.FirstOrDefault(p =>
+                string.Equals(p.Guid, playerEvent.PlayerGuid, StringComparison.OrdinalIgnoreCase));
+
+            return player is null
+                ? VerificationResult.FromFailure("PlayerNotConnected")
+                : VerificationResult.FromSuccess(player.Num, player.Name);
         }
 
-        return VerificationResult.FromSuccess(byGuid.Num, byGuid.Name);
+        if (gameType == GameType.CallOfDuty5)
+        {
+            var statusResult = await _serversApiClient.Cod5Rcon.V1.Status(playerEvent.ServerId, ct).ConfigureAwait(false);
+            if (!statusResult.IsSuccess || statusResult.Result?.Data is null)
+            {
+                return VerificationResult.FromFailure("StatusUnavailable");
+            }
+
+            var player = statusResult.Result.Data.Players.FirstOrDefault(p =>
+                string.Equals(p.Guid, playerEvent.PlayerGuid, StringComparison.OrdinalIgnoreCase));
+
+            return player is null
+                ? VerificationResult.FromFailure("PlayerNotConnected")
+                : VerificationResult.FromSuccess(player.Num, player.Name);
+        }
+
+        if (gameType == GameType.CallOfDuty4x)
+        {
+            var statusResult = await _serversApiClient.CoD4xRcon.V1.Status(playerEvent.ServerId, ct).ConfigureAwait(false);
+            if (!statusResult.IsSuccess || statusResult.Result?.Data is null)
+            {
+                return VerificationResult.FromFailure("StatusUnavailable");
+            }
+
+            var player = statusResult.Result.Data.Players.FirstOrDefault(p =>
+                string.Equals(p.PlayerIdentifier, playerEvent.PlayerGuid, StringComparison.OrdinalIgnoreCase));
+
+            if (player is null)
+            {
+                return VerificationResult.FromFailure("PlayerNotConnected");
+            }
+
+            // Match RconResponseService: colour-coded CoD4x names live in RawName when Name is blank.
+            var resolvedName = string.IsNullOrWhiteSpace(player.Name) ? player.RawName : player.Name;
+            return VerificationResult.FromSuccess(player.Num, string.IsNullOrWhiteSpace(resolvedName) ? null : resolvedName);
+        }
+
+        return VerificationResult.FromFailure("UnsupportedGameType");
     }
+
+    private async Task<ApiResult> SendPublicAsync(GameType gameType, Guid serverId, string message, CancellationToken ct)
+    {
+        return gameType switch
+        {
+            GameType.CallOfDuty2 => await _serversApiClient.Cod2Rcon.V1
+                .Say(serverId, new SayRequest { Message = message }, ct).ConfigureAwait(false),
+            GameType.CallOfDuty4 => await _serversApiClient.Cod4Rcon.V1
+                .Say(serverId, new SayRequest { Message = message }, ct).ConfigureAwait(false),
+            GameType.CallOfDuty5 => await _serversApiClient.Cod5Rcon.V1
+                .Say(serverId, new SayRequest { Message = message }, ct).ConfigureAwait(false),
+            GameType.CallOfDuty4x => await _serversApiClient.CoD4xRcon.V1
+                .Say(serverId, new CoD4xMessageRequestDto { Message = message }, ct).ConfigureAwait(false),
+            _ => throw new InvalidOperationException($"Unsupported game type: {gameType}")
+        };
+    }
+
+    private async Task<ApiResult> SendPrivateAsync(GameType gameType, Guid serverId, int slotId, string message, CancellationToken ct)
+    {
+        var request = new CoD4xTargetMessageRequestDto
+        {
+            Target = slotId.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            Message = message
+        };
+
+        return gameType switch
+        {
+            GameType.CallOfDuty2 => await _serversApiClient.Cod2Rcon.V1.Tell(serverId, request, ct).ConfigureAwait(false),
+            GameType.CallOfDuty4 => await _serversApiClient.Cod4Rcon.V1.Tell(serverId, request, ct).ConfigureAwait(false),
+            GameType.CallOfDuty5 => await _serversApiClient.Cod5Rcon.V1.Tell(serverId, request, ct).ConfigureAwait(false),
+            GameType.CallOfDuty4x => await _serversApiClient.CoD4xRcon.V1.Tell(serverId, request, ct).ConfigureAwait(false),
+            _ => throw new InvalidOperationException($"Unsupported game type: {gameType}")
+        };
+    }
+
+    private static bool IsSupportedGameType(GameType gameType)
+        => gameType is GameType.CallOfDuty2 or GameType.CallOfDuty4 or GameType.CallOfDuty5 or GameType.CallOfDuty4x;
 
     private void LogSkipped(string reason, PlayerConnectedEvent playerEvent, GameType gameType, string? ruleId)
     {
