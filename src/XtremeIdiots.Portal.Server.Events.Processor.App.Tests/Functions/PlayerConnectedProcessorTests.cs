@@ -428,7 +428,7 @@ public class PlayerConnectedProcessorTests
     }
 
     [Fact]
-    public async Task ExistingPlayer_CoD4xPluginEnabled_SkipsWelcomeOrchestration()
+    public async Task ExistingPlayer_CoD4xPluginEnabled_StillExecutesWelcomeOrchestration()
     {
         var evt = CreateValidEvent(gameType: "CallOfDuty4x");
         var message = CreateMessage(evt);
@@ -465,9 +465,11 @@ public class PlayerConnectedProcessorTests
 
         await _sut.ProcessPlayerConnected(message, _functionContext.Object);
 
+        // Welcome orchestration stays in portal-server-events regardless of plugin source:
+        // the plugin only raises the connect event, it does not own welcome execution.
         _welcomeMessageOrchestrator.Verify(
             x => x.ProcessAsync(It.IsAny<PlayerConnectedEvent>(), It.IsAny<GameType>(), It.IsAny<string[]>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()),
-            Times.Never);
+            Times.Once);
     }
 
     [Fact]

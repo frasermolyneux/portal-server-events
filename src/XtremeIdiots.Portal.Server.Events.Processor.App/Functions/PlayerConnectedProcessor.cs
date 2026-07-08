@@ -83,14 +83,6 @@ public class PlayerConnectedProcessor(
             return;
         }
 
-        var pluginOwnsWelcomeExecution = false;
-        if (gameType == GameType.CallOfDuty4x)
-        {
-            pluginOwnsWelcomeExecution = await Cod4xPluginSourceResolver
-                .IsPluginSourceEnabledAsync(repositoryApiClient, memoryCache, logger, playerEvent.ServerId, context.CancellationToken)
-                .ConfigureAwait(false);
-        }
-
         using var scope = logger.BeginScope(new Dictionary<string, object>
         {
             ["GameType"] = playerEvent.GameType,
@@ -147,7 +139,7 @@ public class PlayerConnectedProcessor(
                 }
 
                 var country = await EnrichWithGeoLocation(playerEvent).ConfigureAwait(false);
-                await TryProcessWelcomeMessage(playerEvent, gameType, newPlayerContext.Tags, country, pluginOwnsWelcomeExecution).ConfigureAwait(false);
+                await TryProcessWelcomeMessage(playerEvent, gameType, newPlayerContext.Tags, country, context.CancellationToken).ConfigureAwait(false);
                 return;
             }
             else
@@ -207,7 +199,7 @@ public class PlayerConnectedProcessor(
 
         // GeoIP enrichment (best-effort, never blocks player processing)
         var enrichedCountry = await EnrichWithGeoLocation(playerEvent).ConfigureAwait(false);
-        await TryProcessWelcomeMessage(playerEvent, gameType, playerContext.Tags, enrichedCountry, pluginOwnsWelcomeExecution).ConfigureAwait(false);
+        await TryProcessWelcomeMessage(playerEvent, gameType, playerContext.Tags, enrichedCountry, context.CancellationToken).ConfigureAwait(false);
     }
 
     private async Task<string?> EnrichWithGeoLocation(PlayerConnectedEvent playerEvent)
@@ -332,21 +324,20 @@ public class PlayerConnectedProcessor(
         GameType gameType,
         string[] playerTags,
         string? country,
-        bool pluginOwnsWelcomeExecution)
+        CancellationToken cancellationToken)
     {
-        if (pluginOwnsWelcomeExecution)
-        {
-            logger.LogDebug(
-                "Skipping backend welcome-message orchestration for plugin-enabled CoD4x server {ServerId}",
-                playerEvent.ServerId);
-            return;
-        }
-
         try
         {
             await welcomeMessageOrchestrator
-                .ProcessAsync(playerEvent, gameType, playerTags, country)
+                .ProcessAsync(playerEvent, gameType, playerTags, country, cancellationToken)
                 .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            logger.LogDebug(
+                "Welcome message processing cancelled during shutdown for server {ServerId}, player {PlayerGuid}",
+                playerEvent.ServerId,
+                playerEvent.PlayerGuid);
         }
         catch (Exception ex)
         {
