@@ -87,8 +87,20 @@ public class ChatMessageProcessor(
             return;
         }
 
+        // CoD4x delivers chat via its OnMessageSent hook with a leading 0x15 control byte on every
+        // line (the engine's say marker). Strip leading control characters so persisted chat,
+        // moderation, and command handling all operate on clean text.
+        var sanitizedMessage = StripLeadingControlCharacters(chatEvent.Message);
+
+        if (string.IsNullOrWhiteSpace(sanitizedMessage))
+        {
+            logger.LogWarning("ChatMessage empty after stripping control characters. ServerId: {ServerId}, PlayerGuid: {PlayerGuid}",
+                chatEvent.ServerId, chatEvent.PlayerGuid);
+            return;
+        }
+
         var skipBackendCommandExecution = await cod4xPluginCommandExecutionPolicy
-            .ShouldSkipBackendExecutionAsync(chatEvent.ServerId, chatEvent.GameType, chatEvent.Message, context.CancellationToken)
+            .ShouldSkipBackendExecutionAsync(chatEvent.ServerId, chatEvent.GameType, sanitizedMessage, context.CancellationToken)
             .ConfigureAwait(false);
 
         var eventAge = DateTime.UtcNow - chatEvent.EventGeneratedUtc;
@@ -124,7 +136,7 @@ public class ChatMessageProcessor(
             playerId,
             chatType,
             chatEvent.Username,
-            chatEvent.Message,
+            sanitizedMessage,
             chatEvent.EventGeneratedUtc);
 
         await repositoryApiClient.ChatMessages.V1
@@ -146,7 +158,7 @@ public class ChatMessageProcessor(
                 PlayerGuid = chatEvent.PlayerGuid,
                 Username = chatEvent.Username,
                 SlotId = chatEvent.SlotId,
-                Message = chatEvent.Message,
+                Message = sanitizedMessage,
                 EventGeneratedUtc = chatEvent.EventGeneratedUtc,
                 EventPublishedUtc = chatEvent.EventPublishedUtc,
                 SequenceId = chatEvent.SequenceId,
@@ -179,7 +191,7 @@ public class ChatMessageProcessor(
             GameType = chatEvent.GameType,
             PlayerGuid = chatEvent.PlayerGuid,
             Username = chatEvent.Username,
-            Message = chatEvent.Message,
+            Message = sanitizedMessage,
             PlayerId = playerId,
             PlayerFirstSeen = playerContext.Value.FirstSeen,
             HasModerateChatTag = playerContext.Value.HasModerateChatTag
@@ -194,7 +206,7 @@ public class ChatMessageProcessor(
         CommandResult commandResult,
         CancellationToken cancellationToken)
     {
-        var commandPrefix = ExtractCommandPrefix(chatEvent.Message);
+        var commandPrefix = ExtractCommandPrefix(commandContext.Message);
         if (string.IsNullOrWhiteSpace(commandPrefix))
         {
             return;
@@ -231,6 +243,17 @@ public class ChatMessageProcessor(
                 commandPrefix,
                 chatEvent.ServerId);
         }
+    }
+
+    private static string StripLeadingControlCharacters(string message)
+    {
+        var index = 0;
+        while (index < message.Length && char.IsControl(message[index]))
+        {
+            index++;
+        }
+
+        return index == 0 ? message : message[index..];
     }
 
     private static string? ExtractCommandPrefix(string message)

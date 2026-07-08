@@ -153,6 +153,33 @@ public class ChatMessageProcessorTests
             dto.Message == "Hello world"), It.IsAny<CancellationToken>()), Times.Once);
     }
 
+    [Theory]
+    [InlineData("\u0015!fu Bob")]
+    [InlineData("\u0015\u0015!fu Bob")]
+    public async Task LeadingCod4xControlByte_IsStrippedBeforePersistAndCommandProcessing(string rawMessage)
+    {
+        var evt = CreateValidEvent(chatMessage: rawMessage);
+        var message = CreateMessage(evt);
+
+        var playerDto = CreatePlayerDto(TestPlayerId);
+        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.Tags))
+            .ReturnsAsync(SuccessResult(playerDto));
+
+        _chatApi.Setup(x => x.CreateChatMessage(It.IsAny<CreateChatMessageDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(SuccessResult());
+
+        await _sut.ProcessChatMessage(message, _functionContext.Object);
+
+        _chatApi.Verify(x => x.CreateChatMessage(It.Is<CreateChatMessageDto>(dto =>
+            dto.Message == "!fu Bob"), It.IsAny<CancellationToken>()), Times.Once);
+
+        _cod4xPolicy.Verify(x => x.ShouldSkipBackendExecutionAsync(
+            TestServerId, "CallOfDuty4", "!fu Bob", It.IsAny<CancellationToken>()), Times.Once);
+
+        _commandProcessor.Verify(x => x.ProcessAsync(
+            It.Is<CommandContext>(ctx => ctx.Message == "!fu Bob"), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
     [Fact]
     public async Task TeamMessage_CorrectChatType()
     {
