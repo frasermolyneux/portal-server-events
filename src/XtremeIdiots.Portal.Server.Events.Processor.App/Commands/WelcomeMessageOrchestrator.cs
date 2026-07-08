@@ -108,7 +108,7 @@ public sealed class WelcomeMessageOrchestrator : IWelcomeMessageOrchestrator
             var renderedMessage = _renderer.Render(winner.MessageTemplate, verification.PlayerName ?? playerEvent.Username, messageCountry);
 
             var deliveryResult = winner.Visibility == WelcomeMessageVisibility.Public
-                ? await _serversApiClient.CoD4xRcon.V1.ConSay(
+                ? await _serversApiClient.CoD4xRcon.V1.Say(
                     playerEvent.ServerId,
                     new CoD4xMessageRequestDto { Message = renderedMessage },
                     ct).ConfigureAwait(false)

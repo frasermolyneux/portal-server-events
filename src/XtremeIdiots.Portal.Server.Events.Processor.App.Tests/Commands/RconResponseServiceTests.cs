@@ -47,13 +47,13 @@ public class RconResponseServiceTests
     [Fact]
     public async Task TrySayAsync_WhenFresh_SendsMessage()
     {
-        _coD4xRconApi.Setup(x => x.ConSay(TestServerId, It.IsAny<CoD4xMessageRequestDto>(), It.IsAny<CancellationToken>()))
+        _coD4xRconApi.Setup(x => x.Say(TestServerId, It.IsAny<CoD4xMessageRequestDto>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new ApiResult<string>(System.Net.HttpStatusCode.OK, new ApiResponse<string>("ok")));
 
         var result = await _sut.TrySayAsync(TestServerId, "Hello", DateTime.UtcNow);
 
         Assert.True(result);
-        _coD4xRconApi.Verify(x => x.ConSay(
+        _coD4xRconApi.Verify(x => x.Say(
             TestServerId,
             It.Is<CoD4xMessageRequestDto>(r => r.Message == "Hello"),
             It.IsAny<CancellationToken>()), Times.Once);
@@ -67,7 +67,7 @@ public class RconResponseServiceTests
         var result = await _sut.TrySayAsync(TestServerId, "Hello", staleTime);
 
         Assert.False(result);
-        _coD4xRconApi.Verify(x => x.ConSay(It.IsAny<Guid>(), It.IsAny<CoD4xMessageRequestDto>(), It.IsAny<CancellationToken>()), Times.Never);
+        _coD4xRconApi.Verify(x => x.Say(It.IsAny<Guid>(), It.IsAny<CoD4xMessageRequestDto>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -83,7 +83,7 @@ public class RconResponseServiceTests
             TestServerId,
             It.Is<SayRequest>(r => r.Message == "Hello"),
             It.IsAny<CancellationToken>()), Times.Once);
-        _coD4xRconApi.Verify(x => x.ConSay(It.IsAny<Guid>(), It.IsAny<CoD4xMessageRequestDto>(), It.IsAny<CancellationToken>()), Times.Never);
+        _coD4xRconApi.Verify(x => x.Say(It.IsAny<Guid>(), It.IsAny<CoD4xMessageRequestDto>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -101,7 +101,7 @@ public class RconResponseServiceTests
             It.IsAny<CancellationToken>()), Times.Once);
         _cod4RconApi.Verify(x => x.Say(It.IsAny<Guid>(), It.IsAny<SayRequest>(), It.IsAny<CancellationToken>()), Times.Never);
         _cod5RconApi.Verify(x => x.Say(It.IsAny<Guid>(), It.IsAny<SayRequest>(), It.IsAny<CancellationToken>()), Times.Never);
-        _coD4xRconApi.Verify(x => x.ConSay(It.IsAny<Guid>(), It.IsAny<CoD4xMessageRequestDto>(), It.IsAny<CancellationToken>()), Times.Never);
+        _coD4xRconApi.Verify(x => x.Say(It.IsAny<Guid>(), It.IsAny<CoD4xMessageRequestDto>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -119,7 +119,7 @@ public class RconResponseServiceTests
             It.IsAny<CancellationToken>()), Times.Once);
         _cod2RconApi.Verify(x => x.Say(It.IsAny<Guid>(), It.IsAny<SayRequest>(), It.IsAny<CancellationToken>()), Times.Never);
         _cod4RconApi.Verify(x => x.Say(It.IsAny<Guid>(), It.IsAny<SayRequest>(), It.IsAny<CancellationToken>()), Times.Never);
-        _coD4xRconApi.Verify(x => x.ConSay(It.IsAny<Guid>(), It.IsAny<CoD4xMessageRequestDto>(), It.IsAny<CancellationToken>()), Times.Never);
+        _coD4xRconApi.Verify(x => x.Say(It.IsAny<Guid>(), It.IsAny<CoD4xMessageRequestDto>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -129,7 +129,7 @@ public class RconResponseServiceTests
 
         Assert.False(result);
         _cod4RconApi.Verify(x => x.Say(It.IsAny<Guid>(), It.IsAny<SayRequest>(), It.IsAny<CancellationToken>()), Times.Never);
-        _coD4xRconApi.Verify(x => x.ConSay(It.IsAny<Guid>(), It.IsAny<CoD4xMessageRequestDto>(), It.IsAny<CancellationToken>()), Times.Never);
+        _coD4xRconApi.Verify(x => x.Say(It.IsAny<Guid>(), It.IsAny<CoD4xMessageRequestDto>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]

@@ -76,7 +76,7 @@ public sealed class RconResponseService : IRconResponseService
                     serverId,
                     new SayRequest { Message = message },
                     ct).ConfigureAwait(false),
-                GameType.CallOfDuty4x => await _serversApiClient.CoD4xRcon.V1.ConSay(
+                GameType.CallOfDuty4x => await _serversApiClient.CoD4xRcon.V1.Say(
                     serverId,
                     new CoD4xMessageRequestDto { Message = message },
                     ct).ConfigureAwait(false),
