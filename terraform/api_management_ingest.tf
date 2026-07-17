@@ -314,7 +314,6 @@ resource "azurerm_api_management_api_operation_policy" "cod4x_ingest_vpn_protect
 <policies>
   <inbound>
     <base />
-    <rate-limit-by-key calls="120" renewal-period="60" counter-key="@(context.Subscription?.Id ?? context.Request.IpAddress)" />
     <authentication-managed-identity resource="${local.server_events_api.application.primary_identifier_uri}"
                                      client-id="${local.managed_identities.api_management.client_id}"
                                      output-token-variable-name="serverEventsToken" />
