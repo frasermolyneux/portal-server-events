@@ -7,12 +7,17 @@ using Microsoft.Extensions.Options;
 
 using Moq;
 
+using MX.Api.Abstractions;
+using MX.GeoLocation.Abstractions.Models.V1_1;
+using MX.GeoLocation.Api.Client.V1;
+
 using XtremeIdiots.Portal.Repository.Abstractions.Constants.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Interfaces.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.Players;
 using XtremeIdiots.Portal.Repository.Api.Client.V1;
 using XtremeIdiots.Portal.Server.Events.Abstractions.V1.Events;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Functions;
+using XtremeIdiots.Portal.Server.Events.Processor.App.VpnProtection;
 
 using static XtremeIdiots.Portal.Server.Events.Processor.App.Tests.ServiceBusTestHelpers;
 
@@ -24,6 +29,10 @@ public class PlayerIpResolvedProcessorTests
     private readonly Mock<IRepositoryApiClient> _repoClient = new();
     private readonly Mock<IVersionedPlayersApi> _versionedPlayers = new();
     private readonly Mock<IPlayersApi> _playersApi = new();
+    private readonly Mock<IGeoLocationApiClient> _geoLocationApiClient = new();
+    private readonly Mock<IVersionedGeoLookupApi> _versionedGeoLookupApi = new();
+    private readonly Mock<MX.GeoLocation.Abstractions.Interfaces.V1_1.IGeoLookupApi> _geoLookupApi = new();
+    private readonly Mock<IVpnProtectionService> _vpnProtectionService = new();
     private readonly IMemoryCache _cache;
     private readonly Mock<IAuditLogger> _auditLogger = new();
     private readonly Mock<FunctionContext> _functionContext = new();
@@ -37,9 +46,27 @@ public class PlayerIpResolvedProcessorTests
         _versionedPlayers.Setup(x => x.V1).Returns(_playersApi.Object);
         _repoClient.Setup(x => x.Players).Returns(_versionedPlayers.Object);
 
+        _versionedGeoLookupApi.Setup(x => x.V1_1).Returns(_geoLookupApi.Object);
+        _geoLocationApiClient.Setup(x => x.GeoLookup).Returns(_versionedGeoLookupApi.Object);
+        _geoLookupApi
+            .Setup(x => x.GetIpIntelligence(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<IpIntelligenceDto>(System.Net.HttpStatusCode.NotFound));
+        _vpnProtectionService
+            .Setup(x => x.ProcessAsync(
+                It.IsAny<VpnProtectionContext>(),
+                It.IsAny<IpIntelligenceDto>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new VpnProtectionProcessingResult());
+
         _cache = new MemoryCache(Options.Create(new MemoryCacheOptions()));
 
-        _sut = new PlayerIpResolvedProcessor(_logger.Object, _repoClient.Object, _cache, _auditLogger.Object);
+        _sut = new PlayerIpResolvedProcessor(
+            _logger.Object,
+            _repoClient.Object,
+            _geoLocationApiClient.Object,
+            _vpnProtectionService.Object,
+            _cache,
+            _auditLogger.Object);
     }
 
     private static PlayerIpResolvedEvent CreateValidEvent(
@@ -65,7 +92,7 @@ public class PlayerIpResolvedProcessorTests
         var message = CreateMessage(evt);
 
         var playerDto = CreatePlayerDto(TestPlayerId);
-        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.None))
+        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.Tags))
             .ReturnsAsync(SuccessResult(playerDto));
 
         _playersApi.Setup(x => x.UpdatePlayerIpAddress(It.IsAny<UpdatePlayerIpAddressDto>()))
@@ -84,7 +111,7 @@ public class PlayerIpResolvedProcessorTests
         var evt = CreateValidEvent();
         var message = CreateMessage(evt);
 
-        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.None))
+        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.Tags))
             .ReturnsAsync(NotFoundResult<PlayerDto>());
 
         await _sut.ProcessPlayerIpResolved(message, _functionContext.Object);
@@ -178,7 +205,7 @@ public class PlayerIpResolvedProcessorTests
         var message = CreateMessage(evt);
 
         var playerDto = CreatePlayerDto(TestPlayerId);
-        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.None))
+        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.Tags))
             .ReturnsAsync(SuccessResult(playerDto));
 
         _playersApi.Setup(x => x.UpdatePlayerIpAddress(It.IsAny<UpdatePlayerIpAddressDto>()))
@@ -186,5 +213,57 @@ public class PlayerIpResolvedProcessorTests
 
         // Should not throw — error is caught and logged
         await _sut.ProcessPlayerIpResolved(message, _functionContext.Object);
+    }
+
+    [Fact]
+    public async Task ValidEvent_WithIntelligence_InvokesVpnProtection()
+    {
+        var evt = CreateValidEvent();
+        var message = CreateMessage(evt);
+        var playerDto = CreatePlayerDto(TestPlayerId);
+        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.Tags))
+            .ReturnsAsync(SuccessResult(playerDto));
+        _playersApi.Setup(x => x.UpdatePlayerIpAddress(It.IsAny<UpdatePlayerIpAddressDto>()))
+            .ReturnsAsync(SuccessResult());
+        var intelligence = Newtonsoft.Json.JsonConvert.DeserializeObject<IpIntelligenceDto>(
+            Newtonsoft.Json.JsonConvert.SerializeObject(new { ProxyCheck = new { IsVpn = true } }))!;
+        _geoLookupApi.Setup(x => x.GetIpIntelligence("192.168.1.100", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<IpIntelligenceDto>(
+                System.Net.HttpStatusCode.OK,
+                new ApiResponse<IpIntelligenceDto>(intelligence)));
+
+        await _sut.ProcessPlayerIpResolved(message, _functionContext.Object);
+
+        _vpnProtectionService.Verify(x => x.ProcessAsync(
+            It.Is<VpnProtectionContext>(vpnContext =>
+                vpnContext.ServerId == TestServerId &&
+                vpnContext.GameType == GameType.CallOfDuty4 &&
+                vpnContext.PlayerId == TestPlayerId &&
+                vpnContext.PlayerGuid == "abc123guid" &&
+                vpnContext.SlotId == null),
+            intelligence,
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task GeoLookupThrows_FailsOpenAfterPersistingIp()
+    {
+        var evt = CreateValidEvent();
+        var message = CreateMessage(evt);
+        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.Tags))
+            .ReturnsAsync(SuccessResult(CreatePlayerDto(TestPlayerId)));
+        _playersApi.Setup(x => x.UpdatePlayerIpAddress(It.IsAny<UpdatePlayerIpAddressDto>()))
+            .ReturnsAsync(SuccessResult());
+        _geoLookupApi.Setup(x => x.GetIpIntelligence("192.168.1.100", It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new HttpRequestException("GeoLocation unavailable"));
+
+        await _sut.ProcessPlayerIpResolved(message, _functionContext.Object);
+
+        _playersApi.Verify(x => x.UpdatePlayerIpAddress(
+            It.Is<UpdatePlayerIpAddressDto>(dto => dto.IpAddress == "192.168.1.100")), Times.Once);
+        _vpnProtectionService.Verify(x => x.ProcessAsync(
+            It.IsAny<VpnProtectionContext>(),
+            It.IsAny<IpIntelligenceDto>(),
+            It.IsAny<CancellationToken>()), Times.Never);
     }
 }

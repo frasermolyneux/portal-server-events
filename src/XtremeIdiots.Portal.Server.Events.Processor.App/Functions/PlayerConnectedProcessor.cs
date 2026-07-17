@@ -9,6 +9,7 @@ using Microsoft.Extensions.Logging;
 using MX.Observability.ApplicationInsights.Auditing;
 using MX.Observability.ApplicationInsights.Auditing.Models;
 
+using MX.GeoLocation.Abstractions.Models.V1_1;
 using MX.GeoLocation.Api.Client.V1;
 
 using XtremeIdiots.Portal.Repository.Api.Client.V1;
@@ -18,6 +19,7 @@ using XtremeIdiots.Portal.Server.Events.Abstractions.V1;
 using XtremeIdiots.Portal.Server.Events.Abstractions.V1.Events;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Commands;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Services;
+using XtremeIdiots.Portal.Server.Events.Processor.App.VpnProtection;
 
 namespace XtremeIdiots.Portal.Server.Events.Processor.App.Functions;
 
@@ -25,6 +27,7 @@ public class PlayerConnectedProcessor(
     ILogger<PlayerConnectedProcessor> logger,
     IRepositoryApiClient repositoryApiClient,
     IGeoLocationApiClient geoLocationApiClient,
+    IVpnProtectionService vpnProtectionService,
     IProtectedNameService protectedNameService,
     IWelcomeMessageOrchestrator welcomeMessageOrchestrator,
     IMemoryCache memoryCache,
@@ -138,8 +141,18 @@ public class PlayerConnectedProcessor(
                     }).ConfigureAwait(false);
                 }
 
-                var country = await EnrichWithGeoLocation(playerEvent).ConfigureAwait(false);
-                await TryProcessWelcomeMessage(playerEvent, gameType, newPlayerContext.Tags, country, context.CancellationToken).ConfigureAwait(false);
+                var enrichment = await EnrichWithGeoLocation(playerEvent, context.CancellationToken).ConfigureAwait(false);
+                var vpnProtectionResult = await ProcessVpnProtection(
+                    playerEvent,
+                    gameType,
+                    newPlayerContext,
+                    enrichment.Intelligence,
+                    context.CancellationToken).ConfigureAwait(false);
+                if (!IsDestructiveMatch(vpnProtectionResult))
+                {
+                    await TryProcessWelcomeMessage(playerEvent, gameType, newPlayerContext.Tags, enrichment.Country, context.CancellationToken).ConfigureAwait(false);
+                }
+
                 return;
             }
             else
@@ -198,21 +211,32 @@ public class PlayerConnectedProcessor(
         }
 
         // GeoIP enrichment (best-effort, never blocks player processing)
-        var enrichedCountry = await EnrichWithGeoLocation(playerEvent).ConfigureAwait(false);
-        await TryProcessWelcomeMessage(playerEvent, gameType, playerContext.Tags, enrichedCountry, context.CancellationToken).ConfigureAwait(false);
+        var enriched = await EnrichWithGeoLocation(playerEvent, context.CancellationToken).ConfigureAwait(false);
+        var vpnResult = await ProcessVpnProtection(
+            playerEvent,
+            gameType,
+            playerContext,
+            enriched.Intelligence,
+            context.CancellationToken).ConfigureAwait(false);
+        if (!IsDestructiveMatch(vpnResult))
+        {
+            await TryProcessWelcomeMessage(playerEvent, gameType, playerContext.Tags, enriched.Country, context.CancellationToken).ConfigureAwait(false);
+        }
     }
 
-    private async Task<string?> EnrichWithGeoLocation(PlayerConnectedEvent playerEvent)
+    private async Task<IpEnrichmentResult> EnrichWithGeoLocation(
+        PlayerConnectedEvent playerEvent,
+        CancellationToken ct)
     {
         if (!IpAddressGuard.IsPersistable(playerEvent.IpAddress))
         {
-            return null;
+            return IpEnrichmentResult.Empty;
         }
 
         try
         {
             var geoResult = await geoLocationApiClient.GeoLookup.V1_1
-                .GetIpIntelligence(playerEvent.IpAddress)
+                .GetIpIntelligence(playerEvent.IpAddress, ct)
                 .ConfigureAwait(false);
 
             if (geoResult.IsSuccess && geoResult.Result?.Data is not null)
@@ -269,13 +293,15 @@ public class PlayerConnectedProcessor(
 
                 if (!string.IsNullOrWhiteSpace(intel.CountryName))
                 {
-                    return intel.CountryName;
+                    return new IpEnrichmentResult(intel, intel.CountryName);
                 }
 
                 if (!string.IsNullOrWhiteSpace(intel.CountryCode))
                 {
-                    return intel.CountryCode;
+                    return new IpEnrichmentResult(intel, intel.CountryCode);
                 }
+
+                return new IpEnrichmentResult(intel, null);
             }
         }
         catch (Exception ex)
@@ -283,8 +309,38 @@ public class PlayerConnectedProcessor(
             logger.LogWarning(ex, "IP intelligence enrichment failed for {IpAddress}", playerEvent.IpAddress);
         }
 
-        return null;
+        return IpEnrichmentResult.Empty;
     }
+
+    private async Task<VpnProtectionProcessingResult> ProcessVpnProtection(
+        PlayerConnectedEvent playerEvent,
+        GameType gameType,
+        PlayerContext playerContext,
+        IpIntelligenceDto? intelligence,
+        CancellationToken ct)
+    {
+        if (intelligence is null || playerContext.PlayerId == Guid.Empty)
+        {
+            return new VpnProtectionProcessingResult();
+        }
+
+        return await vpnProtectionService.ProcessAsync(
+            new VpnProtectionContext
+            {
+                ServerId = playerEvent.ServerId,
+                GameType = gameType,
+                PlayerId = playerContext.PlayerId,
+                PlayerGuid = playerEvent.PlayerGuid,
+                Username = playerEvent.Username,
+                PlayerTags = playerContext.Tags,
+                SlotId = playerEvent.SlotId
+            },
+            intelligence,
+            ct).ConfigureAwait(false);
+    }
+
+    private static bool IsDestructiveMatch(VpnProtectionProcessingResult result) =>
+        result.Decision.IsMatch && result.Decision.Action is VpnProtectionAction.Kick or VpnProtectionAction.Ban;
 
     private async Task<PlayerContext> GetPlayerContext(GameType gameType, string guid)
     {
@@ -357,5 +413,10 @@ public class PlayerConnectedProcessor(
     private sealed record PlayerContext(Guid PlayerId, string[] Tags)
     {
         public static readonly PlayerContext Empty = new(Guid.Empty, []);
+    }
+
+    private sealed record IpEnrichmentResult(IpIntelligenceDto? Intelligence, string? Country)
+    {
+        public static readonly IpEnrichmentResult Empty = new(null, null);
     }
 }

@@ -19,6 +19,31 @@ resource "azurerm_linux_function_app" "function_app" {
     identity_ids = [local.server_events_identity.id]
   }
 
+  auth_settings_v2 {
+    auth_enabled    = true
+    runtime_version = "~1"
+
+    require_authentication = true
+    unauthenticated_action = "Return401"
+    excluded_paths = [
+      "/api/health/live",
+      "/api/health/ready",
+      "/api/v1/ReprocessDeadLetterQueue"
+    ]
+    require_https         = true
+    http_route_api_prefix = "/api"
+
+    login {
+      token_store_enabled = false
+    }
+
+    active_directory_v2 {
+      client_id            = local.server_events_api.application.client_id
+      tenant_auth_endpoint = "https://login.microsoftonline.com/${data.azurerm_client_config.current.tenant_id}/v2.0"
+      allowed_audiences    = [local.server_events_api.application.primary_identifier_uri]
+    }
+  }
+
   key_vault_reference_identity_id = local.server_events_identity.id
 
   site_config {

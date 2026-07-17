@@ -1,0 +1,178 @@
+using System.Net;
+using System.Text;
+
+using Microsoft.Azure.Functions.Worker;
+using Microsoft.Azure.Functions.Worker.Http;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+
+using Moq;
+
+using MX.Api.Abstractions;
+using MX.GeoLocation.Abstractions.Models.V1_1;
+using MX.GeoLocation.Api.Client.V1;
+
+using Newtonsoft.Json;
+
+using XtremeIdiots.Portal.Server.Events.Processor.App.Functions;
+using XtremeIdiots.Portal.Server.Events.Processor.App.VpnProtection;
+
+namespace XtremeIdiots.Portal.Server.Events.Processor.App.Tests.Functions;
+
+public sealed class VpnProtectionEvaluationTests
+{
+    private static readonly Guid ServerId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+
+    private readonly Mock<ICod4xVpnProtectionPolicyProvider> policyProvider = new();
+    private readonly Mock<IVpnProtectionSettingsProvider> settingsProvider = new();
+    private readonly Mock<IVpnProtectionEvaluator> evaluator = new();
+    private readonly Mock<IGeoLocationApiClient> geoLocationApiClient = new();
+    private readonly Mock<IVersionedGeoLookupApi> versionedGeoLookupApi = new();
+    private readonly Mock<MX.GeoLocation.Abstractions.Interfaces.V1_1.IGeoLookupApi> geoLookupApi = new();
+    private readonly Mock<ILogger<VpnProtectionEvaluation>> logger = new();
+
+    public VpnProtectionEvaluationTests()
+    {
+        policyProvider
+            .Setup(x => x.IsEnabledAsync(ServerId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+        settingsProvider
+            .Setup(x => x.GetEffectiveSettingsAsync(ServerId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new EffectiveVpnProtectionSettings { Enabled = true });
+        versionedGeoLookupApi.Setup(x => x.V1_1).Returns(geoLookupApi.Object);
+        geoLocationApiClient.Setup(x => x.GeoLookup).Returns(versionedGeoLookupApi.Object);
+    }
+
+    [Fact]
+    public async Task EvaluateVpnProtection_InvalidRequest_ReturnsBadRequest()
+    {
+        var (request, context) = CreateRequest("{}");
+
+        var response = await CreateSut().EvaluateVpnProtection(request, context);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task EvaluateVpnProtection_PolicyDisabled_ReturnsNoMatchWithoutLookup()
+    {
+        policyProvider
+            .Setup(x => x.IsEnabledAsync(ServerId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(false);
+        var (request, context) = CreateRequest(CreateValidRequestJson());
+
+        var response = await CreateSut().EvaluateVpnProtection(request, context);
+        var body = await ReadBody(response);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains("\"matched\":false", body, StringComparison.Ordinal);
+        geoLookupApi.Verify(
+            x => x.GetIpIntelligence(It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task EvaluateVpnProtection_MatchingDecision_ReturnsActionAndRuleIds()
+    {
+        var intelligence = JsonConvert.DeserializeObject<IpIntelligenceDto>(
+            JsonConvert.SerializeObject(new { ProxyCheck = new { IsVpn = true } }))!;
+        geoLookupApi
+            .Setup(x => x.GetIpIntelligence("198.51.100.10", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<IpIntelligenceDto>(
+                HttpStatusCode.OK,
+                new ApiResponse<IpIntelligenceDto>(intelligence)));
+        evaluator
+            .Setup(x => x.Evaluate(It.IsAny<EffectiveVpnProtectionSettings>(), intelligence))
+            .Returns(new VpnProtectionDecision
+            {
+                Action = VpnProtectionAction.Ban,
+                Reason = "VPN Protection",
+                MatchedRules =
+                [
+                    new VpnProtectionRuleMatch
+                    {
+                        RuleId = "vpn",
+                        Signal = VpnProtectionSignal.ProxyCheckIsVpn,
+                        ActualValue = "True",
+                        ExpectedValue = "true",
+                        Action = VpnProtectionAction.Ban,
+                        Reason = "VPN Protection",
+                        OrderIndex = 0
+                    }
+                ]
+            });
+        var (request, context) = CreateRequest(CreateValidRequestJson());
+
+        var response = await CreateSut().EvaluateVpnProtection(request, context);
+        var body = await ReadBody(response);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains("\"matched\":true", body, StringComparison.Ordinal);
+        Assert.Contains("\"action\":\"Ban\"", body, StringComparison.Ordinal);
+        Assert.Contains("\"matchedRuleIds\":[\"vpn\"]", body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task EvaluateVpnProtection_IntelligenceUnavailable_ReturnsServiceUnavailable()
+    {
+        geoLookupApi
+            .Setup(x => x.GetIpIntelligence("198.51.100.10", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<IpIntelligenceDto>(HttpStatusCode.ServiceUnavailable));
+        var (request, context) = CreateRequest(CreateValidRequestJson());
+
+        var response = await CreateSut().EvaluateVpnProtection(request, context);
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+    }
+
+    private VpnProtectionEvaluation CreateSut() => new(
+        policyProvider.Object,
+        settingsProvider.Object,
+        evaluator.Object,
+        geoLocationApiClient.Object,
+        logger.Object);
+
+    private static (HttpRequestData Request, FunctionContext Context) CreateRequest(string json)
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton(Options.Create(new WorkerOptions
+        {
+            Serializer = new Azure.Core.Serialization.JsonObjectSerializer()
+        }));
+        var serviceProvider = services.BuildServiceProvider();
+        var context = new Mock<FunctionContext>();
+        context.Setup(x => x.InstanceServices).Returns(serviceProvider);
+        context.Setup(x => x.CancellationToken).Returns(CancellationToken.None);
+
+        var request = new Mock<HttpRequestData>(context.Object);
+        request.Setup(x => x.Body).Returns(new MemoryStream(Encoding.UTF8.GetBytes(json)));
+        request.Setup(x => x.Url).Returns(new Uri("https://localhost/api/vpn-protection/evaluate"));
+        request.Setup(x => x.CreateResponse()).Returns(() =>
+        {
+            var response = new Mock<HttpResponseData>(context.Object);
+            response.SetupProperty(x => x.StatusCode);
+            response.SetupProperty(x => x.Headers, new HttpHeadersCollection());
+            response.Setup(x => x.Body).Returns(new MemoryStream());
+            return response.Object;
+        });
+        return (request.Object, context.Object);
+    }
+
+    private static async Task<string> ReadBody(HttpResponseData response)
+    {
+        response.Body.Position = 0;
+        using var reader = new StreamReader(response.Body, Encoding.UTF8, leaveOpen: true);
+        return await reader.ReadToEndAsync();
+    }
+
+    private static string CreateValidRequestJson() => $$"""
+        {
+            "serverId": "{{ServerId}}",
+            "ipAddress": "198.51.100.10",
+            "playerGuid": "player-guid",
+            "username": "TestPlayer",
+            "slotId": 4
+        }
+        """;
+}

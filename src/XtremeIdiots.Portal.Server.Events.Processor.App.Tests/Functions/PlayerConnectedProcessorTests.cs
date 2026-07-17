@@ -20,6 +20,7 @@ using XtremeIdiots.Portal.Server.Events.Abstractions.V1.Events;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Commands;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Functions;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Services;
+using XtremeIdiots.Portal.Server.Events.Processor.App.VpnProtection;
 using XtremeIdiots.Portal.Settings.Contracts.V1.Contracts.Cod4xPlugin;
 
 using static XtremeIdiots.Portal.Server.Events.Processor.App.Tests.ServiceBusTestHelpers;
@@ -33,6 +34,7 @@ public class PlayerConnectedProcessorTests
     private readonly Mock<IGeoLocationApiClient> _geoClient = new();
     private readonly Mock<IVersionedGeoLookupApi> _versionedGeoLookup = new();
     private readonly Mock<MX.GeoLocation.Abstractions.Interfaces.V1_1.IGeoLookupApi> _geoLookupApi = new();
+    private readonly Mock<IVpnProtectionService> _vpnProtectionService = new();
     private readonly Mock<IVersionedPlayersApi> _versionedPlayers = new();
     private readonly Mock<IPlayersApi> _playersApi = new();
     private readonly Mock<IVersionedGameServerConfigurationsApi> _versionedServerConfigs = new();
@@ -67,6 +69,13 @@ public class PlayerConnectedProcessorTests
             .Setup(x => x.CheckAsync(It.IsAny<ProtectedNameContext>(), It.IsAny<CancellationToken>()))
             .Returns(Task.CompletedTask);
 
+        _vpnProtectionService
+            .Setup(x => x.ProcessAsync(
+                It.IsAny<VpnProtectionContext>(),
+                It.IsAny<IpIntelligenceDto>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new VpnProtectionProcessingResult());
+
         _serverConfigsApi
             .Setup(x => x.GetConfigurations(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(SuccessResult(new CollectionModel<ConfigurationDto>([])));
@@ -81,6 +90,7 @@ public class PlayerConnectedProcessorTests
             _logger.Object,
             _repoClient.Object,
             _geoClient.Object,
+            _vpnProtectionService.Object,
             _protectedNameService.Object,
             _welcomeMessageOrchestrator.Object,
             _cache,
@@ -265,7 +275,7 @@ public class PlayerConnectedProcessorTests
             .ReturnsAsync(SuccessResult());
 
         var geoData = Newtonsoft.Json.JsonConvert.DeserializeObject<IpIntelligenceDto>(
-            Newtonsoft.Json.JsonConvert.SerializeObject(new { Latitude = 51.5074, Longitude = -0.1278, CountryCode = "GB" }));
+            Newtonsoft.Json.JsonConvert.SerializeObject(new { Latitude = 51.5074, Longitude = -0.1278, CountryCode = "GB" }))!;
 
         _geoLookupApi.Setup(x => x.GetIpIntelligence("192.168.1.1", It.IsAny<CancellationToken>()))
             .ReturnsAsync(new ApiResult<IpIntelligenceDto>(System.Net.HttpStatusCode.OK, new ApiResponse<IpIntelligenceDto>(geoData)));
@@ -273,6 +283,66 @@ public class PlayerConnectedProcessorTests
         await _sut.ProcessPlayerConnected(message, _functionContext.Object);
 
         _geoLookupApi.Verify(x => x.GetIpIntelligence("192.168.1.1", It.IsAny<CancellationToken>()), Times.Once);
+        _vpnProtectionService.Verify(x => x.ProcessAsync(
+            It.Is<VpnProtectionContext>(vpnContext =>
+                vpnContext.ServerId == TestServerId &&
+                vpnContext.GameType == GameType.CallOfDuty4 &&
+                vpnContext.PlayerId == TestPlayerId &&
+                vpnContext.PlayerGuid == "abc123guid" &&
+                vpnContext.SlotId == 0),
+            geoData,
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task ProcessPlayerConnected_DestructiveVpnDecision_SuppressesWelcomeMessage()
+    {
+        var evt = CreateValidEvent();
+        var message = CreateMessage(evt);
+        _playersApi.Setup(x => x.HeadPlayerByGameType(GameType.CallOfDuty4, "abc123guid"))
+            .ReturnsAsync(SuccessResult());
+        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.Tags))
+            .ReturnsAsync(SuccessResult(CreatePlayerDto(TestPlayerId)));
+        _playersApi.Setup(x => x.RecordPlayerSession(It.IsAny<RecordPlayerSessionDto>()))
+            .ReturnsAsync(SuccessResult());
+        _playersApi.Setup(x => x.UpdatePlayerIpAddress(It.IsAny<UpdatePlayerIpAddressDto>()))
+            .ReturnsAsync(SuccessResult());
+        var geoData = Newtonsoft.Json.JsonConvert.DeserializeObject<IpIntelligenceDto>(
+            Newtonsoft.Json.JsonConvert.SerializeObject(new { ProxyCheck = new { IsVpn = true } }))!;
+        _geoLookupApi.Setup(x => x.GetIpIntelligence("192.168.1.1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<IpIntelligenceDto>(System.Net.HttpStatusCode.OK, new ApiResponse<IpIntelligenceDto>(geoData)));
+        _vpnProtectionService
+            .Setup(x => x.ProcessAsync(It.IsAny<VpnProtectionContext>(), geoData, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new VpnProtectionProcessingResult
+            {
+                AdminActionCreated = true,
+                Decision = new VpnProtectionDecision
+                {
+                    Action = VpnProtectionAction.Kick,
+                    MatchedRules =
+                    [
+                        new VpnProtectionRuleMatch
+                        {
+                            RuleId = "vpn",
+                            Signal = VpnProtectionSignal.ProxyCheckIsVpn,
+                            ActualValue = "True",
+                            ExpectedValue = "true",
+                            Action = VpnProtectionAction.Kick,
+                            Reason = "VPN Protection",
+                            OrderIndex = 0
+                        }
+                    ]
+                }
+            });
+
+        await _sut.ProcessPlayerConnected(message, _functionContext.Object);
+
+        _welcomeMessageOrchestrator.Verify(x => x.ProcessAsync(
+            It.IsAny<PlayerConnectedEvent>(),
+            It.IsAny<GameType>(),
+            It.IsAny<string[]>(),
+            It.IsAny<string?>(),
+            It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]

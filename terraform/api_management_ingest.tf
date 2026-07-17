@@ -264,3 +264,76 @@ resource "azurerm_api_management_api_operation_policy" "cod4x_ingest_active_bans
 XML
 }
 
+# Synchronous VPN Protection evaluation for the CoD4x plugin. The plugin retains
+# its least-privilege product subscription key while APIM authenticates to the
+# Server Events Function with managed identity.
+resource "azurerm_api_management_api_operation" "cod4x_ingest_vpn_protection_evaluate_post" {
+  count = local.cod4x_ingest_enabled ? 1 : 0
+
+  operation_id        = "post-vpn-protection-evaluate"
+  api_name            = azurerm_api_management_api.cod4x_ingest[0].name
+  api_management_name = local.api_management.name
+  resource_group_name = local.api_management.resource_group_name
+  display_name        = "Evaluate VPN Protection"
+  method              = "POST"
+  url_template        = "/vpn-protection/evaluate"
+
+  request {
+    description = "Evaluates CoD4x VPN Protection rules for a connecting player without profile-tag exclusions."
+
+    representation {
+      content_type = "application/json"
+    }
+  }
+
+  response {
+    status_code = 200
+    description = "Evaluation completed"
+  }
+
+  response {
+    status_code = 400
+    description = "Invalid request"
+  }
+
+  response {
+    status_code = 503
+    description = "IP intelligence unavailable"
+  }
+}
+
+resource "azurerm_api_management_api_operation_policy" "cod4x_ingest_vpn_protection_evaluate_post" {
+  count = local.cod4x_ingest_enabled ? 1 : 0
+
+  api_name            = azurerm_api_management_api.cod4x_ingest[0].name
+  api_management_name = local.api_management.name
+  resource_group_name = local.api_management.resource_group_name
+  operation_id        = azurerm_api_management_api_operation.cod4x_ingest_vpn_protection_evaluate_post[0].operation_id
+
+  xml_content = <<XML
+<policies>
+  <inbound>
+    <base />
+    <rate-limit-by-key calls="120" renewal-period="60" counter-key="@(context.Subscription?.Id ?? context.Request.IpAddress)" />
+    <authentication-managed-identity resource="${local.server_events_api.application.primary_identifier_uri}"
+                                     client-id="${local.managed_identities.api_management.client_id}"
+                                     output-token-variable-name="serverEventsToken" />
+    <set-header name="Authorization" exists-action="override">
+      <value>@("Bearer " + (string)context.Variables[&quot;serverEventsToken&quot;])</value>
+    </set-header>
+    <set-backend-service base-url="https://${azurerm_linux_function_app.function_app.default_hostname}" />
+    <rewrite-uri template="/api/vpn-protection/evaluate" copy-unmatched-params="false" />
+  </inbound>
+  <backend>
+    <forward-request timeout="15" />
+  </backend>
+  <outbound>
+    <base />
+  </outbound>
+  <on-error>
+    <base />
+  </on-error>
+</policies>
+XML
+}
+
