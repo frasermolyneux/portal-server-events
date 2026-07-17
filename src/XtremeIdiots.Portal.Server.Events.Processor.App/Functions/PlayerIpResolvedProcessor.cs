@@ -30,6 +30,7 @@ public class PlayerIpResolvedProcessor(
     IRepositoryApiClient repositoryApiClient,
     IGeoLocationApiClient geoLocationApiClient,
     IVpnProtectionService vpnProtectionService,
+    IVpnDetectedTagService vpnDetectedTagService,
     IMemoryCache memoryCache,
     IAuditLogger auditLogger)
 {
@@ -151,6 +152,10 @@ public class PlayerIpResolvedProcessor(
                 intelligenceResult.StatusCode);
             return;
         }
+
+        await vpnDetectedTagService
+            .AddIfDetectedAsync(playerContext.PlayerId, intelligenceResult.Result.Data, context.CancellationToken)
+            .ConfigureAwait(false);
 
         await vpnProtectionService.ProcessAsync(
             new VpnProtectionContext

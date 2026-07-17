@@ -28,6 +28,7 @@ public class PlayerConnectedProcessor(
     IRepositoryApiClient repositoryApiClient,
     IGeoLocationApiClient geoLocationApiClient,
     IVpnProtectionService vpnProtectionService,
+    IVpnDetectedTagService vpnDetectedTagService,
     IProtectedNameService protectedNameService,
     IWelcomeMessageOrchestrator welcomeMessageOrchestrator,
     IMemoryCache memoryCache,
@@ -142,6 +143,7 @@ public class PlayerConnectedProcessor(
                 }
 
                 var enrichment = await EnrichWithGeoLocation(playerEvent, context.CancellationToken).ConfigureAwait(false);
+                await vpnDetectedTagService.AddIfDetectedAsync(newPlayerContext.PlayerId, enrichment.Intelligence, context.CancellationToken).ConfigureAwait(false);
                 var vpnProtectionResult = await ProcessVpnProtection(
                     playerEvent,
                     gameType,
@@ -212,6 +214,7 @@ public class PlayerConnectedProcessor(
 
         // GeoIP enrichment (best-effort, never blocks player processing)
         var enriched = await EnrichWithGeoLocation(playerEvent, context.CancellationToken).ConfigureAwait(false);
+        await vpnDetectedTagService.AddIfDetectedAsync(playerContext.PlayerId, enriched.Intelligence, context.CancellationToken).ConfigureAwait(false);
         var vpnResult = await ProcessVpnProtection(
             playerEvent,
             gameType,

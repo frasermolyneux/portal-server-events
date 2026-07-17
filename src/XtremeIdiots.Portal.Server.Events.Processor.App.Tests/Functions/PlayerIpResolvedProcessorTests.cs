@@ -33,6 +33,7 @@ public class PlayerIpResolvedProcessorTests
     private readonly Mock<IVersionedGeoLookupApi> _versionedGeoLookupApi = new();
     private readonly Mock<MX.GeoLocation.Abstractions.Interfaces.V1_1.IGeoLookupApi> _geoLookupApi = new();
     private readonly Mock<IVpnProtectionService> _vpnProtectionService = new();
+    private readonly Mock<IVpnDetectedTagService> _vpnDetectedTagService = new();
     private readonly IMemoryCache _cache;
     private readonly Mock<IAuditLogger> _auditLogger = new();
     private readonly Mock<FunctionContext> _functionContext = new();
@@ -57,6 +58,9 @@ public class PlayerIpResolvedProcessorTests
                 It.IsAny<IpIntelligenceDto>(),
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(new VpnProtectionProcessingResult());
+        _vpnDetectedTagService
+            .Setup(x => x.AddIfDetectedAsync(It.IsAny<Guid>(), It.IsAny<IpIntelligenceDto>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
 
         _cache = new MemoryCache(Options.Create(new MemoryCacheOptions()));
 
@@ -65,6 +69,7 @@ public class PlayerIpResolvedProcessorTests
             _repoClient.Object,
             _geoLocationApiClient.Object,
             _vpnProtectionService.Object,
+            _vpnDetectedTagService.Object,
             _cache,
             _auditLogger.Object);
     }
@@ -243,6 +248,7 @@ public class PlayerIpResolvedProcessorTests
                 vpnContext.SlotId == null),
             intelligence,
             It.IsAny<CancellationToken>()), Times.Once);
+        _vpnDetectedTagService.Verify(x => x.AddIfDetectedAsync(TestPlayerId, intelligence, It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]

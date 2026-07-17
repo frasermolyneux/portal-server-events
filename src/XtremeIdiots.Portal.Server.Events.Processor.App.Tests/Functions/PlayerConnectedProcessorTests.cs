@@ -35,6 +35,7 @@ public class PlayerConnectedProcessorTests
     private readonly Mock<IVersionedGeoLookupApi> _versionedGeoLookup = new();
     private readonly Mock<MX.GeoLocation.Abstractions.Interfaces.V1_1.IGeoLookupApi> _geoLookupApi = new();
     private readonly Mock<IVpnProtectionService> _vpnProtectionService = new();
+    private readonly Mock<IVpnDetectedTagService> _vpnDetectedTagService = new();
     private readonly Mock<IVersionedPlayersApi> _versionedPlayers = new();
     private readonly Mock<IPlayersApi> _playersApi = new();
     private readonly Mock<IVersionedGameServerConfigurationsApi> _versionedServerConfigs = new();
@@ -75,6 +76,9 @@ public class PlayerConnectedProcessorTests
                 It.IsAny<IpIntelligenceDto>(),
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(new VpnProtectionProcessingResult());
+        _vpnDetectedTagService
+            .Setup(x => x.AddIfDetectedAsync(It.IsAny<Guid>(), It.IsAny<IpIntelligenceDto>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
 
         _serverConfigsApi
             .Setup(x => x.GetConfigurations(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
@@ -91,6 +95,7 @@ public class PlayerConnectedProcessorTests
             _repoClient.Object,
             _geoClient.Object,
             _vpnProtectionService.Object,
+            _vpnDetectedTagService.Object,
             _protectedNameService.Object,
             _welcomeMessageOrchestrator.Object,
             _cache,
@@ -292,6 +297,7 @@ public class PlayerConnectedProcessorTests
                 vpnContext.SlotId == 0),
             geoData,
             It.IsAny<CancellationToken>()), Times.Once);
+        _vpnDetectedTagService.Verify(x => x.AddIfDetectedAsync(TestPlayerId, geoData, It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]

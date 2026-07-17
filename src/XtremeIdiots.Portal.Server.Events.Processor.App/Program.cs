@@ -153,6 +153,7 @@ var host = new HostBuilder()
         services.AddSingleton<ICod4xVpnProtectionPolicyProvider, Cod4xVpnProtectionPolicyProvider>();
         services.AddTransient<IVpnProtectionRconEnforcer, VpnProtectionRconEnforcer>();
         services.AddTransient<IVpnProtectionService, VpnProtectionService>();
+        services.AddTransient<IVpnDetectedTagService, VpnDetectedTagService>();
 
         // Protected name enforcement
         services.AddTransient<IProtectedNameService, ProtectedNameService>();
