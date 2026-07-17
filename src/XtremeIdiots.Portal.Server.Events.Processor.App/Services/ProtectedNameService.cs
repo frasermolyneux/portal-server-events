@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Text.RegularExpressions;
 
 using Microsoft.Extensions.Caching.Memory;
@@ -18,6 +17,7 @@ namespace XtremeIdiots.Portal.Server.Events.Processor.App.Services;
 
 public sealed class ProtectedNameService(
     IRepositoryApiClient repositoryApiClient,
+    IAdminActionTopics adminActionTopics,
     IServersApiClient serversApiClient,
     IMemoryCache memoryCache,
     IAuditLogger auditLogger,
@@ -27,44 +27,13 @@ public sealed class ProtectedNameService(
     private static readonly TimeSpan CacheDuration = TimeSpan.FromMinutes(5);
     private const string CacheKeyPrefix = "protected-names-list:";
     private const int ProtectedNamesPageSize = 500;
-    private const int ActiveBansCheckPageSize = 50;
     private const string ProtectedNameViolationReasonMarker = "Protected Name Violation";
-    private static readonly ConcurrentDictionary<string, EnforcementLockEntry> EnforcementLocks = new();
+    private const string AutomationReasonMarker = "[PORTAL-AUTOMATION]";
     private static readonly Regex QuakeColorCodeRegex = new(@"\^[0-9A-Za-z]", RegexOptions.Compiled, TimeSpan.FromSeconds(1));
     private static readonly Regex NonAlphaNumericRegex = new(@"[^a-z0-9]+", RegexOptions.Compiled, TimeSpan.FromSeconds(1));
 
     private sealed record OwnerPlayerInfo(string Username);
     private sealed record ScopedProtectedName(string Name, Guid PlayerId, GameType OwnerGameType);
-    private readonly record struct EnforcementLockHandle(string Key, EnforcementLockEntry Entry);
-
-    private sealed class EnforcementLockEntry : IDisposable
-    {
-        private int _referenceCount = 1;
-
-        public SemaphoreSlim Semaphore { get; } = new(1, 1);
-
-        public bool TryAddReference()
-        {
-            while (true)
-            {
-                var current = Volatile.Read(ref _referenceCount);
-
-                if (current == 0)
-                {
-                    return false;
-                }
-
-                if (Interlocked.CompareExchange(ref _referenceCount, current + 1, current) == current)
-                {
-                    return true;
-                }
-            }
-        }
-
-        public int ReleaseReference() => Interlocked.Decrement(ref _referenceCount);
-
-        public void Dispose() => Semaphore.Dispose();
-    }
 
     public async Task CheckAsync(ProtectedNameContext context, CancellationToken ct = default)
     {
@@ -142,105 +111,136 @@ public sealed class ProtectedNameService(
 
                 var reason = $"{ProtectedNameViolationReasonMarker} - using '{protectedName.Name}' which is registered to {ownerUsername}";
                 var createdAdminAction = false;
-                var skipAdminActionCreation = false;
 
-                var lockKey = $"{contextGameType}:{context.PlayerId}";
-                var enforcementLock = await AcquireEnforcementLockAsync(lockKey, ct).ConfigureAwait(false);
-
-                try
+                var verificationResult = await serversApiClient.CoD4xRcon.V1.Status(context.ServerId, ct).ConfigureAwait(false);
+                if (!verificationResult.IsSuccess || verificationResult.Result?.Data is null)
                 {
-                    if (await HasActiveProtectedNameEnforcementBanAsync(contextGameType, context.PlayerId, ct).ConfigureAwait(false))
-                    {
-                        skipAdminActionCreation = true;
-                        logger.LogWarning(
-                            "Protected name enforcement duplicate detected for player {PlayerId} ('{Username}') on server {ServerId}; skipping admin action creation and continuing RCON verification",
+                    logger.LogWarning(
+                        "Protected name enforcement could not verify live player state for player {PlayerId} on server {ServerId}. Status: {StatusCode}",
+                        context.PlayerId,
+                        context.ServerId,
+                        verificationResult.StatusCode);
+                    return;
+                }
+
+                var slotPlayer = verificationResult.Result.Data.Players.FirstOrDefault(p => p.Num == context.SlotId);
+                if (slotPlayer is null)
+                {
+                    logger.LogWarning(
+                        "Protected name enforcement verification failed for player {PlayerId} on server {ServerId}. Slot {SlotId} is no longer connected.",
+                        context.PlayerId,
+                        context.ServerId,
+                        context.SlotId);
+                    return;
+                }
+
+                var resolvedName = string.IsNullOrWhiteSpace(slotPlayer.Name) ? slotPlayer.RawName : slotPlayer.Name;
+                if (!IsLikelySamePlayerName(context.Username, resolvedName))
+                {
+                    logger.LogWarning(
+                        "Protected name enforcement verification failed for player {PlayerId} on server {ServerId}. Slot {SlotId} now maps to '{ResolvedName}' (expected '{ExpectedName}').",
+                        context.PlayerId,
+                        context.ServerId,
+                        context.SlotId,
+                        resolvedName,
+                        context.Username);
+                    return;
+                }
+
+                var botAdminId = configuration["ContentSafety:BotAdminId"];
+                var automationRuleId = BuildAutomationRuleId(protectedName);
+                var ensureResult = await repositoryApiClient.AdminActions.V1
+                    .EnsureAutomatedAction(
+                        new EnsureAutomatedActionDto(
                             context.PlayerId,
-                            context.Username,
-                            context.ServerId);
-                    }
-
-                    var verificationResult = await serversApiClient.CoD4xRcon.V1.Status(context.ServerId, ct).ConfigureAwait(false);
-                    if (!verificationResult.IsSuccess || verificationResult.Result?.Data is null)
-                    {
-                        logger.LogWarning(
-                            "Protected name enforcement could not verify live player state for player {PlayerId} on server {ServerId}. Status: {StatusCode}",
-                            context.PlayerId,
-                            context.ServerId,
-                            verificationResult.StatusCode);
-                        return;
-                    }
-
-                    var slotPlayer = verificationResult.Result.Data.Players.FirstOrDefault(p => p.Num == context.SlotId);
-                    if (slotPlayer is null)
-                    {
-                        logger.LogWarning(
-                            "Protected name enforcement verification failed for player {PlayerId} on server {ServerId}. Slot {SlotId} is no longer connected.",
-                            context.PlayerId,
-                            context.ServerId,
-                            context.SlotId);
-                        return;
-                    }
-
-                    var resolvedName = string.IsNullOrWhiteSpace(slotPlayer.Name) ? slotPlayer.RawName : slotPlayer.Name;
-                    if (!IsLikelySamePlayerName(context.Username, resolvedName))
-                    {
-                        logger.LogWarning(
-                            "Protected name enforcement verification failed for player {PlayerId} on server {ServerId}. Slot {SlotId} now maps to '{ResolvedName}' (expected '{ExpectedName}').",
-                            context.PlayerId,
-                            context.ServerId,
-                            context.SlotId,
-                            resolvedName,
-                            context.Username);
-                        return;
-                    }
-
-                    var banResult = await serversApiClient.CoD4xRcon.V1.BanClient(
-                            context.ServerId,
-                            new CoD4xClientReasonRequestDto
-                            {
-                                ClientId = context.SlotId,
-                                Reason = ProtectedNameViolationReasonMarker
-                            },
-                            ct)
-                        .ConfigureAwait(false);
-
-                    if (!banResult.IsSuccess)
-                    {
-                        logger.LogWarning(
-                            "Protected name enforcement RCON ban failed for player {PlayerId} on server {ServerId}. Status: {StatusCode}",
-                            context.PlayerId,
-                            context.ServerId,
-                            banResult.StatusCode);
-                        return;
-                    }
-
-                    if (!skipAdminActionCreation && !createdAdminAction)
-                    {
-                        var botAdminId = configuration["ContentSafety:BotAdminId"];
-
-                        var adminAction = new CreateAdminActionDto(context.PlayerId, AdminActionType.Ban, reason)
+                            AdminActionType.Ban,
+                            reason,
+                            AutomationFeature.ProtectedName,
+                            automationRuleId)
                         {
                             AdminId = botAdminId
-                        };
+                        },
+                        ct)
+                    .ConfigureAwait(false);
 
-                        await repositoryApiClient.AdminActions.V1
-                            .CreateAdminAction(adminAction, ct)
+                if (!ensureResult.IsSuccess || ensureResult.Result?.Data is null)
+                {
+                    logger.LogWarning(
+                        "Failed to ensure protected name admin action for player {PlayerId}. Status: {StatusCode}",
+                        context.PlayerId,
+                        ensureResult.StatusCode);
+                    return;
+                }
+
+                var adminAction = ensureResult.Result.Data.AdminAction;
+                if (ensureResult.Result.Data.Created)
+                {
+                    var forumTopicId = await adminActionTopics.CreateTopicForAdminAction(
+                        AdminActionType.Ban,
+                        contextGameType,
+                        context.PlayerId,
+                        context.Username,
+                        adminAction.Created,
+                        reason,
+                        botAdminId,
+                        ct).ConfigureAwait(false);
+
+                    if (forumTopicId > 0)
+                    {
+                        var updateResult = await repositoryApiClient.AdminActions.V1
+                            .UpdateAdminAction(
+                                new EditAdminActionDto(adminAction.AdminActionId)
+                                {
+                                    ForumTopicId = forumTopicId
+                                },
+                                ct)
                             .ConfigureAwait(false);
 
-                        auditLogger.LogAudit(AuditEvent.ServerAction("ProtectedNameBanEnforced", AuditAction.Moderate)
-                            .WithGameContext(context.GameType, context.ServerId)
-                            .WithPlayer(string.Empty, context.Username)
-                            .WithSource("ProtectedNameService")
-                            .WithProperty("ProtectedName", protectedName.Name)
-                            .Build());
-
-                        TrackViolation(context, protectedName, ownerUsername);
-                        createdAdminAction = true;
+                        if (!updateResult.IsSuccess)
+                        {
+                            logger.LogWarning(
+                                "Failed to link protected name forum topic {ForumTopicId} to admin action {AdminActionId}",
+                                forumTopicId,
+                                adminAction.AdminActionId);
+                        }
+                    }
+                    else
+                    {
+                        logger.LogWarning("Failed to create protected name forum topic for admin action {AdminActionId}", adminAction.AdminActionId);
                     }
                 }
-                finally
+
+                var banResult = await serversApiClient.CoD4xRcon.V1.BanClient(
+                        context.ServerId,
+                        new CoD4xClientReasonRequestDto
+                        {
+                            ClientId = context.SlotId,
+                            Reason = $"{AutomationReasonMarker} ProtectedName:{automationRuleId} {ProtectedNameViolationReasonMarker}"
+                        },
+                        ct)
+                    .ConfigureAwait(false);
+
+                if (!banResult.IsSuccess)
                 {
-                    ReleaseEnforcementLock(enforcementLock);
+                    logger.LogWarning(
+                        "Protected name enforcement RCON ban failed for player {PlayerId} on server {ServerId}. Status: {StatusCode}",
+                        context.PlayerId,
+                        context.ServerId,
+                        banResult.StatusCode);
+                    return;
+                }
+
+                if (ensureResult.Result.Data.Created)
+                {
+                    auditLogger.LogAudit(AuditEvent.ServerAction("ProtectedNameBanEnforced", AuditAction.Moderate)
+                        .WithGameContext(context.GameType, context.ServerId)
+                        .WithPlayer(string.Empty, context.Username)
+                        .WithSource("ProtectedNameService")
+                        .WithProperty("ProtectedName", protectedName.Name)
+                        .Build());
+
+                    TrackViolation(context, protectedName, ownerUsername);
+                    createdAdminAction = true;
                 }
 
                 logger.LogInformation(
@@ -359,104 +359,8 @@ public sealed class ProtectedNameService(
         return null;
     }
 
-    private async Task<bool> HasActiveProtectedNameEnforcementBanAsync(GameType contextGameType, Guid playerId, CancellationToken ct)
-    {
-        try
-        {
-            var response = await repositoryApiClient.AdminActions.V1
-                .GetAdminActions(
-                    contextGameType,
-                    playerId,
-                    null,
-                    AdminActionFilter.ActiveBans,
-                    0,
-                    ActiveBansCheckPageSize,
-                    AdminActionOrder.CreatedDesc,
-                    ct)
-                .ConfigureAwait(false);
-
-            if (!response.IsSuccess || response.Result?.Data?.Items is null)
-            {
-                logger.LogWarning(
-                    "Failed to pre-check active protected-name bans for player {PlayerId} in game {GameType}. Status: {StatusCode}. Proceeding with enforcement.",
-                    playerId,
-                    contextGameType,
-                    response.StatusCode);
-                return false;
-            }
-
-            return response.Result.Data.Items.Any(IsProtectedNameEnforcementBan);
-        }
-        catch (Exception ex)
-        {
-            logger.LogWarning(
-                ex,
-                "Error pre-checking active protected-name bans for player {PlayerId} in game {GameType}. Proceeding with enforcement.",
-                playerId,
-                contextGameType);
-            return false;
-        }
-    }
-
-    private static bool IsProtectedNameEnforcementBan(AdminActionDto adminAction)
-        => (adminAction.Type is AdminActionType.Ban or AdminActionType.TempBan)
-            && !string.IsNullOrWhiteSpace(adminAction.Text)
-            && adminAction.Text.Contains(ProtectedNameViolationReasonMarker, StringComparison.OrdinalIgnoreCase);
-
-    private static async Task<EnforcementLockHandle> AcquireEnforcementLockAsync(string lockKey, CancellationToken ct)
-    {
-        while (true)
-        {
-            if (EnforcementLocks.TryGetValue(lockKey, out var existingEntry) && existingEntry.TryAddReference())
-            {
-                try
-                {
-                    await existingEntry.Semaphore.WaitAsync(ct).ConfigureAwait(false);
-                    return new EnforcementLockHandle(lockKey, existingEntry);
-                }
-                catch
-                {
-                    ReleaseEnforcementReference(lockKey, existingEntry, releaseSemaphore: false);
-                    throw;
-                }
-            }
-
-            var createdEntry = new EnforcementLockEntry();
-
-            if (EnforcementLocks.TryAdd(lockKey, createdEntry))
-            {
-                try
-                {
-                    await createdEntry.Semaphore.WaitAsync(ct).ConfigureAwait(false);
-                    return new EnforcementLockHandle(lockKey, createdEntry);
-                }
-                catch
-                {
-                    ReleaseEnforcementReference(lockKey, createdEntry, releaseSemaphore: false);
-                    throw;
-                }
-            }
-
-            createdEntry.Dispose();
-        }
-    }
-
-    private static void ReleaseEnforcementLock(EnforcementLockHandle lockHandle)
-        => ReleaseEnforcementReference(lockHandle.Key, lockHandle.Entry, releaseSemaphore: true);
-
-    private static void ReleaseEnforcementReference(string lockKey, EnforcementLockEntry entry, bool releaseSemaphore)
-    {
-        if (releaseSemaphore)
-        {
-            entry.Semaphore.Release();
-        }
-
-        if (entry.ReleaseReference() == 0
-            && EnforcementLocks.TryRemove(new KeyValuePair<string, EnforcementLockEntry>(lockKey, entry)))
-        {
-            entry.Dispose();
-        }
-    }
+    private static string BuildAutomationRuleId(ScopedProtectedName protectedName)
+        => $"{protectedName.PlayerId:N}:{NormalizePlayerName(protectedName.Name)}";
 
     private void TrackViolation(ProtectedNameContext context, ScopedProtectedName protectedName, string ownerUsername)
     {

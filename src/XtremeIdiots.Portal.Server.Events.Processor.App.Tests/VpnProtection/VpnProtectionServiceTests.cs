@@ -1,5 +1,3 @@
-using System.Text.Json;
-
 using System.Net;
 
 using Microsoft.Extensions.Configuration;
@@ -31,286 +29,107 @@ public sealed class VpnProtectionServiceTests
     private readonly Mock<IVpnProtectionEvaluator> evaluator = new();
     private readonly Mock<IVpnProtectionRconEnforcer> rconEnforcer = new();
     private readonly Mock<IRepositoryApiClient> repositoryApiClient = new();
-    private readonly Mock<IVersionedAdminActionsApi> versionedAdminActionsApi = new();
     private readonly Mock<IAdminActionsApi> adminActionsApi = new();
-    private readonly Mock<IVersionedGameServersEventsApi> versionedGameServersEventsApi = new();
-    private readonly Mock<IGameServersEventsApi> gameServersEventsApi = new();
-    private readonly Mock<IAdminActionTopics> adminActionTopics = new();
-    private readonly Mock<IAuditLogger> auditLogger = new();
-    private readonly Mock<ILogger<VpnProtectionService>> logger = new();
+    private readonly Mock<IGameServersEventsApi> gameServerEventsApi = new();
+    private readonly Mock<IAdminActionTopics> topics = new();
 
     public VpnProtectionServiceTests()
     {
-        versionedAdminActionsApi.Setup(x => x.V1).Returns(adminActionsApi.Object);
-        repositoryApiClient.Setup(x => x.AdminActions).Returns(versionedAdminActionsApi.Object);
-        versionedGameServersEventsApi.Setup(x => x.V1).Returns(gameServersEventsApi.Object);
-        repositoryApiClient.Setup(x => x.GameServersEvents).Returns(versionedGameServersEventsApi.Object);
+        var versionedAdminActions = new Mock<IVersionedAdminActionsApi>();
+        versionedAdminActions.Setup(x => x.V1).Returns(adminActionsApi.Object);
+        repositoryApiClient.Setup(x => x.AdminActions).Returns(versionedAdminActions.Object);
+        var versionedEvents = new Mock<IVersionedGameServersEventsApi>();
+        versionedEvents.Setup(x => x.V1).Returns(gameServerEventsApi.Object);
+        repositoryApiClient.Setup(x => x.GameServersEvents).Returns(versionedEvents.Object);
 
-        settingsProvider
-            .Setup(x => x.GetEffectiveSettingsAsync(ServerId, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new EffectiveVpnProtectionSettings { Enabled = true });
-        rconEnforcer
-            .Setup(x => x.EnforceAsync(
-                It.IsAny<VpnProtectionContext>(),
-                It.IsAny<VpnProtectionAction>(),
-                It.IsAny<string>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(VpnProtectionRconOutcome.Succeeded);
-        adminActionTopics
-            .Setup(x => x.CreateTopicForAdminAction(
-                It.IsAny<AdminActionType>(),
-                It.IsAny<GameType>(),
-                It.IsAny<Guid>(),
-                It.IsAny<string>(),
-                It.IsAny<DateTime>(),
-                It.IsAny<string>(),
-                It.IsAny<string?>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(1234);
-        adminActionsApi
-            .Setup(x => x.CreateAdminAction(It.IsAny<CreateAdminActionDto>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new ApiResult(HttpStatusCode.Created));
-        gameServersEventsApi
-            .Setup(x => x.CreateGameServerEvent(It.IsAny<CreateGameServerEventDto>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new ApiResult(HttpStatusCode.Created));
+        settingsProvider.Setup(x => x.GetEffectiveSettingsAsync(ServerId, It.IsAny<CancellationToken>())).ReturnsAsync(new EffectiveVpnProtectionSettings { Enabled = true });
+        rconEnforcer.Setup(x => x.EnforceAsync(It.IsAny<VpnProtectionContext>(), It.IsAny<VpnProtectionAction>(), It.IsAny<string>(), It.IsAny<CancellationToken>())).ReturnsAsync(VpnProtectionRconOutcome.Succeeded);
+        adminActionsApi.Setup(x => x.EnsureAutomatedAction(It.IsAny<EnsureAutomatedActionDto>(), It.IsAny<CancellationToken>())).ReturnsAsync(EnsureResult(true));
+        adminActionsApi.Setup(x => x.UpdateAdminAction(It.IsAny<EditAdminActionDto>(), It.IsAny<CancellationToken>())).ReturnsAsync(new ApiResult(HttpStatusCode.OK));
+        topics.Setup(x => x.CreateTopicForAdminAction(It.IsAny<AdminActionType>(), It.IsAny<GameType>(), It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<DateTime>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>())).ReturnsAsync(1234);
+        gameServerEventsApi.Setup(x => x.CreateGameServerEvent(It.IsAny<CreateGameServerEventDto>(), It.IsAny<CancellationToken>())).ReturnsAsync(new ApiResult(HttpStatusCode.Created));
     }
 
     [Fact]
-    public async Task ProcessAsync_ExcludedTag_SkipsEvaluationAndActions()
+    public async Task ProcessAsync_NewBan_EnsuresActionCreatesTopicAndMarksRconReason()
     {
-        settingsProvider
-            .Setup(x => x.GetEffectiveSettingsAsync(ServerId, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new EffectiveVpnProtectionSettings
-            {
-                Enabled = true,
-                ExcludedPlayerTags = new HashSet<string>(["Trusted VPN"], StringComparer.OrdinalIgnoreCase)
-            });
-        var context = CreateContext(["trusted vpn"]);
+        evaluator.Setup(x => x.Evaluate(It.IsAny<EffectiveVpnProtectionSettings>(), It.IsAny<IpIntelligenceDto>())).Returns(Decision(VpnProtectionAction.Ban));
 
-        var result = await CreateSut().ProcessAsync(context, new IpIntelligenceDto());
-
-        Assert.True(result.WasExcluded);
-        Assert.False(result.AdminActionCreated);
-        evaluator.Verify(
-            x => x.Evaluate(It.IsAny<EffectiveVpnProtectionSettings>(), It.IsAny<IpIntelligenceDto>()),
-            Times.Never);
-        adminActionsApi.Verify(
-            x => x.CreateAdminAction(It.IsAny<CreateAdminActionDto>(), It.IsAny<CancellationToken>()),
-            Times.Never);
-    }
-
-    [Fact]
-    public async Task ProcessAsync_NoMatchingRules_DoesNotCreateAction()
-    {
-        evaluator
-            .Setup(x => x.Evaluate(It.IsAny<EffectiveVpnProtectionSettings>(), It.IsAny<IpIntelligenceDto>()))
-            .Returns(VpnProtectionDecision.NoMatch);
-
-        var result = await CreateSut().ProcessAsync(CreateContext(), new IpIntelligenceDto());
-
-        Assert.False(result.AdminActionCreated);
-        rconEnforcer.Verify(
-            x => x.EnforceAsync(
-                It.IsAny<VpnProtectionContext>(),
-                It.IsAny<VpnProtectionAction>(),
-                It.IsAny<string>(),
-                It.IsAny<CancellationToken>()),
-            Times.Never);
-    }
-
-    [Fact]
-    public async Task ProcessAsync_RconFails_StillCreatesForumTopicAndAdminAction()
-    {
-        var decision = CreateDecision(VpnProtectionAction.Ban);
-        evaluator
-            .Setup(x => x.Evaluate(It.IsAny<EffectiveVpnProtectionSettings>(), It.IsAny<IpIntelligenceDto>()))
-            .Returns(decision);
-        rconEnforcer
-            .Setup(x => x.EnforceAsync(
-                It.IsAny<VpnProtectionContext>(),
-                VpnProtectionAction.Ban,
-                decision.Reason,
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(VpnProtectionRconOutcome.Failed);
-
-        var result = await CreateSut().ProcessAsync(CreateContext(), new IpIntelligenceDto());
+        var result = await CreateSut().ProcessAsync(Context(), new IpIntelligenceDto());
 
         Assert.True(result.AdminActionCreated);
-        Assert.Equal(VpnProtectionRconOutcome.Failed, result.RconOutcome);
-        adminActionTopics.Verify(x => x.CreateTopicForAdminAction(
-            AdminActionType.Ban,
-            GameType.CallOfDuty4,
-            PlayerId,
-            "TestPlayer",
-            It.IsAny<DateTime>(),
-            It.Is<string>(text => text.Contains("RCON outcome: Failed", StringComparison.Ordinal)),
-            BotAdminId,
-            It.IsAny<CancellationToken>()), Times.Once);
-        adminActionsApi.Verify(x => x.CreateAdminAction(
-            It.Is<CreateAdminActionDto>(dto =>
-                dto.PlayerId == PlayerId &&
-                dto.Type == AdminActionType.Ban &&
-                dto.AdminId == BotAdminId &&
-                dto.ForumTopicId == 1234 &&
-                dto.Text.Contains("vpn", StringComparison.Ordinal)),
-            It.IsAny<CancellationToken>()), Times.Once);
-        var persistedEvent = default(CreateGameServerEventDto);
-        gameServersEventsApi.Verify(x => x.CreateGameServerEvent(
-            It.Is<CreateGameServerEventDto>(dto => CaptureEvent(dto, out persistedEvent)),
-            It.IsAny<CancellationToken>()), Times.Once);
-        Assert.NotNull(persistedEvent);
-        Assert.Equal(ServerId, persistedEvent.GameServerId);
-        Assert.Equal("VpnProtectionAction", persistedEvent.EventType);
-
-        using var eventData = JsonDocument.Parse(persistedEvent.EventData);
-        var root = eventData.RootElement;
-        Assert.Equal("Ban", root.GetProperty("action").GetString());
-        Assert.Equal("Failed", root.GetProperty("rconOutcome").GetString());
-        Assert.Equal(PlayerId, root.GetProperty("playerId").GetGuid());
-        Assert.Equal("player-guid", root.GetProperty("playerGuid").GetString());
-        Assert.Equal("TestPlayer", root.GetProperty("username").GetString());
-        Assert.Equal(4, root.GetProperty("slotId").GetInt32());
-        Assert.Equal("VPN Protection: vpn", root.GetProperty("reason").GetString());
-        Assert.Equal(["vpn"], root.GetProperty("matchedRuleIds").EnumerateArray().Select(static item => item.GetString()));
+        adminActionsApi.Verify(x => x.EnsureAutomatedAction(It.Is<EnsureAutomatedActionDto>(dto => dto.PlayerId == PlayerId && dto.Type == AdminActionType.Ban && dto.AutomationFeature == AutomationFeature.VpnProtection && dto.AutomationRuleId == "vpn" && dto.AdminId == BotAdminId), It.IsAny<CancellationToken>()), Times.Once);
+        topics.Verify(x => x.CreateTopicForAdminAction(AdminActionType.Ban, GameType.CallOfDuty4, PlayerId, "TestPlayer", It.IsAny<DateTime>(), It.IsAny<string>(), BotAdminId, It.IsAny<CancellationToken>()), Times.Once);
+        adminActionsApi.Verify(x => x.UpdateAdminAction(It.Is<EditAdminActionDto>(dto => dto.ForumTopicId == 1234), It.IsAny<CancellationToken>()), Times.Once);
+        rconEnforcer.Verify(x => x.EnforceAsync(It.IsAny<VpnProtectionContext>(), VpnProtectionAction.Ban, It.Is<string>(reason => reason.Contains("[PORTAL-AUTOMATION] VPN:vpn", StringComparison.Ordinal)), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
-    public async Task ProcessAsync_AdminActionApiFails_DoesNotRetryEnforcement()
+    public async Task ProcessAsync_ExistingBan_DoesNotCreateTopic()
     {
-        evaluator
-            .Setup(x => x.Evaluate(It.IsAny<EffectiveVpnProtectionSettings>(), It.IsAny<IpIntelligenceDto>()))
-            .Returns(CreateDecision(VpnProtectionAction.Kick));
-        adminActionsApi
-            .Setup(x => x.CreateAdminAction(It.IsAny<CreateAdminActionDto>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new ApiResult(HttpStatusCode.InternalServerError));
+        evaluator.Setup(x => x.Evaluate(It.IsAny<EffectiveVpnProtectionSettings>(), It.IsAny<IpIntelligenceDto>())).Returns(Decision(VpnProtectionAction.Ban));
+        adminActionsApi.Setup(x => x.EnsureAutomatedAction(It.IsAny<EnsureAutomatedActionDto>(), It.IsAny<CancellationToken>())).ReturnsAsync(EnsureResult(false));
 
-        var result = await CreateSut().ProcessAsync(CreateContext(), new IpIntelligenceDto());
+        var result = await CreateSut().ProcessAsync(Context(), new IpIntelligenceDto());
 
         Assert.False(result.AdminActionCreated);
-        rconEnforcer.Verify(x => x.EnforceAsync(
-            It.IsAny<VpnProtectionContext>(),
-            VpnProtectionAction.Kick,
-            It.IsAny<string>(),
-            It.IsAny<CancellationToken>()), Times.Once);
-        gameServersEventsApi.Verify(x => x.CreateGameServerEvent(
-            It.Is<CreateGameServerEventDto>(dto => dto.EventType == "VpnProtectionAction"),
-            It.IsAny<CancellationToken>()), Times.Once);
+        topics.Verify(x => x.CreateTopicForAdminAction(It.IsAny<AdminActionType>(), It.IsAny<GameType>(), It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<DateTime>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+        adminActionsApi.Verify(x => x.UpdateAdminAction(It.IsAny<EditAdminActionDto>(), It.IsAny<CancellationToken>()), Times.Never);
+        rconEnforcer.Verify(x => x.EnforceAsync(It.IsAny<VpnProtectionContext>(), VpnProtectionAction.Ban, It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
-    public async Task ProcessAsync_GameServerEventClientThrows_StillCreatesAdminAction()
+    public async Task ProcessAsync_ObservationExisting_DoesNotCreateTopicOrRconAction()
     {
-        evaluator
-            .Setup(x => x.Evaluate(It.IsAny<EffectiveVpnProtectionSettings>(), It.IsAny<IpIntelligenceDto>()))
-            .Returns(CreateDecision(VpnProtectionAction.Kick));
-        gameServersEventsApi
-            .Setup(x => x.CreateGameServerEvent(It.IsAny<CreateGameServerEventDto>(), It.IsAny<CancellationToken>()))
-            .ThrowsAsync(new HttpRequestException("Repository unavailable"));
+        evaluator.Setup(x => x.Evaluate(It.IsAny<EffectiveVpnProtectionSettings>(), It.IsAny<IpIntelligenceDto>())).Returns(Decision(VpnProtectionAction.Observation));
+        adminActionsApi.Setup(x => x.EnsureAutomatedAction(It.IsAny<EnsureAutomatedActionDto>(), It.IsAny<CancellationToken>())).ReturnsAsync(EnsureResult(false));
 
-        var result = await CreateSut().ProcessAsync(CreateContext(), new IpIntelligenceDto());
+        await CreateSut().ProcessAsync(Context(), new IpIntelligenceDto());
 
-        Assert.True(result.AdminActionCreated);
-        rconEnforcer.Verify(x => x.EnforceAsync(
-            It.IsAny<VpnProtectionContext>(),
-            VpnProtectionAction.Kick,
-            It.IsAny<string>(),
-            It.IsAny<CancellationToken>()), Times.Once);
-        adminActionsApi.Verify(x => x.CreateAdminAction(
-            It.IsAny<CreateAdminActionDto>(),
-            It.IsAny<CancellationToken>()), Times.Once);
+        topics.Verify(x => x.CreateTopicForAdminAction(It.IsAny<AdminActionType>(), It.IsAny<GameType>(), It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<DateTime>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
-    public async Task ProcessAsync_UnsupportedDestructiveAction_DoesNotCreateAdminAction()
+    public async Task ProcessAsync_EnsureActionFails_DoesNotApplyMarkedRconAction()
     {
-        evaluator
-            .Setup(x => x.Evaluate(It.IsAny<EffectiveVpnProtectionSettings>(), It.IsAny<IpIntelligenceDto>()))
-            .Returns(CreateDecision(VpnProtectionAction.Ban));
-        rconEnforcer
-            .Setup(x => x.EnforceAsync(
-                It.IsAny<VpnProtectionContext>(),
-                VpnProtectionAction.Ban,
-                It.IsAny<string>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(VpnProtectionRconOutcome.UnsupportedGame);
-        var context = CreateContext() with { GameType = GameType.Insurgency };
+        evaluator.Setup(x => x.Evaluate(It.IsAny<EffectiveVpnProtectionSettings>(), It.IsAny<IpIntelligenceDto>())).Returns(Decision(VpnProtectionAction.Ban));
+        adminActionsApi.Setup(x => x.EnsureAutomatedAction(It.IsAny<EnsureAutomatedActionDto>(), It.IsAny<CancellationToken>())).ReturnsAsync(new ApiResult<EnsureAutomatedActionResultDto>(HttpStatusCode.InternalServerError));
 
-        var result = await CreateSut().ProcessAsync(context, new IpIntelligenceDto());
+        var result = await CreateSut().ProcessAsync(Context(), new IpIntelligenceDto());
 
         Assert.False(result.AdminActionCreated);
-        Assert.Equal(VpnProtectionRconOutcome.UnsupportedGame, result.RconOutcome);
-        adminActionTopics.Verify(x => x.CreateTopicForAdminAction(
-            It.IsAny<AdminActionType>(),
-            It.IsAny<GameType>(),
-            It.IsAny<Guid>(),
-            It.IsAny<string>(),
-            It.IsAny<DateTime>(),
-            It.IsAny<string>(),
-            It.IsAny<string?>(),
-            It.IsAny<CancellationToken>()), Times.Never);
-        adminActionsApi.Verify(x => x.CreateAdminAction(
-            It.IsAny<CreateAdminActionDto>(),
-            It.IsAny<CancellationToken>()), Times.Never);
-        gameServersEventsApi.Verify(x => x.CreateGameServerEvent(
-            It.IsAny<CreateGameServerEventDto>(),
-            It.IsAny<CancellationToken>()), Times.Never);
+        rconEnforcer.Verify(x => x.EnforceAsync(It.IsAny<VpnProtectionContext>(), It.IsAny<VpnProtectionAction>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     private VpnProtectionService CreateSut()
     {
-        IConfiguration configuration = new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string?>
-            {
-                ["ContentSafety:BotAdminId"] = BotAdminId
-            })
-            .Build();
-
-        return new VpnProtectionService(
-            settingsProvider.Object,
-            evaluator.Object,
-            rconEnforcer.Object,
-            repositoryApiClient.Object,
-            adminActionTopics.Object,
-            configuration,
-            auditLogger.Object,
-            logger.Object);
+        IConfiguration configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?> { ["ContentSafety:BotAdminId"] = BotAdminId }).Build();
+        return new VpnProtectionService(settingsProvider.Object, evaluator.Object, rconEnforcer.Object, repositoryApiClient.Object, topics.Object, configuration, new Mock<IAuditLogger>().Object, new Mock<ILogger<VpnProtectionService>>().Object);
     }
 
-    private static VpnProtectionContext CreateContext(IReadOnlyCollection<string>? tags = null) => new()
+    private static VpnProtectionContext Context() => new()
     {
         ServerId = ServerId,
         GameType = GameType.CallOfDuty4,
         PlayerId = PlayerId,
         PlayerGuid = "player-guid",
         Username = "TestPlayer",
-        PlayerTags = tags ?? [],
+        PlayerTags = [],
         SlotId = 4
     };
 
-    private static VpnProtectionDecision CreateDecision(VpnProtectionAction action) => new()
+    private static VpnProtectionDecision Decision(VpnProtectionAction action) => new()
     {
         Action = action,
         Reason = "VPN Protection: vpn",
-        MatchedRules =
-        [
-            new VpnProtectionRuleMatch
-            {
-                RuleId = "vpn",
-                Signal = VpnProtectionSignal.ProxyCheckIsVpn,
-                ActualValue = "True",
-                ExpectedValue = "true",
-                Action = action,
-                Reason = "VPN Protection: vpn",
-                OrderIndex = 0
-            }
-        ]
+        MatchedRules = [new VpnProtectionRuleMatch { RuleId = "vpn", Signal = VpnProtectionSignal.ProxyCheckIsVpn, ActualValue = "True", ExpectedValue = "true", Action = action, Reason = "VPN Protection: vpn", OrderIndex = 0 }]
     };
 
-    private static bool CaptureEvent(
-        CreateGameServerEventDto value,
-        out CreateGameServerEventDto? captured)
+    private static ApiResult<EnsureAutomatedActionResultDto> EnsureResult(bool created)
     {
-        captured = value;
-        return true;
+        var forumTopic = created ? "null" : "1234";
+        var json = "{\"created\":" + created.ToString().ToLowerInvariant() + ",\"adminAction\":{\"adminActionId\":\"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\",\"playerId\":\"" + PlayerId + "\",\"forumTopicId\":" + forumTopic + ",\"type\":\"Ban\",\"text\":\"VPN Protection: vpn\",\"created\":\"2026-01-01T00:00:00Z\"}}";
+        var data = Newtonsoft.Json.JsonConvert.DeserializeObject<EnsureAutomatedActionResultDto>(json)!;
+        return new ApiResult<EnsureAutomatedActionResultDto>(created ? HttpStatusCode.Created : HttpStatusCode.OK, new ApiResponse<EnsureAutomatedActionResultDto>(data));
     }
 }

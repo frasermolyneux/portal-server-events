@@ -25,6 +25,7 @@ public sealed class VpnProtectionService(
     IAuditLogger auditLogger,
     ILogger<VpnProtectionService> logger) : IVpnProtectionService
 {
+    private const string AutomationReasonMarker = "[PORTAL-AUTOMATION]";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     public async Task<VpnProtectionProcessingResult> ProcessAsync(
@@ -55,11 +56,7 @@ public sealed class VpnProtectionService(
             return new VpnProtectionProcessingResult();
         }
 
-        var rconOutcome = await rconEnforcer
-            .EnforceAsync(context, decision.Action, decision.Reason, ct)
-            .ConfigureAwait(false);
-        if (rconOutcome == VpnProtectionRconOutcome.UnsupportedGame &&
-            decision.Action is VpnProtectionAction.Kick or VpnProtectionAction.Ban)
+        if (IsUnsupportedDestructiveAction(context.GameType, decision.Action))
         {
             logger.LogWarning(
                 "VPN Protection skipped unsupported {Action} for game {GameType} on server {ServerId}",
@@ -69,9 +66,69 @@ public sealed class VpnProtectionService(
             return new VpnProtectionProcessingResult
             {
                 Decision = decision,
-                RconOutcome = rconOutcome
+                RconOutcome = VpnProtectionRconOutcome.UnsupportedGame
             };
         }
+
+        var selectedRuleId = GetSelectedRuleId(decision);
+        var actionText = BuildAdminActionText(decision);
+        var adminActionType = ToAdminActionType(decision.Action);
+        var botAdminId = configuration["ContentSafety:BotAdminId"];
+        var adminActionCreated = false;
+        EnsureAutomatedActionResultDto? ensuredAction;
+
+        try
+        {
+            var ensureResult = await repositoryApiClient.AdminActions.V1
+                .EnsureAutomatedAction(
+                    new EnsureAutomatedActionDto(
+                        context.PlayerId,
+                        adminActionType,
+                        actionText,
+                        AutomationFeature.VpnProtection,
+                        selectedRuleId)
+                    {
+                        AdminId = botAdminId
+                    },
+                    ct)
+                .ConfigureAwait(false);
+
+            if (!ensureResult.IsSuccess || ensureResult.Result?.Data is null)
+            {
+                logger.LogWarning(
+                    "Failed to ensure VPN Protection admin action for player {PlayerId}. Status: {StatusCode}",
+                    context.PlayerId,
+                    ensureResult.StatusCode);
+                return new VpnProtectionProcessingResult { Decision = decision };
+            }
+
+            ensuredAction = ensureResult.Result.Data;
+            adminActionCreated = ensuredAction.Created;
+            if (adminActionCreated)
+            {
+                await CreateAndLinkForumTopicAsync(
+                        ensuredAction.AdminAction,
+                        adminActionType,
+                        context,
+                        actionText,
+                        botAdminId,
+                        ct)
+                    .ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Failed to ensure VPN Protection admin action for player {PlayerId}", context.PlayerId);
+            return new VpnProtectionProcessingResult { Decision = decision };
+        }
+
+        var rconOutcome = await rconEnforcer
+            .EnforceAsync(context, decision.Action, BuildRconReason(decision, selectedRuleId), ct)
+            .ConfigureAwait(false);
 
         var eventData = JsonSerializer.Serialize(new
         {
@@ -112,69 +169,24 @@ public sealed class VpnProtectionService(
                 context.ServerId);
         }
 
-        var actionText = BuildAdminActionText(decision, rconOutcome);
-        var adminActionType = ToAdminActionType(decision.Action);
-        var botAdminId = configuration["ContentSafety:BotAdminId"];
-        var createdUtc = DateTime.UtcNow;
-        var adminActionCreated = false;
-        try
+        if (adminActionCreated)
         {
-            var forumTopicId = await adminActionTopics.CreateTopicForAdminAction(
-                adminActionType,
-                context.GameType,
-                context.PlayerId,
-                context.Username,
-                createdUtc,
-                actionText,
-                botAdminId,
-                ct).ConfigureAwait(false);
-
-            var adminAction = new CreateAdminActionDto(context.PlayerId, adminActionType, actionText)
-            {
-                AdminId = botAdminId,
-                ForumTopicId = forumTopicId > 0 ? forumTopicId : null
-            };
-            var createResult = await repositoryApiClient.AdminActions.V1
-                .CreateAdminAction(adminAction, ct)
-                .ConfigureAwait(false);
-
-            if (createResult.IsSuccess)
-            {
-                adminActionCreated = true;
-                auditLogger.LogAudit(AuditEvent.ServerAction("VpnProtectionAdminActionCreated", AuditAction.Moderate)
-                    .WithGameContext(context.GameType.ToString(), context.ServerId)
-                    .WithPlayer(context.PlayerGuid, context.Username)
-                    .WithSource("VpnProtectionService")
-                    .WithProperty("Action", decision.Action.ToString())
-                    .WithProperty("MatchedRuleIds", string.Join(",", decision.MatchedRules.Select(static match => match.RuleId)))
-                    .WithProperty("RconOutcome", rconOutcome.ToString())
-                    .Build());
-            }
-            else
-            {
-                logger.LogWarning(
-                    "Failed to create VPN Protection admin action for player {PlayerId}. Status: {StatusCode}",
-                    context.PlayerId,
-                    createResult.StatusCode);
-            }
-        }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (Exception ex)
-        {
-            logger.LogWarning(
-                ex,
-                "Failed to create VPN Protection admin action for player {PlayerId}",
-                context.PlayerId);
+            auditLogger.LogAudit(AuditEvent.ServerAction("VpnProtectionAdminActionCreated", AuditAction.Moderate)
+                .WithGameContext(context.GameType.ToString(), context.ServerId)
+                .WithPlayer(context.PlayerGuid, context.Username)
+                .WithSource("VpnProtectionService")
+                .WithProperty("Action", decision.Action.ToString())
+                .WithProperty("MatchedRuleIds", string.Join(",", decision.MatchedRules.Select(static match => match.RuleId)))
+                .WithProperty("RconOutcome", rconOutcome.ToString())
+                .Build());
         }
 
         logger.LogInformation(
-            "VPN Protection created {Action} for player {PlayerId} on server {ServerId}; RCON outcome: {RconOutcome}",
+            "VPN Protection processed {Action} for player {PlayerId} on server {ServerId}; admin action created: {AdminActionCreated}; RCON outcome: {RconOutcome}",
             decision.Action,
             context.PlayerId,
             context.ServerId,
+            adminActionCreated,
             rconOutcome);
 
         return new VpnProtectionProcessingResult
@@ -185,16 +197,69 @@ public sealed class VpnProtectionService(
         };
     }
 
-    private static string BuildAdminActionText(
-        VpnProtectionDecision decision,
-        VpnProtectionRconOutcome rconOutcome)
+    private static string BuildAdminActionText(VpnProtectionDecision decision)
     {
         var evidence = string.Join(
             "; ",
             decision.MatchedRules.Select(static match =>
                 $"{match.RuleId}: {match.Signal}={match.ActualValue} (expected {match.ExpectedValue})"));
-        return $"{decision.Reason}\n\nMatched rules: {evidence}\nRCON outcome: {rconOutcome}";
+        return $"{decision.Reason}\n\nMatched rules: {evidence}";
     }
+
+    private async Task CreateAndLinkForumTopicAsync(
+        AdminActionDto adminAction,
+        AdminActionType actionType,
+        VpnProtectionContext context,
+        string actionText,
+        string? adminId,
+        CancellationToken ct)
+    {
+        var forumTopicId = await adminActionTopics.CreateTopicForAdminAction(
+            actionType,
+            context.GameType,
+            context.PlayerId,
+            context.Username,
+            adminAction.Created,
+            actionText,
+            adminId,
+            ct).ConfigureAwait(false);
+
+        if (forumTopicId <= 0)
+        {
+            logger.LogWarning("Failed to create VPN Protection forum topic for admin action {AdminActionId}", adminAction.AdminActionId);
+            return;
+        }
+
+        var updateResult = await repositoryApiClient.AdminActions.V1
+            .UpdateAdminAction(
+                new EditAdminActionDto(adminAction.AdminActionId)
+                {
+                    ForumTopicId = forumTopicId
+                },
+                ct)
+            .ConfigureAwait(false);
+
+        if (!updateResult.IsSuccess)
+        {
+            logger.LogWarning("Failed to link VPN Protection forum topic {ForumTopicId} to admin action {AdminActionId}", forumTopicId, adminAction.AdminActionId);
+        }
+    }
+
+    private static string BuildRconReason(VpnProtectionDecision decision, string selectedRuleId)
+        => $"{AutomationReasonMarker} VPN:{selectedRuleId} {decision.Reason}";
+
+    private static string GetSelectedRuleId(VpnProtectionDecision decision)
+    {
+        return decision.MatchedRules
+            .Where(match => match.Action == decision.Action)
+            .OrderBy(match => match.OrderIndex)
+            .Select(match => match.RuleId)
+            .FirstOrDefault() ?? throw new InvalidOperationException("VPN Protection decision has no selected rule.");
+    }
+
+    private static bool IsUnsupportedDestructiveAction(GameType gameType, VpnProtectionAction action)
+        => action is VpnProtectionAction.Kick or VpnProtectionAction.Ban
+            && gameType is not (GameType.CallOfDuty2 or GameType.CallOfDuty4 or GameType.CallOfDuty5 or GameType.CallOfDuty4x);
 
     private static AdminActionType ToAdminActionType(VpnProtectionAction action) => action switch
     {
