@@ -1,3 +1,5 @@
+using System.Text.Json;
+
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 
@@ -7,6 +9,7 @@ using MX.Observability.ApplicationInsights.Auditing.Models;
 
 using XtremeIdiots.Portal.Repository.Abstractions.Constants.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.AdminActions;
+using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.GameServers;
 using XtremeIdiots.Portal.Repository.Api.Client.V1;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Services;
 
@@ -22,6 +25,8 @@ public sealed class VpnProtectionService(
     IAuditLogger auditLogger,
     ILogger<VpnProtectionService> logger) : IVpnProtectionService
 {
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+
     public async Task<VpnProtectionProcessingResult> ProcessAsync(
         VpnProtectionContext context,
         IpIntelligenceDto intelligence,
@@ -68,44 +73,102 @@ public sealed class VpnProtectionService(
             };
         }
 
+        var eventData = JsonSerializer.Serialize(new
+        {
+            Action = decision.Action.ToString(),
+            RconOutcome = rconOutcome.ToString(),
+            context.PlayerId,
+            context.PlayerGuid,
+            context.Username,
+            context.SlotId,
+            decision.Reason,
+            MatchedRuleIds = decision.MatchedRules.Select(static match => match.RuleId).ToArray()
+        }, JsonOptions);
+        try
+        {
+            var eventResult = await repositoryApiClient.GameServersEvents.V1
+                .CreateGameServerEvent(
+                    new CreateGameServerEventDto(context.ServerId, "VpnProtectionAction", eventData),
+                    ct)
+                .ConfigureAwait(false);
+
+            if (!eventResult.IsSuccess)
+            {
+                logger.LogWarning(
+                    "Failed to persist VPN Protection game server event for server {ServerId}. Status: {StatusCode}",
+                    context.ServerId,
+                    eventResult.StatusCode);
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(
+                ex,
+                "Failed to persist VPN Protection game server event for server {ServerId}",
+                context.ServerId);
+        }
+
         var actionText = BuildAdminActionText(decision, rconOutcome);
         var adminActionType = ToAdminActionType(decision.Action);
         var botAdminId = configuration["ContentSafety:BotAdminId"];
         var createdUtc = DateTime.UtcNow;
-
-        var forumTopicId = await adminActionTopics.CreateTopicForAdminAction(
-            adminActionType,
-            context.GameType,
-            context.PlayerId,
-            context.Username,
-            createdUtc,
-            actionText,
-            botAdminId,
-            ct).ConfigureAwait(false);
-
-        var adminAction = new CreateAdminActionDto(context.PlayerId, adminActionType, actionText)
+        var adminActionCreated = false;
+        try
         {
-            AdminId = botAdminId,
-            ForumTopicId = forumTopicId > 0 ? forumTopicId : null
-        };
-        var createResult = await repositoryApiClient.AdminActions.V1
-            .CreateAdminAction(adminAction, ct)
-            .ConfigureAwait(false);
+            var forumTopicId = await adminActionTopics.CreateTopicForAdminAction(
+                adminActionType,
+                context.GameType,
+                context.PlayerId,
+                context.Username,
+                createdUtc,
+                actionText,
+                botAdminId,
+                ct).ConfigureAwait(false);
 
-        if (!createResult.IsSuccess)
-        {
-            throw new InvalidOperationException(
-                $"Failed to create VPN Protection admin action. API returned {createResult.StatusCode}.");
+            var adminAction = new CreateAdminActionDto(context.PlayerId, adminActionType, actionText)
+            {
+                AdminId = botAdminId,
+                ForumTopicId = forumTopicId > 0 ? forumTopicId : null
+            };
+            var createResult = await repositoryApiClient.AdminActions.V1
+                .CreateAdminAction(adminAction, ct)
+                .ConfigureAwait(false);
+
+            if (createResult.IsSuccess)
+            {
+                adminActionCreated = true;
+                auditLogger.LogAudit(AuditEvent.ServerAction("VpnProtectionAdminActionCreated", AuditAction.Moderate)
+                    .WithGameContext(context.GameType.ToString(), context.ServerId)
+                    .WithPlayer(context.PlayerGuid, context.Username)
+                    .WithSource("VpnProtectionService")
+                    .WithProperty("Action", decision.Action.ToString())
+                    .WithProperty("MatchedRuleIds", string.Join(",", decision.MatchedRules.Select(static match => match.RuleId)))
+                    .WithProperty("RconOutcome", rconOutcome.ToString())
+                    .Build());
+            }
+            else
+            {
+                logger.LogWarning(
+                    "Failed to create VPN Protection admin action for player {PlayerId}. Status: {StatusCode}",
+                    context.PlayerId,
+                    createResult.StatusCode);
+            }
         }
-
-        auditLogger.LogAudit(AuditEvent.ServerAction("VpnProtectionAdminActionCreated", AuditAction.Moderate)
-            .WithGameContext(context.GameType.ToString(), context.ServerId)
-            .WithPlayer(context.PlayerGuid, context.Username)
-            .WithSource("VpnProtectionService")
-            .WithProperty("Action", decision.Action.ToString())
-            .WithProperty("MatchedRuleIds", string.Join(",", decision.MatchedRules.Select(static match => match.RuleId)))
-            .WithProperty("RconOutcome", rconOutcome.ToString())
-            .Build());
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(
+                ex,
+                "Failed to create VPN Protection admin action for player {PlayerId}",
+                context.PlayerId);
+        }
 
         logger.LogInformation(
             "VPN Protection created {Action} for player {PlayerId} on server {ServerId}; RCON outcome: {RconOutcome}",
@@ -116,7 +179,7 @@ public sealed class VpnProtectionService(
 
         return new VpnProtectionProcessingResult
         {
-            AdminActionCreated = true,
+            AdminActionCreated = adminActionCreated,
             Decision = decision,
             RconOutcome = rconOutcome
         };

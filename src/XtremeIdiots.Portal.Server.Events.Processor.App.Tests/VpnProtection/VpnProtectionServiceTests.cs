@@ -1,3 +1,5 @@
+using System.Text.Json;
+
 using System.Net;
 
 using Microsoft.Extensions.Configuration;
@@ -12,6 +14,7 @@ using MX.Observability.ApplicationInsights.Auditing;
 using XtremeIdiots.Portal.Repository.Abstractions.Constants.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Interfaces.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.AdminActions;
+using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.GameServers;
 using XtremeIdiots.Portal.Repository.Api.Client.V1;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Services;
 using XtremeIdiots.Portal.Server.Events.Processor.App.VpnProtection;
@@ -30,6 +33,8 @@ public sealed class VpnProtectionServiceTests
     private readonly Mock<IRepositoryApiClient> repositoryApiClient = new();
     private readonly Mock<IVersionedAdminActionsApi> versionedAdminActionsApi = new();
     private readonly Mock<IAdminActionsApi> adminActionsApi = new();
+    private readonly Mock<IVersionedGameServersEventsApi> versionedGameServersEventsApi = new();
+    private readonly Mock<IGameServersEventsApi> gameServersEventsApi = new();
     private readonly Mock<IAdminActionTopics> adminActionTopics = new();
     private readonly Mock<IAuditLogger> auditLogger = new();
     private readonly Mock<ILogger<VpnProtectionService>> logger = new();
@@ -38,6 +43,8 @@ public sealed class VpnProtectionServiceTests
     {
         versionedAdminActionsApi.Setup(x => x.V1).Returns(adminActionsApi.Object);
         repositoryApiClient.Setup(x => x.AdminActions).Returns(versionedAdminActionsApi.Object);
+        versionedGameServersEventsApi.Setup(x => x.V1).Returns(gameServersEventsApi.Object);
+        repositoryApiClient.Setup(x => x.GameServersEvents).Returns(versionedGameServersEventsApi.Object);
 
         settingsProvider
             .Setup(x => x.GetEffectiveSettingsAsync(ServerId, It.IsAny<CancellationToken>()))
@@ -62,6 +69,9 @@ public sealed class VpnProtectionServiceTests
             .ReturnsAsync(1234);
         adminActionsApi
             .Setup(x => x.CreateAdminAction(It.IsAny<CreateAdminActionDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult(HttpStatusCode.Created));
+        gameServersEventsApi
+            .Setup(x => x.CreateGameServerEvent(It.IsAny<CreateGameServerEventDto>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new ApiResult(HttpStatusCode.Created));
     }
 
@@ -144,10 +154,28 @@ public sealed class VpnProtectionServiceTests
                 dto.ForumTopicId == 1234 &&
                 dto.Text.Contains("vpn", StringComparison.Ordinal)),
             It.IsAny<CancellationToken>()), Times.Once);
+        var persistedEvent = default(CreateGameServerEventDto);
+        gameServersEventsApi.Verify(x => x.CreateGameServerEvent(
+            It.Is<CreateGameServerEventDto>(dto => CaptureEvent(dto, out persistedEvent)),
+            It.IsAny<CancellationToken>()), Times.Once);
+        Assert.NotNull(persistedEvent);
+        Assert.Equal(ServerId, persistedEvent.GameServerId);
+        Assert.Equal("VpnProtectionAction", persistedEvent.EventType);
+
+        using var eventData = JsonDocument.Parse(persistedEvent.EventData);
+        var root = eventData.RootElement;
+        Assert.Equal("Ban", root.GetProperty("action").GetString());
+        Assert.Equal("Failed", root.GetProperty("rconOutcome").GetString());
+        Assert.Equal(PlayerId, root.GetProperty("playerId").GetGuid());
+        Assert.Equal("player-guid", root.GetProperty("playerGuid").GetString());
+        Assert.Equal("TestPlayer", root.GetProperty("username").GetString());
+        Assert.Equal(4, root.GetProperty("slotId").GetInt32());
+        Assert.Equal("VPN Protection: vpn", root.GetProperty("reason").GetString());
+        Assert.Equal(["vpn"], root.GetProperty("matchedRuleIds").EnumerateArray().Select(static item => item.GetString()));
     }
 
     [Fact]
-    public async Task ProcessAsync_AdminActionApiFails_Throws()
+    public async Task ProcessAsync_AdminActionApiFails_DoesNotRetryEnforcement()
     {
         evaluator
             .Setup(x => x.Evaluate(It.IsAny<EffectiveVpnProtectionSettings>(), It.IsAny<IpIntelligenceDto>()))
@@ -156,8 +184,40 @@ public sealed class VpnProtectionServiceTests
             .Setup(x => x.CreateAdminAction(It.IsAny<CreateAdminActionDto>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new ApiResult(HttpStatusCode.InternalServerError));
 
-        await Assert.ThrowsAsync<InvalidOperationException>(
-            () => CreateSut().ProcessAsync(CreateContext(), new IpIntelligenceDto()));
+        var result = await CreateSut().ProcessAsync(CreateContext(), new IpIntelligenceDto());
+
+        Assert.False(result.AdminActionCreated);
+        rconEnforcer.Verify(x => x.EnforceAsync(
+            It.IsAny<VpnProtectionContext>(),
+            VpnProtectionAction.Kick,
+            It.IsAny<string>(),
+            It.IsAny<CancellationToken>()), Times.Once);
+        gameServersEventsApi.Verify(x => x.CreateGameServerEvent(
+            It.Is<CreateGameServerEventDto>(dto => dto.EventType == "VpnProtectionAction"),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task ProcessAsync_GameServerEventClientThrows_StillCreatesAdminAction()
+    {
+        evaluator
+            .Setup(x => x.Evaluate(It.IsAny<EffectiveVpnProtectionSettings>(), It.IsAny<IpIntelligenceDto>()))
+            .Returns(CreateDecision(VpnProtectionAction.Kick));
+        gameServersEventsApi
+            .Setup(x => x.CreateGameServerEvent(It.IsAny<CreateGameServerEventDto>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new HttpRequestException("Repository unavailable"));
+
+        var result = await CreateSut().ProcessAsync(CreateContext(), new IpIntelligenceDto());
+
+        Assert.True(result.AdminActionCreated);
+        rconEnforcer.Verify(x => x.EnforceAsync(
+            It.IsAny<VpnProtectionContext>(),
+            VpnProtectionAction.Kick,
+            It.IsAny<string>(),
+            It.IsAny<CancellationToken>()), Times.Once);
+        adminActionsApi.Verify(x => x.CreateAdminAction(
+            It.IsAny<CreateAdminActionDto>(),
+            It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -190,6 +250,9 @@ public sealed class VpnProtectionServiceTests
             It.IsAny<CancellationToken>()), Times.Never);
         adminActionsApi.Verify(x => x.CreateAdminAction(
             It.IsAny<CreateAdminActionDto>(),
+            It.IsAny<CancellationToken>()), Times.Never);
+        gameServersEventsApi.Verify(x => x.CreateGameServerEvent(
+            It.IsAny<CreateGameServerEventDto>(),
             It.IsAny<CancellationToken>()), Times.Never);
     }
 
@@ -242,4 +305,12 @@ public sealed class VpnProtectionServiceTests
             }
         ]
     };
+
+    private static bool CaptureEvent(
+        CreateGameServerEventDto value,
+        out CreateGameServerEventDto? captured)
+    {
+        captured = value;
+        return true;
+    }
 }
