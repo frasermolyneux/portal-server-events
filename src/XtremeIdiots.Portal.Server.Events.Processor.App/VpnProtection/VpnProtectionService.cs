@@ -39,18 +39,17 @@ public sealed class VpnProtectionService(
             return new VpnProtectionProcessingResult();
         }
 
-        var excludedTag = context.PlayerTags.FirstOrDefault(settings.ExcludedPlayerTags.Contains);
-        if (excludedTag is not null)
+        var decision = evaluator.Evaluate(settings, context.PlayerTags, intelligence);
+        if (decision.WasExcluded)
         {
             logger.LogInformation(
                 "VPN Protection skipped player {PlayerId} on server {ServerId} due to excluded tag {ExcludedTag}",
                 context.PlayerId,
                 context.ServerId,
-                excludedTag);
+                decision.ExcludedTag);
             return new VpnProtectionProcessingResult { WasExcluded = true };
         }
 
-        var decision = evaluator.Evaluate(settings, intelligence);
         if (!decision.IsMatch)
         {
             return new VpnProtectionProcessingResult();

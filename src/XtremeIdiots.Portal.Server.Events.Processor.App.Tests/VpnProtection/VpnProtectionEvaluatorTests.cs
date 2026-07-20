@@ -123,6 +123,56 @@ public sealed class VpnProtectionEvaluatorTests
         Assert.False(decision.IsMatch);
     }
 
+    [Fact]
+    public void Evaluate_TagAware_WithExcludedTag_ReturnsExcludedWithoutScoringRules()
+    {
+        var settings = new EffectiveVpnProtectionSettings
+        {
+            Enabled = true,
+            ExcludedPlayerTags = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "Trusted VPN" },
+            Rules = [CreateRule("vpn", VpnProtectionSignal.ProxyCheckIsVpn, VpnProtectionComparisonOperator.Equal, "true", VpnProtectionAction.Ban, 0)]
+        };
+
+        var decision = evaluator.Evaluate(settings, ["Donator", "Trusted VPN"], CreateIntelligence(isVpn: true));
+
+        Assert.True(decision.WasExcluded);
+        Assert.Equal("Trusted VPN", decision.ExcludedTag);
+        Assert.False(decision.IsMatch);
+    }
+
+    [Fact]
+    public void Evaluate_TagAware_WithoutExcludedTag_ScoresRulesAsUsual()
+    {
+        var settings = new EffectiveVpnProtectionSettings
+        {
+            Enabled = true,
+            ExcludedPlayerTags = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "Trusted VPN" },
+            Rules = [CreateRule("vpn", VpnProtectionSignal.ProxyCheckIsVpn, VpnProtectionComparisonOperator.Equal, "true", VpnProtectionAction.Ban, 0)]
+        };
+
+        var decision = evaluator.Evaluate(settings, ["Donator"], CreateIntelligence(isVpn: true));
+
+        Assert.False(decision.WasExcluded);
+        Assert.True(decision.IsMatch);
+        Assert.Equal(VpnProtectionAction.Ban, decision.Action);
+    }
+
+    [Fact]
+    public void Evaluate_TagAware_DisabledSettings_ReturnsNoMatchNotExcluded()
+    {
+        var settings = new EffectiveVpnProtectionSettings
+        {
+            Enabled = false,
+            ExcludedPlayerTags = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "Trusted VPN" },
+            Rules = [CreateRule("vpn", VpnProtectionSignal.ProxyCheckIsVpn, VpnProtectionComparisonOperator.Equal, "true", VpnProtectionAction.Ban, 0)]
+        };
+
+        var decision = evaluator.Evaluate(settings, ["Trusted VPN"], CreateIntelligence(isVpn: true));
+
+        Assert.False(decision.WasExcluded);
+        Assert.False(decision.IsMatch);
+    }
+
     private static EffectiveVpnProtectionRule CreateRule(
         string id,
         VpnProtectionSignal signal,

@@ -8,6 +8,29 @@ public sealed class VpnProtectionEvaluator : IVpnProtectionEvaluator
 {
     public VpnProtectionDecision Evaluate(
         EffectiveVpnProtectionSettings settings,
+        IReadOnlyCollection<string> playerTags,
+        IpIntelligenceDto intelligence)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+        ArgumentNullException.ThrowIfNull(playerTags);
+        ArgumentNullException.ThrowIfNull(intelligence);
+
+        if (!settings.Enabled || settings.ValidationFailed)
+        {
+            return VpnProtectionDecision.NoMatch;
+        }
+
+        var excludedTag = playerTags.FirstOrDefault(settings.ExcludedPlayerTags.Contains);
+        if (excludedTag is not null)
+        {
+            return VpnProtectionDecision.Excluded(excludedTag);
+        }
+
+        return Evaluate(settings, intelligence);
+    }
+
+    public VpnProtectionDecision Evaluate(
+        EffectiveVpnProtectionSettings settings,
         IpIntelligenceDto intelligence)
     {
         ArgumentNullException.ThrowIfNull(settings);

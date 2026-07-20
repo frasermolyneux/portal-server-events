@@ -7,6 +7,9 @@ using Microsoft.Extensions.Logging;
 
 using MX.GeoLocation.Api.Client.V1;
 
+using XtremeIdiots.Portal.Repository.Api.Client.V1;
+using XtremeIdiots.Portal.Repository.Abstractions.Constants.V1;
+using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.Players;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Services;
 using XtremeIdiots.Portal.Server.Events.Processor.App.VpnProtection;
 
@@ -17,6 +20,7 @@ public sealed class VpnProtectionEvaluation(
     IVpnProtectionSettingsProvider settingsProvider,
     IVpnProtectionEvaluator evaluator,
     IGeoLocationApiClient geoLocationApiClient,
+    IRepositoryApiClient repositoryApiClient,
     ILogger<VpnProtectionEvaluation> logger)
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
@@ -79,7 +83,9 @@ public sealed class VpnProtectionEvaluation(
                 return await WriteErrorResponse(request, HttpStatusCode.ServiceUnavailable, "IP intelligence is unavailable", context.CancellationToken).ConfigureAwait(false);
             }
 
-            var decision = evaluator.Evaluate(settings, intelligenceResult.Result.Data);
+            var playerTags = await ResolvePlayerTagsAsync(evaluationRequest.PlayerGuid).ConfigureAwait(false);
+
+            var decision = evaluator.Evaluate(settings, playerTags, intelligenceResult.Result.Data);
             var response = decision.IsMatch
                 ? new VpnProtectionEvaluationResponse
                 {
@@ -102,6 +108,43 @@ public sealed class VpnProtectionEvaluation(
                 "CoD4x VPN Protection evaluation failed for server {ServerId}",
                 evaluationRequest.ServerId);
             return await WriteErrorResponse(request, HttpStatusCode.ServiceUnavailable, "IP intelligence is unavailable", context.CancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private async Task<IReadOnlyCollection<string>> ResolvePlayerTagsAsync(string playerGuid)
+    {
+        // Excluded-tag exemptions live in the portal, so the plugin (which only sends the GUID) can
+        // never supply them. Resolve the player's tags here — CoD4x players are stored under the
+        // CallOfDuty4x game type — so the shared evaluator can honour the exemption. On lookup
+        // failure fall back to no tags (fail-closed against the exemption, matching the event path).
+        try
+        {
+            var response = await repositoryApiClient.Players.V1
+                .GetPlayerByGameType(GameType.CallOfDuty4x, playerGuid, PlayerEntityOptions.Tags)
+                .ConfigureAwait(false);
+
+            if (!response.IsSuccess || response.Result?.Data is null)
+            {
+                logger.LogWarning(
+                    "CoD4x VPN Protection could not resolve player tags for {PlayerGuid}; excluded-tag exemption cannot be applied",
+                    playerGuid);
+                return [];
+            }
+
+            return response.Result.Data.Tags
+                .Select(static playerTag => playerTag.Tag?.Name)
+                .Where(static tag => !string.IsNullOrWhiteSpace(tag))
+                .Select(static tag => tag!)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(
+                ex,
+                "CoD4x VPN Protection failed to resolve player tags for {PlayerGuid}; excluded-tag exemption cannot be applied",
+                playerGuid);
+            return [];
         }
     }
 

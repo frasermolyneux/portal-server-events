@@ -53,7 +53,7 @@ public sealed class VpnProtectionServiceTests
     [Fact]
     public async Task ProcessAsync_NewBan_EnsuresActionCreatesTopicAndMarksRconReason()
     {
-        evaluator.Setup(x => x.Evaluate(It.IsAny<EffectiveVpnProtectionSettings>(), It.IsAny<IpIntelligenceDto>())).Returns(Decision(VpnProtectionAction.Ban));
+        evaluator.Setup(x => x.Evaluate(It.IsAny<EffectiveVpnProtectionSettings>(), It.IsAny<IReadOnlyCollection<string>>(), It.IsAny<IpIntelligenceDto>())).Returns(Decision(VpnProtectionAction.Ban));
 
         var result = await CreateSut().ProcessAsync(Context(), new IpIntelligenceDto());
 
@@ -67,7 +67,7 @@ public sealed class VpnProtectionServiceTests
     [Fact]
     public async Task ProcessAsync_ExistingBan_DoesNotCreateTopic()
     {
-        evaluator.Setup(x => x.Evaluate(It.IsAny<EffectiveVpnProtectionSettings>(), It.IsAny<IpIntelligenceDto>())).Returns(Decision(VpnProtectionAction.Ban));
+        evaluator.Setup(x => x.Evaluate(It.IsAny<EffectiveVpnProtectionSettings>(), It.IsAny<IReadOnlyCollection<string>>(), It.IsAny<IpIntelligenceDto>())).Returns(Decision(VpnProtectionAction.Ban));
         adminActionsApi.Setup(x => x.EnsureAutomatedAction(It.IsAny<EnsureAutomatedActionDto>(), It.IsAny<CancellationToken>())).ReturnsAsync(EnsureResult(false));
 
         var result = await CreateSut().ProcessAsync(Context(), new IpIntelligenceDto());
@@ -81,7 +81,7 @@ public sealed class VpnProtectionServiceTests
     [Fact]
     public async Task ProcessAsync_ObservationExisting_DoesNotCreateTopicOrRconAction()
     {
-        evaluator.Setup(x => x.Evaluate(It.IsAny<EffectiveVpnProtectionSettings>(), It.IsAny<IpIntelligenceDto>())).Returns(Decision(VpnProtectionAction.Observation));
+        evaluator.Setup(x => x.Evaluate(It.IsAny<EffectiveVpnProtectionSettings>(), It.IsAny<IReadOnlyCollection<string>>(), It.IsAny<IpIntelligenceDto>())).Returns(Decision(VpnProtectionAction.Observation));
         adminActionsApi.Setup(x => x.EnsureAutomatedAction(It.IsAny<EnsureAutomatedActionDto>(), It.IsAny<CancellationToken>())).ReturnsAsync(EnsureResult(false));
 
         await CreateSut().ProcessAsync(Context(), new IpIntelligenceDto());
@@ -90,9 +90,24 @@ public sealed class VpnProtectionServiceTests
     }
 
     [Fact]
+    public async Task ProcessAsync_ExcludedTag_SkipsEnforcementAndReportsExclusion()
+    {
+        evaluator
+            .Setup(x => x.Evaluate(It.IsAny<EffectiveVpnProtectionSettings>(), It.IsAny<IReadOnlyCollection<string>>(), It.IsAny<IpIntelligenceDto>()))
+            .Returns(VpnProtectionDecision.Excluded("Trusted VPN"));
+
+        var result = await CreateSut().ProcessAsync(Context(), new IpIntelligenceDto());
+
+        Assert.True(result.WasExcluded);
+        Assert.False(result.AdminActionCreated);
+        rconEnforcer.Verify(x => x.EnforceAsync(It.IsAny<VpnProtectionContext>(), It.IsAny<VpnProtectionAction>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        adminActionsApi.Verify(x => x.EnsureAutomatedAction(It.IsAny<EnsureAutomatedActionDto>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
     public async Task ProcessAsync_EnsureActionFails_DoesNotApplyMarkedRconAction()
     {
-        evaluator.Setup(x => x.Evaluate(It.IsAny<EffectiveVpnProtectionSettings>(), It.IsAny<IpIntelligenceDto>())).Returns(Decision(VpnProtectionAction.Ban));
+        evaluator.Setup(x => x.Evaluate(It.IsAny<EffectiveVpnProtectionSettings>(), It.IsAny<IReadOnlyCollection<string>>(), It.IsAny<IpIntelligenceDto>())).Returns(Decision(VpnProtectionAction.Ban));
         adminActionsApi.Setup(x => x.EnsureAutomatedAction(It.IsAny<EnsureAutomatedActionDto>(), It.IsAny<CancellationToken>())).ReturnsAsync(new ApiResult<EnsureAutomatedActionResultDto>(HttpStatusCode.InternalServerError));
 
         var result = await CreateSut().ProcessAsync(Context(), new IpIntelligenceDto());
