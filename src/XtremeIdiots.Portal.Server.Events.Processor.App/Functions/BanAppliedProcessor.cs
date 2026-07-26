@@ -25,8 +25,6 @@ public class BanAppliedProcessor(
     IAdminActionTopics adminActionTopics,
     IAuditLogger auditLogger)
 {
-    private const string RconDumpBanListSource = "RconDumpbanlist";
-
     [Function(nameof(ProcessBanApplied))]
     public async Task ProcessBanApplied(
         [ServiceBusTrigger(Queues.BanApplied, Connection = "ServiceBusConnection")] ServiceBusReceivedMessage message,
@@ -107,7 +105,8 @@ public class BanAppliedProcessor(
             throw new InvalidOperationException($"Failed to persist BanApplied game server event. Status: {result.StatusCode}");
         }
 
-        if (string.Equals(evt.Source, RconDumpBanListSource, StringComparison.Ordinal))
+        if (string.Equals(evt.Source, BanImportSources.RconDumpBanList, StringComparison.Ordinal)
+            || string.Equals(evt.Source, BanImportSources.Cod4xVpnProtection, StringComparison.Ordinal))
         {
             await ImportRconDumpBanListActionAsync(gameType, evt, context.CancellationToken).ConfigureAwait(false);
         }

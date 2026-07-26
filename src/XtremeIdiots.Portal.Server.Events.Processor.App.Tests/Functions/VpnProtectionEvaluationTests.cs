@@ -19,7 +19,9 @@ using XtremeIdiots.Portal.Repository.Api.Client.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Constants.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Interfaces.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.Players;
+using XtremeIdiots.Portal.Server.Events.Abstractions.V1.Events;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Functions;
+using XtremeIdiots.Portal.Server.Events.Processor.App.Publishing;
 using XtremeIdiots.Portal.Server.Events.Processor.App.VpnProtection;
 
 namespace XtremeIdiots.Portal.Server.Events.Processor.App.Tests.Functions;
@@ -37,6 +39,7 @@ public sealed class VpnProtectionEvaluationTests
     private readonly Mock<IRepositoryApiClient> repositoryApiClient = new();
     private readonly Mock<IVersionedPlayersApi> versionedPlayers = new();
     private readonly Mock<IPlayersApi> playersApi = new();
+    private readonly Mock<IBanAppliedPublisher> banAppliedPublisher = new();
     private readonly Mock<ILogger<VpnProtectionEvaluation>> logger = new();
 
     public VpnProtectionEvaluationTests()
@@ -229,12 +232,110 @@ public sealed class VpnProtectionEvaluationTests
             Times.Once);
     }
 
+    [Fact]
+    public async Task EvaluateVpnProtection_BanDecision_PublishesBanAppliedImport()
+    {
+        var intelligence = JsonConvert.DeserializeObject<IpIntelligenceDto>(
+            JsonConvert.SerializeObject(new { ProxyCheck = new { IsVpn = true } }))!;
+        geoLookupApi
+            .Setup(x => x.GetIpIntelligence("198.51.100.10", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<IpIntelligenceDto>(
+                HttpStatusCode.OK,
+                new ApiResponse<IpIntelligenceDto>(intelligence)));
+        evaluator
+            .Setup(x => x.Evaluate(It.IsAny<EffectiveVpnProtectionSettings>(), It.IsAny<IReadOnlyCollection<string>>(), intelligence))
+            .Returns(Decision(VpnProtectionAction.Ban));
+        var (request, context) = CreateRequest(CreateValidRequestJson());
+
+        var response = await CreateSut().EvaluateVpnProtection(request, context);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        banAppliedPublisher.Verify(
+            x => x.PublishAsync(
+                It.Is<BanAppliedEvent>(e =>
+                    e.ServerId == ServerId &&
+                    e.GameType == nameof(GameType.CallOfDuty4x) &&
+                    e.PlayerGuid == "player-guid" &&
+                    e.PlayerName == "TestPlayer" &&
+                    !e.IsTemporary &&
+                    e.Source == "CoD4xVpnProtection" &&
+                    e.Reason == "VPN Protection"),
+                It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task EvaluateVpnProtection_NoMatch_DoesNotPublishBanApplied()
+    {
+        var intelligence = JsonConvert.DeserializeObject<IpIntelligenceDto>(
+            JsonConvert.SerializeObject(new { ProxyCheck = new { IsVpn = false } }))!;
+        geoLookupApi
+            .Setup(x => x.GetIpIntelligence("198.51.100.10", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<IpIntelligenceDto>(
+                HttpStatusCode.OK,
+                new ApiResponse<IpIntelligenceDto>(intelligence)));
+        evaluator
+            .Setup(x => x.Evaluate(It.IsAny<EffectiveVpnProtectionSettings>(), It.IsAny<IReadOnlyCollection<string>>(), intelligence))
+            .Returns(VpnProtectionDecision.NoMatch);
+        var (request, context) = CreateRequest(CreateValidRequestJson());
+
+        var response = await CreateSut().EvaluateVpnProtection(request, context);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        banAppliedPublisher.Verify(
+            x => x.PublishAsync(It.IsAny<BanAppliedEvent>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task EvaluateVpnProtection_KickDecision_DoesNotPublishBanApplied()
+    {
+        var intelligence = JsonConvert.DeserializeObject<IpIntelligenceDto>(
+            JsonConvert.SerializeObject(new { ProxyCheck = new { IsVpn = true } }))!;
+        geoLookupApi
+            .Setup(x => x.GetIpIntelligence("198.51.100.10", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<IpIntelligenceDto>(
+                HttpStatusCode.OK,
+                new ApiResponse<IpIntelligenceDto>(intelligence)));
+        evaluator
+            .Setup(x => x.Evaluate(It.IsAny<EffectiveVpnProtectionSettings>(), It.IsAny<IReadOnlyCollection<string>>(), intelligence))
+            .Returns(Decision(VpnProtectionAction.Kick));
+        var (request, context) = CreateRequest(CreateValidRequestJson());
+
+        var response = await CreateSut().EvaluateVpnProtection(request, context);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        banAppliedPublisher.Verify(
+            x => x.PublishAsync(It.IsAny<BanAppliedEvent>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    private static VpnProtectionDecision Decision(VpnProtectionAction action) => new()
+    {
+        Action = action,
+        Reason = "VPN Protection",
+        MatchedRules =
+        [
+            new VpnProtectionRuleMatch
+            {
+                RuleId = "vpn",
+                Signal = VpnProtectionSignal.ProxyCheckIsVpn,
+                ActualValue = "True",
+                ExpectedValue = "true",
+                Action = action,
+                Reason = "VPN Protection",
+                OrderIndex = 0
+            }
+        ]
+    };
+
     private VpnProtectionEvaluation CreateSut() => new(
         policyProvider.Object,
         settingsProvider.Object,
         evaluator.Object,
         geoLocationApiClient.Object,
         repositoryApiClient.Object,
+        banAppliedPublisher.Object,
         logger.Object);
 
     private static (HttpRequestData Request, FunctionContext Context) CreateRequest(string json)

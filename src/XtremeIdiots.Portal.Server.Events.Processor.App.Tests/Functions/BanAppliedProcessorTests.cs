@@ -180,6 +180,39 @@ public class BanAppliedProcessorTests
     }
 
     [Fact]
+    public async Task Cod4xVpnProtectionEvent_CreatesActionWithReasonAndForumTopic()
+    {
+        var evt = CreateValidEvent(gameType: nameof(GameType.CallOfDuty4x), playerGuid: "2310346613824768397", source: "CoD4xVpnProtection", reason: "VPN Protection: matched rule 'proxycheck-risk-score-dangerous'");
+        var playerId = Guid.Parse("22222222-2222-2222-2222-222222222222");
+        _eventsApi.Setup(x => x.CreateGameServerEvent(It.IsAny<CreateGameServerEventDto>(), It.IsAny<CancellationToken>())).ReturnsAsync(SuccessResult());
+        _playersApi.Setup(x => x.HeadPlayerByGameType(GameType.CallOfDuty4x, evt.PlayerGuid)).ReturnsAsync(SuccessResult());
+        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4x, evt.PlayerGuid, PlayerEntityOptions.None))
+            .ReturnsAsync(new ApiResult<PlayerDto>(System.Net.HttpStatusCode.OK, new ApiResponse<PlayerDto>(CreatePlayer(playerId, evt.PlayerGuid))));
+        var adminAction = CreateAdminAction(playerId);
+        var claimId = Guid.Parse("44444444-4444-4444-4444-444444444444");
+        _adminActionsApi.Setup(x => x.EnsureAutomatedAction(It.IsAny<EnsureAutomatedActionDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(CreateEnsureResult(adminAction, created: true));
+        _adminActionsApi.Setup(x => x.ClaimForumTopicPublication(adminAction.AdminActionId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(CreateClaimResult(adminAction.AdminActionId, claimId));
+        _adminActionTopics.Setup(x => x.CreateTopicForAdminAction(AdminActionType.Ban, GameType.CallOfDuty4x, playerId, "TestPlayer", It.IsAny<DateTime>(), evt.Reason, null, It.IsAny<CancellationToken>())).ReturnsAsync(12345);
+        _adminActionsApi.Setup(x => x.CompleteForumTopicPublication(adminAction.AdminActionId, It.IsAny<CompleteForumTopicPublicationDto>(), It.IsAny<CancellationToken>())).ReturnsAsync(SuccessResult());
+
+        await _sut.ProcessBanApplied(CreateMessage(evt), _functionContext.Object);
+
+        _adminActionsApi.Verify(x => x.EnsureAutomatedAction(It.Is<EnsureAutomatedActionDto>(action =>
+            action.PlayerId == playerId &&
+            action.Type == AdminActionType.Ban &&
+            action.Text == evt.Reason &&
+            action.AutomationFeature == AutomationFeature.RconBanImport &&
+            action.AutomationRuleId == $"{evt.ServerId:N}:{evt.PlayerGuid}"),
+            It.IsAny<CancellationToken>()), Times.Once);
+        _adminActionsApi.Verify(x => x.CompleteForumTopicPublication(
+            adminAction.AdminActionId,
+            It.Is<CompleteForumTopicPublicationDto>(completion => completion.ClaimId == claimId && completion.ForumTopicId == 12345),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
     public async Task RconDumpBanListEvent_WithExistingUnlinkedAction_ClaimsAndCompletesForumTopic()
     {
         var evt = CreateValidEvent(gameType: nameof(GameType.CallOfDuty4x), playerGuid: "2310346613824768397", source: "RconDumpbanlist");

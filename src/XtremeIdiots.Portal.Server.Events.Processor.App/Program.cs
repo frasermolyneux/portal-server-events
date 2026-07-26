@@ -22,6 +22,7 @@ using XtremeIdiots.Portal.Repository.Api.Client.V1;
 using XtremeIdiots.Portal.Server.Events.Processor.App;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Commands;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Moderation;
+using XtremeIdiots.Portal.Server.Events.Processor.App.Publishing;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Services;
 using XtremeIdiots.Portal.Server.Events.Processor.App.VpnProtection;
 
@@ -197,6 +198,9 @@ var host = new HostBuilder()
         {
             throw new InvalidOperationException("ServiceBusConnection:fullyQualifiedNamespace is required");
         }
+
+        // Publisher for handing server-side ban imports to the shared ban-applied queue.
+        services.AddSingleton<IBanAppliedPublisher, BanAppliedPublisher>();
 
         services.AddMemoryCache();
         services.AddHealthChecks();
