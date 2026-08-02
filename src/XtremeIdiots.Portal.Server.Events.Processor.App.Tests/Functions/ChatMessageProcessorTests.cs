@@ -79,6 +79,8 @@ public class ChatMessageProcessorTests
                 It.IsAny<bool?>(),
                 It.IsAny<int>(),
                 It.IsAny<int>(),
+                It.IsAny<string?>(),
+                It.IsAny<ConnectedPlayersOrder?>(),
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(SuccessResult(new CollectionModel<ConnectedPlayerDto>([])));
 
