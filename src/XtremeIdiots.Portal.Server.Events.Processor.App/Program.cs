@@ -90,11 +90,7 @@ var host = new HostBuilder()
         services.ConfigureFunctionsApplicationInsights();
         services.AddObservability();
 
-        services.AddRepositoryApiClient(options => options
-            .WithBaseUrl(configuration["RepositoryApi:BaseUrl"] ?? throw new InvalidOperationException("RepositoryApi:BaseUrl is required"))
-            .WithEntraIdAuthentication(configuration["RepositoryApi:ApplicationAudience"] ?? throw new InvalidOperationException("RepositoryApi:ApplicationAudience is required"))
-            .WithCachePartition("portal-server-events")
-            .WithCaching(c => c.UseLibraryDefaults()));
+        services.AddPortalServerEventsRepositoryApiClient(configuration);
 
         services.AddServersApiClient(options => options
             .WithBaseUrl(configuration["ServersIntegrationApi:BaseUrl"] ?? throw new InvalidOperationException("ServersIntegrationApi:BaseUrl is required"))
