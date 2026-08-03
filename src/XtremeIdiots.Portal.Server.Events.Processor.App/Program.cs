@@ -12,10 +12,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.FeatureManagement;
 
-using MX.Api.Client.Configuration;
 using MX.Observability.ApplicationInsights.WorkerService;
-using MX.GeoLocation.Api.Client.V1;
-using MX.InvisionCommunity.Api.Client;
 
 using XtremeIdiots.Portal.Integrations.Servers.Api.Client.V1;
 using XtremeIdiots.Portal.Repository.Api.Client.V1;
@@ -92,32 +89,15 @@ var host = new HostBuilder()
 
         services.AddPortalServerEventsRepositoryApiClient(configuration);
 
-        services.AddServersApiClient(options => options
-            .WithBaseUrl(configuration["ServersIntegrationApi:BaseUrl"] ?? throw new InvalidOperationException("ServersIntegrationApi:BaseUrl is required"))
-            .WithEntraIdAuthentication(configuration["ServersIntegrationApi:ApplicationAudience"] ?? throw new InvalidOperationException("ServersIntegrationApi:ApplicationAudience is required")));
+        services.AddPortalServerEventsServersApiClient(configuration);
 
-        var geoBaseUrl = configuration["GeoLocationApi:BaseUrl"];
-        var geoApiKey = configuration["GeoLocationApi:ApiKey"];
-        var geoAudience = configuration["GeoLocationApi:ApplicationAudience"];
-
-        if (!string.IsNullOrEmpty(geoBaseUrl) && !string.IsNullOrEmpty(geoApiKey) && !string.IsNullOrEmpty(geoAudience))
-        {
-            services.AddGeoLocationApiClient(options =>
-            {
-                options.WithBaseUrl(geoBaseUrl)
-                    .WithApiKeyAuthentication(geoApiKey, "Ocp-Apim-Subscription-Key")
-                    .WithEntraIdAuthentication(geoAudience);
-            });
-        }
-        else
+        if (!services.TryAddPortalServerEventsGeoLocationApiClient(configuration))
         {
             // GeoLocation API not configured — GeoIP enrichment will be skipped at runtime
         }
 
         // Forum integration
-        services.AddInvisionApiClient(options => options
-            .WithBaseUrl(configuration["XtremeIdiots:Forums:BaseUrl"] ?? throw new InvalidOperationException("XtremeIdiots:Forums:BaseUrl is required"))
-            .WithApiKeyAuthentication(configuration["XtremeIdiots:Forums:ApiKey"] ?? throw new InvalidOperationException("XtremeIdiots:Forums:ApiKey is required"), "key", ApiKeyLocation.QueryParameter));
+        services.AddPortalServerEventsInvisionApiClient(configuration);
         services.AddTransient<IAdminActionTopics, AdminActionTopics>();
 
         // Command framework
