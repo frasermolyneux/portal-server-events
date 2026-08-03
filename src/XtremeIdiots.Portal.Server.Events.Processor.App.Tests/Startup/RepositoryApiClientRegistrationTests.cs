@@ -76,12 +76,18 @@ public class RepositoryApiClientRegistrationTests
         var services = new ServiceCollection();
 
         // Mirror the Repository API client registration in
-        // src/XtremeIdiots.Portal.Server.Events.Processor.App/Program.cs.
-        // Any deviation here (in particular re-introducing consumer-side WithCaching)
-        // must also be applied to Program.cs.
+        // src/XtremeIdiots.Portal.Server.Events.Processor.App/Program.cs, including
+        // consumer-side L1 caching (WithCaching + UseLibraryDefaults). This is the
+        // exact expression that crashed under Repository 4.2.21 / MX.Api 2.3.76 with
+        // "The expression must invoke a method declared by ...IAdminActionsApi..." —
+        // Repository 4.2.22 consumes MX.Api 2.3.77's reflection-free SharedCacheConfiguration
+        // which scopes each policy to its matching typed sub-API, so composition now
+        // succeeds. Any deviation from Program.cs here must be applied to both files.
         services.AddRepositoryApiClient(options => options
             .WithBaseUrl(BaseUrl)
-            .WithEntraIdAuthentication(Audience));
+            .WithEntraIdAuthentication(Audience)
+            .WithCachePartition("portal-server-events")
+            .WithCaching(c => c.UseLibraryDefaults()));
 
         return services.BuildServiceProvider(validateScopes: true);
     }
