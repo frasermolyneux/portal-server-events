@@ -11,6 +11,11 @@
     <Description>Service Bus event contracts for the XtremeIdiots Portal server event pipeline.</Description>
     <PackageProjectUrl>https://github.com/frasermolyneux/portal-server-events</PackageProjectUrl>
     <RepositoryUrl>https://github.com/frasermolyneux/portal-server-events</RepositoryUrl>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
 
 </Project>
