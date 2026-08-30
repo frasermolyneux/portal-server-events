@@ -20,6 +20,7 @@ consumer agree on message shapes and queue names.
 
 ```csharp
 using XtremeIdiots.Portal.Server.Events.Abstractions.V1;
+using XtremeIdiots.Portal.Server.Events.Abstractions.V1.Events;
 
 // Reference a queue name constant
 var queueName = Queues.PlayerConnected;
