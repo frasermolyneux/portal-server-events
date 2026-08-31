@@ -1,6 +1,6 @@
 # Copilot Instructions
 
-This repository contains a versioned .NET 9 abstractions package for Service Bus
+This repository contains a versioned .NET 10 abstractions package for Service Bus
 events and an Azure Functions isolated-worker app that processes those events.
 
 ## Work in this repository

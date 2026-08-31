@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This repository owns the public Service Bus event contracts and the .NET 9 Azure
+This repository owns the public Service Bus event contracts and the .NET 10 Azure
 Functions processor that consumes them. The processor persists server activity,
 executes moderation and command behavior, enriches player data, and supports
 dead-letter reprocessing.
@@ -40,7 +40,7 @@ dead-letter reprocessing.
 
 ## Change guidance
 
-- Target .NET 9 and use the SDK pinned in `global.json`.
+- Target .NET 10 and use the SDK pinned in `global.json`.
 - Use typed settings contracts and validators for migrated settings namespaces;
   keep compatibility paths unless deliberately changing the contract.
 - Add focused tests for changed DTO serialization, processor effects, audit
