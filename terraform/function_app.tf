@@ -49,7 +49,7 @@ resource "azurerm_linux_function_app" "function_app" {
   site_config {
     application_stack {
       use_dotnet_isolated_runtime = true
-      dotnet_version              = "9.0"
+      dotnet_version              = "10.0"
     }
 
     application_insights_connection_string = data.azurerm_application_insights.app_insights.connection_string
