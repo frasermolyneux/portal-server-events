@@ -33,6 +33,9 @@
     <None Update="Fixtures\**\*.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+    <None Include="..\XtremeIdiots.Portal.Server.Events.Processor.App\host.json"
+          Link="Configuration\host.json"
+          CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

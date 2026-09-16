@@ -8,6 +8,8 @@
       "enableLiveMetricsFilters": true
     },
     "logLevel": {
+      "Function": "Warning",
+      "Host.Results": "Error",
       "Microsoft.Hosting.Lifetime": "Warning"
     }
   },
