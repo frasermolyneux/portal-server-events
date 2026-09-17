@@ -24,7 +24,7 @@ updates:
     schedule:
       interval: "weekly"
       day: "sunday"
-      time: "02:45"
+      time: "03:15"
       timezone: "Etc/UTC"
     groups:
       all-updates:
@@ -37,7 +37,7 @@ updates:
     schedule:
       interval: "weekly"
       day: "sunday"
-      time: "02:45"
+      time: "03:45"
       timezone: "Etc/UTC"
     groups:
       all-updates:
