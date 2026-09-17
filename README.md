@@ -15,6 +15,7 @@
 ## Documentation
 
 * [Platform Settings Contracts](/docs/platform-settings-contracts.md) - Typed settings contract usage and migration guidance for processor runtime settings
+* [Processor Telemetry](/docs/telemetry.md) - Host and isolated-worker telemetry pipelines, filtering policy, and production validation
 
 ## Overview
 
