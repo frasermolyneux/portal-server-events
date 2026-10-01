@@ -19,13 +19,15 @@ jobs:
   build-and-test:
     permissions:
       contents: read
-      id-token: write
-      pull-requests: write
     if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
+    outputs:
+      test_report: ${{ steps.shared-tests-1.outputs.test-report }}
     steps:
-      - uses: frasermolyneux/actions/dotnet-func-ci@dotnet-func-ci/v2
+      - id: shared-tests-1
+        uses: frasermolyneux/actions/dotnet-func-ci@dotnet-func-ci/v2.1
         with:
+          test-reporting: "true"
           dotnet-project: "XtremeIdiots.Portal.Server.Events.Processor.App"
           dotnet-version: 10.0.1xx
           src-folder: "src"
@@ -143,3 +145,18 @@ jobs:
           AZURE_CLIENT_ID: ${{ env.AZURE_CLIENT_ID }}
           AZURE_TENANT_ID: ${{ env.AZURE_TENANT_ID }}
           AZURE_SUBSCRIPTION_ID: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
+  test-results:
+    name: Test results summary
+    if: always() && github.event.pull_request.draft == false
+    needs: [build-and-test]
+    permissions:
+      pull-requests: write
+    runs-on: ubuntu-latest
+    concurrency:
+      group: test-results-${{ github.repository }}-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
+    steps:
+      - uses: frasermolyneux/actions/test-results-summary@test-results-summary/v1
+        with:
+          jobs: ${{ toJSON(needs) }}
