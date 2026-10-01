@@ -61,8 +61,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - id: ci
-        uses: frasermolyneux/actions/dotnet-func-ci@dotnet-func-ci/v2
+        uses: frasermolyneux/actions/dotnet-func-ci@dotnet-func-ci/v2.1
         with:
+          test-reporting: "true"
           dotnet-project: "XtremeIdiots.Portal.Server.Events.Processor.App"
           dotnet-version: 10.0.1xx
           src-folder: "src"
