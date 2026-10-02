@@ -293,149 +293,127 @@ public sealed class RconResponseService : IRconResponseService
             .ConfigureAwait(false);
     }
 
-    private async Task<ResolvedPlayer?> ResolvePlayerByGuidAsync(
+    private Task<ResolvedPlayer?> ResolvePlayerByGuidAsync(
+        Guid serverId,
+        GameType gameType,
+        string playerGuid,
+        CancellationToken ct) =>
+        gameType switch
+        {
+            GameType.CallOfDuty2 or GameType.CallOfDuty4 or GameType.CallOfDuty5 =>
+                ResolveStandardPlayerByGuidAsync(serverId, gameType, playerGuid, ct),
+            GameType.CallOfDuty4x => ResolveCoD4xPlayerByGuidAsync(serverId, playerGuid, ct),
+            _ => LogUnsupportedGameType(serverId, gameType)
+        };
+
+    private Task<ResolvedPlayer?> LogUnsupportedGameType(Guid serverId, GameType gameType)
+    {
+        _logger.LogWarning("RCON Tell skipped for server {ServerId}: unsupported game type {GameType}", serverId, gameType);
+        return Task.FromResult<ResolvedPlayer?>(null);
+    }
+
+    private async Task<ResolvedPlayer?> ResolveStandardPlayerByGuidAsync(
         Guid serverId,
         GameType gameType,
         string playerGuid,
         CancellationToken ct)
     {
-        if (gameType == GameType.CallOfDuty2)
+        var status = await GetStandardStatusAsync(serverId, gameType, ct).ConfigureAwait(false);
+        if (!status.IsSuccess || status.Result?.Data is null)
         {
-            var status = await _serversApiClient.Cod2Rcon.V1.Status(serverId, ct).ConfigureAwait(false);
-            if (!status.IsSuccess || status.Result?.Data is null)
-            {
-                _logger.LogWarning("Unable to resolve player slot for server {ServerId}: {StatusCode}", serverId, status.StatusCode);
-                return null;
-            }
-
-            var player = status.Result.Data.Players.FirstOrDefault(p =>
-                string.Equals(p.Guid, playerGuid, StringComparison.OrdinalIgnoreCase));
-
-            return player is null ? null : new ResolvedPlayer(player.Num, player.Guid, player.Name);
+            _logger.LogWarning("Unable to resolve player slot for server {ServerId}: {StatusCode}", serverId, status.StatusCode);
+            return null;
         }
 
-        if (gameType == GameType.CallOfDuty4)
-        {
-            var status = await _serversApiClient.Cod4Rcon.V1.Status(serverId, ct).ConfigureAwait(false);
-            if (!status.IsSuccess || status.Result?.Data is null)
-            {
-                _logger.LogWarning("Unable to resolve player slot for server {ServerId}: {StatusCode}", serverId, status.StatusCode);
-                return null;
-            }
+        var player = status.Result.Data.Players.FirstOrDefault(p =>
+            string.Equals(p.Guid, playerGuid, StringComparison.OrdinalIgnoreCase));
 
-            var player = status.Result.Data.Players.FirstOrDefault(p =>
-                string.Equals(p.Guid, playerGuid, StringComparison.OrdinalIgnoreCase));
-
-            return player is null ? null : new ResolvedPlayer(player.Num, player.Guid, player.Name);
-        }
-
-        if (gameType == GameType.CallOfDuty5)
-        {
-            var status = await _serversApiClient.Cod5Rcon.V1.Status(serverId, ct).ConfigureAwait(false);
-            if (!status.IsSuccess || status.Result?.Data is null)
-            {
-                _logger.LogWarning("Unable to resolve player slot for server {ServerId}: {StatusCode}", serverId, status.StatusCode);
-                return null;
-            }
-
-            var player = status.Result.Data.Players.FirstOrDefault(p =>
-                string.Equals(p.Guid, playerGuid, StringComparison.OrdinalIgnoreCase));
-
-            return player is null ? null : new ResolvedPlayer(player.Num, player.Guid, player.Name);
-        }
-
-        if (gameType == GameType.CallOfDuty4x)
-        {
-            var status = await _serversApiClient.CoD4xRcon.V1.Status(serverId, ct).ConfigureAwait(false);
-            if (!status.IsSuccess || status.Result?.Data is null)
-            {
-                _logger.LogWarning("Unable to resolve player slot for server {ServerId}: {StatusCode}", serverId, status.StatusCode);
-                return null;
-            }
-
-            var player = status.Result.Data.Players.FirstOrDefault(p =>
-                string.Equals(p.PlayerIdentifier, playerGuid, StringComparison.OrdinalIgnoreCase));
-
-            if (player is null)
-            {
-                return null;
-            }
-
-            var resolvedName = string.IsNullOrWhiteSpace(player.Name)
-                ? player.RawName
-                : player.Name;
-
-            return new ResolvedPlayer(player.Num, player.PlayerIdentifier, resolvedName);
-        }
-
-        _logger.LogWarning("RCON Tell skipped for server {ServerId}: unsupported game type {GameType}", serverId, gameType);
-        return null;
+        return player is null ? null : new ResolvedPlayer(player.Num, player.Guid, player.Name);
     }
 
-    private async Task<ResolvedPlayer?> ResolvePlayerBySlotAsync(
+    private async Task<ResolvedPlayer?> ResolveCoD4xPlayerByGuidAsync(
+        Guid serverId,
+        string playerGuid,
+        CancellationToken ct)
+    {
+        var status = await _serversApiClient.CoD4xRcon.V1.Status(serverId, ct).ConfigureAwait(false);
+        if (!status.IsSuccess || status.Result?.Data is null)
+        {
+            _logger.LogWarning("Unable to resolve player slot for server {ServerId}: {StatusCode}", serverId, status.StatusCode);
+            return null;
+        }
+
+        var player = status.Result.Data.Players.FirstOrDefault(p =>
+            string.Equals(p.PlayerIdentifier, playerGuid, StringComparison.OrdinalIgnoreCase));
+
+        return player is null ? null : ToResolvedPlayer(player);
+    }
+
+    private Task<ApiResult<RconStatusResponseDto>> GetStandardStatusAsync(
+        Guid serverId,
+        GameType gameType,
+        CancellationToken ct)
+    {
+        return gameType switch
+        {
+            GameType.CallOfDuty2 => _serversApiClient.Cod2Rcon.V1.Status(serverId, ct),
+            GameType.CallOfDuty4 => _serversApiClient.Cod4Rcon.V1.Status(serverId, ct),
+            GameType.CallOfDuty5 => _serversApiClient.Cod5Rcon.V1.Status(serverId, ct),
+            _ => throw new UnreachableException()
+        };
+    }
+
+    private static ResolvedPlayer ToResolvedPlayer(CoD4xStatusPlayerDto player)
+    {
+        var resolvedName = string.IsNullOrWhiteSpace(player.Name)
+            ? player.RawName
+            : player.Name;
+
+        return new ResolvedPlayer(player.Num, player.PlayerIdentifier, resolvedName);
+    }
+
+    private Task<ResolvedPlayer?> ResolvePlayerBySlotAsync(
+        Guid serverId,
+        GameType gameType,
+        int slotId,
+        CancellationToken ct) =>
+        gameType switch
+        {
+            GameType.CallOfDuty2 or GameType.CallOfDuty4 or GameType.CallOfDuty5 =>
+                ResolveStandardPlayerBySlotAsync(serverId, gameType, slotId, ct),
+            GameType.CallOfDuty4x => ResolveCoD4xPlayerBySlotAsync(serverId, slotId, ct),
+            _ => Task.FromResult<ResolvedPlayer?>(null)
+        };
+
+    private async Task<ResolvedPlayer?> ResolveStandardPlayerBySlotAsync(
         Guid serverId,
         GameType gameType,
         int slotId,
         CancellationToken ct)
     {
-        if (gameType == GameType.CallOfDuty2)
+        var status = await GetStandardStatusAsync(serverId, gameType, ct).ConfigureAwait(false);
+        if (!status.IsSuccess || status.Result?.Data is null)
         {
-            var status = await _serversApiClient.Cod2Rcon.V1.Status(serverId, ct).ConfigureAwait(false);
-            if (!status.IsSuccess || status.Result?.Data is null)
-            {
-                return null;
-            }
-
-            var player = status.Result.Data.Players.FirstOrDefault(p => p.Num == slotId);
-            return player is null ? null : new ResolvedPlayer(player.Num, player.Guid, player.Name);
+            return null;
         }
 
-        if (gameType == GameType.CallOfDuty4)
-        {
-            var status = await _serversApiClient.Cod4Rcon.V1.Status(serverId, ct).ConfigureAwait(false);
-            if (!status.IsSuccess || status.Result?.Data is null)
-            {
-                return null;
-            }
+        var player = status.Result.Data.Players.FirstOrDefault(p => p.Num == slotId);
+        return player is null ? null : new ResolvedPlayer(player.Num, player.Guid, player.Name);
+    }
 
-            var player = status.Result.Data.Players.FirstOrDefault(p => p.Num == slotId);
-            return player is null ? null : new ResolvedPlayer(player.Num, player.Guid, player.Name);
+    private async Task<ResolvedPlayer?> ResolveCoD4xPlayerBySlotAsync(
+        Guid serverId,
+        int slotId,
+        CancellationToken ct)
+    {
+        var status = await _serversApiClient.CoD4xRcon.V1.Status(serverId, ct).ConfigureAwait(false);
+        if (!status.IsSuccess || status.Result?.Data is null)
+        {
+            return null;
         }
 
-        if (gameType == GameType.CallOfDuty5)
-        {
-            var status = await _serversApiClient.Cod5Rcon.V1.Status(serverId, ct).ConfigureAwait(false);
-            if (!status.IsSuccess || status.Result?.Data is null)
-            {
-                return null;
-            }
-
-            var player = status.Result.Data.Players.FirstOrDefault(p => p.Num == slotId);
-            return player is null ? null : new ResolvedPlayer(player.Num, player.Guid, player.Name);
-        }
-
-        if (gameType == GameType.CallOfDuty4x)
-        {
-            var status = await _serversApiClient.CoD4xRcon.V1.Status(serverId, ct).ConfigureAwait(false);
-            if (!status.IsSuccess || status.Result?.Data is null)
-            {
-                return null;
-            }
-
-            var player = status.Result.Data.Players.FirstOrDefault(p => p.Num == slotId);
-            if (player is null)
-            {
-                return null;
-            }
-
-            var resolvedName = string.IsNullOrWhiteSpace(player.Name)
-                ? player.RawName
-                : player.Name;
-
-            return new ResolvedPlayer(player.Num, player.PlayerIdentifier, resolvedName);
-        }
-
-        return null;
+        var player = status.Result.Data.Players.FirstOrDefault(p => p.Num == slotId);
+        return player is null ? null : ToResolvedPlayer(player);
     }
 
     private Task<ApiResult<string>> SendTellAsync(
