@@ -236,6 +236,27 @@ public class RconResponseServiceTests
     }
 
     [Fact]
+    public async Task TryTellAsync_WithStandardGameTypes_WhenPlayerMissing_ReturnsFalseForGuidAndSlotLookups()
+    {
+        var emptyStatus = new ApiResult<RconStatusResponseDto>(
+            System.Net.HttpStatusCode.OK,
+            new ApiResponse<RconStatusResponseDto>(new RconStatusResponseDto { Players = [] }));
+        _cod2RconApi.Setup(x => x.Status(TestServerId, It.IsAny<CancellationToken>())).ReturnsAsync(emptyStatus);
+        _cod4RconApi.Setup(x => x.Status(TestServerId, It.IsAny<CancellationToken>())).ReturnsAsync(emptyStatus);
+        _cod5RconApi.Setup(x => x.Status(TestServerId, It.IsAny<CancellationToken>())).ReturnsAsync(emptyStatus);
+
+        foreach (var gameType in new[] { "CallOfDuty2", "CallOfDuty4", "CallOfDuty5" })
+        {
+            Assert.False(await _sut.TryTellAsync(TestServerId, gameType, "missing-guid", "Hello", "PlayerOne", DateTime.UtcNow));
+            Assert.False(await _sut.TryTellAsync(TestServerId, gameType, "missing-guid", 5, "Hello", "PlayerOne", DateTime.UtcNow));
+        }
+
+        _cod2RconApi.Verify(x => x.Tell(It.IsAny<Guid>(), It.IsAny<CoD4xTargetMessageRequestDto>(), It.IsAny<CancellationToken>()), Times.Never);
+        _cod4RconApi.Verify(x => x.Tell(It.IsAny<Guid>(), It.IsAny<CoD4xTargetMessageRequestDto>(), It.IsAny<CancellationToken>()), Times.Never);
+        _cod5RconApi.Verify(x => x.Tell(It.IsAny<Guid>(), It.IsAny<CoD4xTargetMessageRequestDto>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
     public async Task TryTellAsync_WithCallOfDuty4GameType_UsesCod4StatusAndTell()
     {
         _cod4RconApi.Setup(x => x.Status(TestServerId, It.IsAny<CancellationToken>()))
@@ -334,7 +355,7 @@ public class RconResponseServiceTests
                 System.Net.HttpStatusCode.OK,
                 new ApiResponse<CoD4xStatusResponseDto>(new CoD4xStatusResponseDto
                 {
-                    Players = [new CoD4xStatusPlayerDto { Num = 5, PlayerIdentifier = "guid-1", Name = "PlayerOne" }]
+                    Players = [new CoD4xStatusPlayerDto { Num = 5, PlayerIdentifier = "guid-1", Name = string.Empty, RawName = "PlayerOne" }]
                 })));
 
         _coD4xRconApi.Setup(x => x.Tell(TestServerId, It.IsAny<CoD4xTargetMessageRequestDto>(), It.IsAny<CancellationToken>()))
