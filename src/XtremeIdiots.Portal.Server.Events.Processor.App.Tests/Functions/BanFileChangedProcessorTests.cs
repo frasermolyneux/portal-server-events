@@ -188,6 +188,9 @@ public class BanFileChangedProcessorTests
         _playersApi.Verify(x => x.HeadPlayerByGameType(It.IsAny<GameType>(), It.IsAny<string>()), Times.Never);
     }
 
+    /// <summary>
+    /// Verifies that a JSON null message is logged and ignored.
+    /// </summary>
     [Fact]
     public async Task NullMessage_LogsWarningAndReturns()
     {
@@ -484,17 +487,20 @@ public class BanFileChangedProcessorTests
             It.IsAny<CancellationToken>()), Times.Never);
     }
 
+    /// <summary>
+    /// Verifies that player creation failures propagate without emitting a manual ban event.
+    /// </summary>
     [Fact]
     public async Task PlayerCreationFailure_PropagatesAndDoesNotEmitManualBanDetectedEvent()
     {
         var message = CreateMessage(CreateValidEvent());
 
-        _playersApi.Setup(x => x.HeadPlayerByGameType(GameType.CallOfDuty4, "abc123guid"))
+        _ = _playersApi.Setup(x => x.HeadPlayerByGameType(GameType.CallOfDuty4, "abc123guid"))
             .ReturnsAsync(NotFoundResult());
-        _playersApi.Setup(x => x.CreatePlayer(It.IsAny<CreatePlayerDto>()))
+        _ = _playersApi.Setup(x => x.CreatePlayer(It.IsAny<CreatePlayerDto>()))
             .ReturnsAsync(new ApiResult(HttpStatusCode.InternalServerError));
 
-        await Assert.ThrowsAsync<InvalidOperationException>(
+        _ = await Assert.ThrowsAsync<InvalidOperationException>(
             () => _sut.ProcessBanFileChanged(message, _functionContext.Object));
 
         _gameServerEventsApi.Verify(x => x.CreateGameServerEvent(
