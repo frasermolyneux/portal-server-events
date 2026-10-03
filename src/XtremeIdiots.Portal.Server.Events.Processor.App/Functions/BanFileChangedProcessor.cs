@@ -35,46 +35,13 @@ public sealed class BanFileChangedProcessor(
         [ServiceBusTrigger(Queues.BanFileChanged, Connection = "ServiceBusConnection")] ServiceBusReceivedMessage message,
         FunctionContext context)
     {
-        BanDetectedEvent? evt;
-        try
+        var validatedEvent = TryGetValidatedEvent(message);
+        if (validatedEvent is null)
         {
-            evt = JsonSerializer.Deserialize<BanDetectedEvent>(message.Body, JsonOptions.Default);
-        }
-        catch (JsonException ex)
-        {
-            logger.LogWarning(ex, "BanDetected message was not in expected format. MessageId: {MessageId}", message.MessageId);
             return;
         }
 
-        if (evt is null)
-        {
-            logger.LogWarning("BanDetected deserialized to null. MessageId: {MessageId}", message.MessageId);
-            return;
-        }
-
-        if (string.IsNullOrWhiteSpace(evt.GameType))
-        {
-            logger.LogWarning("BanDetected missing GameType. MessageId: {MessageId}", message.MessageId);
-            return;
-        }
-
-        if (evt.ServerId == Guid.Empty)
-        {
-            logger.LogWarning("BanDetected has empty ServerId. MessageId: {MessageId}", message.MessageId);
-            return;
-        }
-
-        if (evt.NewBans is null || evt.NewBans.Count == 0)
-        {
-            logger.LogWarning("BanDetected has no bans. MessageId: {MessageId}", message.MessageId);
-            return;
-        }
-
-        if (!Enum.TryParse<GameType>(evt.GameType, out var gameType))
-        {
-            logger.LogWarning("BanDetected has invalid GameType: {GameType}", evt.GameType);
-            return;
-        }
+        var (evt, gameType) = validatedEvent.Value;
 
         using var scope = logger.BeginScope(new Dictionary<string, object>
         {
@@ -113,6 +80,52 @@ public sealed class BanFileChangedProcessor(
         {
             await RecordManualBansDetectedAsync(evt.ServerId, processed, context.CancellationToken).ConfigureAwait(false);
         }
+    }
+
+    private (BanDetectedEvent Event, GameType GameType)? TryGetValidatedEvent(ServiceBusReceivedMessage message)
+    {
+        BanDetectedEvent? evt;
+        try
+        {
+            evt = JsonSerializer.Deserialize<BanDetectedEvent>(message.Body, JsonOptions.Default);
+        }
+        catch (JsonException ex)
+        {
+            logger.LogWarning(ex, "BanDetected message was not in expected format. MessageId: {MessageId}", message.MessageId);
+            return null;
+        }
+
+        if (evt is null)
+        {
+            logger.LogWarning("BanDetected deserialized to null. MessageId: {MessageId}", message.MessageId);
+            return null;
+        }
+
+        if (string.IsNullOrWhiteSpace(evt.GameType))
+        {
+            logger.LogWarning("BanDetected missing GameType. MessageId: {MessageId}", message.MessageId);
+            return null;
+        }
+
+        if (evt.ServerId == Guid.Empty)
+        {
+            logger.LogWarning("BanDetected has empty ServerId. MessageId: {MessageId}", message.MessageId);
+            return null;
+        }
+
+        if (evt.NewBans is null || evt.NewBans.Count == 0)
+        {
+            logger.LogWarning("BanDetected has no bans. MessageId: {MessageId}", message.MessageId);
+            return null;
+        }
+
+        if (!Enum.TryParse<GameType>(evt.GameType, out var gameType))
+        {
+            logger.LogWarning("BanDetected has invalid GameType: {GameType}", evt.GameType);
+            return null;
+        }
+
+        return (evt, gameType);
     }
 
     /// <summary>

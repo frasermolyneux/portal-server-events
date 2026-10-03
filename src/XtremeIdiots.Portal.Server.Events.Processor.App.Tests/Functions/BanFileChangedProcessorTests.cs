@@ -189,6 +189,16 @@ public class BanFileChangedProcessorTests
     }
 
     [Fact]
+    public async Task NullMessage_LogsWarningAndReturns()
+    {
+        var message = CreateMessage("null");
+
+        await _sut.ProcessBanFileChanged(message, _functionContext.Object);
+
+        _playersApi.Verify(x => x.HeadPlayerByGameType(It.IsAny<GameType>(), It.IsAny<string>()), Times.Never);
+    }
+
+    [Fact]
     public async Task BanWithEmptyGuid_SkipsThatBan()
     {
         var evt = CreateValidEvent(newBans:
@@ -469,6 +479,24 @@ public class BanFileChangedProcessorTests
         await _sut.ProcessBanFileChanged(message, _functionContext.Object);
 
         // Assert
+        _gameServerEventsApi.Verify(x => x.CreateGameServerEvent(
+            It.IsAny<CreateGameServerEventDto>(),
+            It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task PlayerCreationFailure_PropagatesAndDoesNotEmitManualBanDetectedEvent()
+    {
+        var message = CreateMessage(CreateValidEvent());
+
+        _playersApi.Setup(x => x.HeadPlayerByGameType(GameType.CallOfDuty4, "abc123guid"))
+            .ReturnsAsync(NotFoundResult());
+        _playersApi.Setup(x => x.CreatePlayer(It.IsAny<CreatePlayerDto>()))
+            .ReturnsAsync(new ApiResult(HttpStatusCode.InternalServerError));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => _sut.ProcessBanFileChanged(message, _functionContext.Object));
+
         _gameServerEventsApi.Verify(x => x.CreateGameServerEvent(
             It.IsAny<CreateGameServerEventDto>(),
             It.IsAny<CancellationToken>()), Times.Never);
