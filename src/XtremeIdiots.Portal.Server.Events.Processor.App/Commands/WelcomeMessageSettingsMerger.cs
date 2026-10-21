@@ -6,6 +6,24 @@ public sealed class WelcomeMessageSettingsMerger
         WelcomeMessageSettingsDocument? globalDocument,
         WelcomeMessageSettingsDocument? serverDocument)
     {
+        var enabled = ResolveEnabled(globalDocument, serverDocument);
+        var (countryFallback, staleThresholdSeconds, defaultConnectionDelaySeconds) =
+            ResolveDefaults(globalDocument, serverDocument);
+        var mergedRules = MergeRules(globalDocument, serverDocument, defaultConnectionDelaySeconds);
+
+        return new EffectiveWelcomeMessageSettings
+        {
+            Enabled = enabled,
+            CountryFallback = countryFallback,
+            StaleThresholdSeconds = staleThresholdSeconds,
+            Rules = mergedRules
+        };
+    }
+
+    private static bool ResolveEnabled(
+        WelcomeMessageSettingsDocument? globalDocument,
+        WelcomeMessageSettingsDocument? serverDocument)
+    {
         var enabled = true;
         if (globalDocument?.Enabled is bool globalEnabled)
         {
@@ -17,6 +35,13 @@ public sealed class WelcomeMessageSettingsMerger
             enabled = serverEnabled;
         }
 
+        return enabled;
+    }
+
+    private static (string CountryFallback, int StaleThresholdSeconds, int DefaultConnectionDelaySeconds) ResolveDefaults(
+        WelcomeMessageSettingsDocument? globalDocument,
+        WelcomeMessageSettingsDocument? serverDocument)
+    {
         var countryFallback = WelcomeMessageSettingsConstants.DefaultCountryFallback;
         if (!string.IsNullOrWhiteSpace(globalDocument?.Defaults?.CountryFallback))
         {
@@ -50,9 +75,31 @@ public sealed class WelcomeMessageSettingsMerger
             defaultConnectionDelaySeconds = serverDelay;
         }
 
+        return (countryFallback, staleThresholdSeconds, defaultConnectionDelaySeconds);
+    }
+
+    private static List<EffectiveWelcomeMessageRule> MergeRules(
+        WelcomeMessageSettingsDocument? globalDocument,
+        WelcomeMessageSettingsDocument? serverDocument,
+        int defaultConnectionDelaySeconds)
+    {
         var mergedRules = new List<EffectiveWelcomeMessageRule>();
         var rulesById = new Dictionary<string, EffectiveWelcomeMessageRule>(StringComparer.OrdinalIgnoreCase);
 
+        AddGlobalRules(globalDocument, serverDocument, defaultConnectionDelaySeconds, mergedRules, rulesById);
+        ApplyRuleOverrides(serverDocument, mergedRules, rulesById);
+        AddServerRules(serverDocument, defaultConnectionDelaySeconds, mergedRules, rulesById);
+
+        return mergedRules;
+    }
+
+    private static void AddGlobalRules(
+        WelcomeMessageSettingsDocument? globalDocument,
+        WelcomeMessageSettingsDocument? serverDocument,
+        int defaultConnectionDelaySeconds,
+        List<EffectiveWelcomeMessageRule> mergedRules,
+        Dictionary<string, EffectiveWelcomeMessageRule> rulesById)
+    {
         var inheritGlobalRules = serverDocument?.InheritGlobalRules ?? true;
         if (inheritGlobalRules)
         {
@@ -63,62 +110,84 @@ public sealed class WelcomeMessageSettingsMerger
                 mergedRules.Add(effective);
             }
         }
+    }
 
+    private static void ApplyRuleOverrides(
+        WelcomeMessageSettingsDocument? serverDocument,
+        List<EffectiveWelcomeMessageRule> mergedRules,
+        Dictionary<string, EffectiveWelcomeMessageRule> rulesById)
+    {
         foreach (var overrideRule in serverDocument?.RuleOverrides ?? [])
         {
-            if (string.IsNullOrWhiteSpace(overrideRule.Id))
-            {
-                continue;
-            }
+            ApplyRuleOverride(overrideRule, mergedRules, rulesById);
+        }
+    }
 
-            if (!rulesById.TryGetValue(overrideRule.Id.Trim(), out var existing))
-            {
-                continue;
-            }
-
-            var updatedRule = existing with
-            {
-                Enabled = overrideRule.Enabled ?? existing.Enabled,
-                Priority = overrideRule.Priority ?? existing.Priority,
-                Visibility = overrideRule.Visibility ?? existing.Visibility,
-                MessageTemplate = string.IsNullOrWhiteSpace(overrideRule.MessageTemplate)
-                    ? existing.MessageTemplate
-                    : overrideRule.MessageTemplate.Trim(),
-                RequiredTags = overrideRule.RequiredTags is null
-                    ? existing.RequiredTags
-                    : NormalizeTags(overrideRule.RequiredTags),
-                ConnectionDelaySeconds = overrideRule.ConnectionDelaySeconds ?? existing.ConnectionDelaySeconds
-            };
-
-            rulesById[updatedRule.Id] = updatedRule;
-
-            var existingIndex = mergedRules.FindIndex(r => string.Equals(r.Id, updatedRule.Id, StringComparison.OrdinalIgnoreCase));
-            if (existingIndex >= 0)
-            {
-                mergedRules[existingIndex] = updatedRule;
-            }
+    private static void ApplyRuleOverride(
+        WelcomeMessageRuleOverride overrideRule,
+        List<EffectiveWelcomeMessageRule> mergedRules,
+        Dictionary<string, EffectiveWelcomeMessageRule> rulesById)
+    {
+        if (string.IsNullOrWhiteSpace(overrideRule.Id))
+        {
+            return;
         }
 
+        if (!rulesById.TryGetValue(overrideRule.Id.Trim(), out var existing))
+        {
+            return;
+        }
+
+        var updatedRule = existing with
+        {
+            Enabled = overrideRule.Enabled ?? existing.Enabled,
+            Priority = overrideRule.Priority ?? existing.Priority,
+            Visibility = overrideRule.Visibility ?? existing.Visibility,
+            MessageTemplate = string.IsNullOrWhiteSpace(overrideRule.MessageTemplate)
+                ? existing.MessageTemplate
+                : overrideRule.MessageTemplate.Trim(),
+            RequiredTags = overrideRule.RequiredTags is null
+                ? existing.RequiredTags
+                : NormalizeTags(overrideRule.RequiredTags),
+            ConnectionDelaySeconds = overrideRule.ConnectionDelaySeconds ?? existing.ConnectionDelaySeconds
+        };
+
+        rulesById[updatedRule.Id] = updatedRule;
+
+        var existingIndex = mergedRules.FindIndex(r => string.Equals(r.Id, updatedRule.Id, StringComparison.OrdinalIgnoreCase));
+        if (existingIndex >= 0)
+        {
+            mergedRules[existingIndex] = updatedRule;
+        }
+    }
+
+    private static void AddServerRules(
+        WelcomeMessageSettingsDocument? serverDocument,
+        int defaultConnectionDelaySeconds,
+        List<EffectiveWelcomeMessageRule> mergedRules,
+        Dictionary<string, EffectiveWelcomeMessageRule> rulesById)
+    {
         foreach (var serverRule in serverDocument?.Rules ?? [])
         {
-            var ruleId = serverRule.Id.Trim();
-            if (rulesById.ContainsKey(ruleId))
-            {
-                continue;
-            }
+            AddServerRule(serverRule, defaultConnectionDelaySeconds, mergedRules, rulesById);
+        }
+    }
 
-            var effective = ToEffectiveRule(serverRule, defaultConnectionDelaySeconds, mergedRules.Count);
-            rulesById[effective.Id] = effective;
-            mergedRules.Add(effective);
+    private static void AddServerRule(
+        WelcomeMessageRule serverRule,
+        int defaultConnectionDelaySeconds,
+        List<EffectiveWelcomeMessageRule> mergedRules,
+        Dictionary<string, EffectiveWelcomeMessageRule> rulesById)
+    {
+        var ruleId = serverRule.Id.Trim();
+        if (rulesById.ContainsKey(ruleId))
+        {
+            return;
         }
 
-        return new EffectiveWelcomeMessageSettings
-        {
-            Enabled = enabled,
-            CountryFallback = countryFallback,
-            StaleThresholdSeconds = staleThresholdSeconds,
-            Rules = mergedRules
-        };
+        var effective = ToEffectiveRule(serverRule, defaultConnectionDelaySeconds, mergedRules.Count);
+        rulesById[effective.Id] = effective;
+        mergedRules.Add(effective);
     }
 
     private static EffectiveWelcomeMessageRule ToEffectiveRule(

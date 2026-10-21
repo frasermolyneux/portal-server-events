@@ -106,4 +106,59 @@ public class WelcomeMessageSettingsMergerTests
         Assert.Equal(9, serverOnly.ConnectionDelaySeconds);
         Assert.Equal(1, serverOnly.OrderIndex);
     }
+
+    [Fact]
+    public void Merge_WhenServerSettingsAreMissingOrBlank_PreservesGlobalAndDefaultValues()
+    {
+        var global = new WelcomeMessageSettingsDocument
+        {
+            Enabled = true,
+            Defaults = new WelcomeMessageDefaults
+            {
+                CountryFallback = " GlobalFallback ",
+                StaleThresholdSeconds = 200
+            },
+            Rules =
+            [
+                new WelcomeMessageRule
+                {
+                    Id = "global-a",
+                    MessageTemplate = "Global A"
+                }
+            ]
+        };
+
+        var server = new WelcomeMessageSettingsDocument
+        {
+            Enabled = false,
+            Defaults = new WelcomeMessageDefaults
+            {
+                CountryFallback = " \t"
+            },
+            InheritGlobalRules = false,
+            RuleOverrides =
+            [
+                new WelcomeMessageRuleOverride { Id = " " },
+                new WelcomeMessageRuleOverride { Id = "missing" }
+            ],
+            Rules =
+            [
+                new WelcomeMessageRule
+                {
+                    Id = "server-a",
+                    MessageTemplate = "Server A"
+                }
+            ]
+        };
+
+        var result = _sut.Merge(global, server);
+
+        Assert.False(result.Enabled);
+        Assert.Equal("GlobalFallback", result.CountryFallback);
+        Assert.Equal(200, result.StaleThresholdSeconds);
+        var serverRule = Assert.Single(result.Rules);
+        Assert.Equal("server-a", serverRule.Id);
+        Assert.Equal(WelcomeMessageSettingsConstants.DefaultConnectionDelaySeconds, serverRule.ConnectionDelaySeconds);
+        Assert.Equal(0, serverRule.OrderIndex);
+    }
 }
