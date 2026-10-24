@@ -52,7 +52,7 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "processor_failure_rat
   name                = "${var.workload_name}-${var.environment}-processor-failure-rate"
   resource_group_name = data.azurerm_resource_group.rg.name
   location            = var.location
-  description         = "Triggered when processor function failure rate exceeds threshold"
+  description         = "Triggered when processor function failures exceed 50 weighted requests in five minutes"
   severity            = 1
 
   evaluation_frequency = "PT5M"
@@ -63,12 +63,14 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "processor_failure_rat
     query = <<-QUERY
       requests
       | where timestamp > ago(5m)
+      | where cloud_RoleName in~ ("Portal Server Events", "${azurerm_linux_function_app.function_app.name}")
       | where name startswith "Process"
       | where success == false
-      | summarize failureCount = count()
+      | summarize failureCount = sum(itemCount)
     QUERY
 
-    time_aggregation_method = "Count"
+    time_aggregation_method = "Total"
+    metric_measure_column   = "failureCount"
     operator                = "GreaterThan"
     threshold               = 50
 
