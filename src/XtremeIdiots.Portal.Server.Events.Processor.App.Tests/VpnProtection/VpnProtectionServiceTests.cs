@@ -65,6 +65,39 @@ public sealed class VpnProtectionServiceTests
     }
 
     [Fact]
+    public async Task ProcessAsync_PortalOnlyObservation_PersistsActionAndEventWithoutForumTopic()
+    {
+        evaluator.Setup(x => x.Evaluate(It.IsAny<EffectiveVpnProtectionSettings>(), It.IsAny<IReadOnlyCollection<string>>(), It.IsAny<IpIntelligenceDto>()))
+            .Returns(Decision(VpnProtectionAction.Observation) with { PostObservationToForums = false });
+
+        var result = await CreateSut().ProcessAsync(Context(), new IpIntelligenceDto());
+
+        Assert.True(result.AdminActionCreated);
+        adminActionsApi.Verify(x => x.EnsureAutomatedAction(It.Is<EnsureAutomatedActionDto>(dto =>
+            dto.Type == AdminActionType.Observation && dto.AutomationFeature == AutomationFeature.VpnProtection && dto.AutomationRuleId == "vpn"), It.IsAny<CancellationToken>()), Times.Once);
+        topics.Verify(x => x.CreateTopicForAdminAction(It.IsAny<AdminActionType>(), It.IsAny<GameType>(), It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<DateTime>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+        adminActionsApi.Verify(x => x.UpdateAdminAction(It.IsAny<EditAdminActionDto>(), It.IsAny<CancellationToken>()), Times.Never);
+        gameServerEventsApi.Verify(x => x.CreateGameServerEvent(It.IsAny<CreateGameServerEventDto>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Theory]
+    [InlineData(VpnProtectionAction.Observation, true)]
+    [InlineData(VpnProtectionAction.Kick, false)]
+    [InlineData(VpnProtectionAction.Ban, false)]
+    public async Task ProcessAsync_ForumPublication_RemainsEnabledForDefaultObservationsAndDestructiveActions(
+        VpnProtectionAction action, bool postObservationToForums)
+    {
+        evaluator.Setup(x => x.Evaluate(It.IsAny<EffectiveVpnProtectionSettings>(), It.IsAny<IReadOnlyCollection<string>>(), It.IsAny<IpIntelligenceDto>()))
+            .Returns(Decision(action) with { PostObservationToForums = postObservationToForums });
+
+        var result = await CreateSut().ProcessAsync(Context(), new IpIntelligenceDto());
+
+        Assert.True(result.AdminActionCreated);
+        topics.Verify(x => x.CreateTopicForAdminAction(It.IsAny<AdminActionType>(), It.IsAny<GameType>(), It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<DateTime>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Once);
+        adminActionsApi.Verify(x => x.UpdateAdminAction(It.Is<EditAdminActionDto>(dto => dto.ForumTopicId == 1234), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
     public async Task ProcessAsync_ExistingBan_DoesNotCreateTopic()
     {
         evaluator.Setup(x => x.Evaluate(It.IsAny<EffectiveVpnProtectionSettings>(), It.IsAny<IReadOnlyCollection<string>>(), It.IsAny<IpIntelligenceDto>())).Returns(Decision(VpnProtectionAction.Ban));

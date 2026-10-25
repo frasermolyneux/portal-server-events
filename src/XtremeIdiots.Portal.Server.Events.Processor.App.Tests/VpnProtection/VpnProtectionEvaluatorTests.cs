@@ -47,6 +47,28 @@ public sealed class VpnProtectionEvaluatorTests
     }
 
     [Fact]
+    public void Evaluate_ObservationMatches_UsesFirstWinningRulesForumPreference()
+    {
+        var settings = new EffectiveVpnProtectionSettings
+        {
+            Enabled = true,
+            Rules =
+            [
+                CreateRule("later", VpnProtectionSignal.ProxyCheckIsVpn, VpnProtectionComparisonOperator.Equal, "true", VpnProtectionAction.Observation, 1),
+                CreateRule("first", VpnProtectionSignal.ProxyCheckRiskScore, VpnProtectionComparisonOperator.GreaterThan, "67", VpnProtectionAction.Observation, 0) with { PostObservationToForums = false }
+            ]
+        };
+
+        var decision = evaluator.Evaluate(settings, CreateIntelligence(isVpn: true, riskScore: 90));
+
+        Assert.Equal(VpnProtectionAction.Observation, decision.Action);
+        Assert.False(decision.PostObservationToForums);
+        Assert.Equal(2, decision.MatchedRules.Count);
+        Assert.False(decision.MatchedRules.Single(match => match.RuleId == "first").PostObservationToForums);
+        Assert.True(decision.MatchedRules.Single(match => match.RuleId == "later").PostObservationToForums);
+    }
+
+    [Fact]
     public void Evaluate_MissingRequiredProviderData_FailsOpenForRule()
     {
         var settings = new EffectiveVpnProtectionSettings

@@ -103,7 +103,8 @@ public sealed class VpnProtectionService(
 
             ensuredAction = ensureResult.Result.Data;
             adminActionCreated = ensuredAction.Created;
-            if (adminActionCreated)
+            if (adminActionCreated &&
+                (decision.Action != VpnProtectionAction.Observation || decision.PostObservationToForums))
             {
                 await CreateAndLinkForumTopicAsync(
                         ensuredAction.AdminAction,
