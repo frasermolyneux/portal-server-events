@@ -60,6 +60,7 @@ public sealed class VpnProtectionEvaluator : IVpnProtectionEvaluator
         return new VpnProtectionDecision
         {
             Action = selectedMatch.Action,
+            PostObservationToForums = selectedMatch.PostObservationToForums,
             Reason = selectedMatch.Reason,
             MatchedRules = matches
         };
@@ -94,6 +95,7 @@ public sealed class VpnProtectionEvaluator : IVpnProtectionEvaluator
             ActualValue = actualValue,
             ExpectedValue = rule.ExpectedValue,
             Action = rule.Action,
+            PostObservationToForums = rule.PostObservationToForums,
             Reason = RenderReason(rule, actualValue),
             OrderIndex = rule.OrderIndex
         };

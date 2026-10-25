@@ -6,6 +6,8 @@ public sealed record VpnProtectionDecision
 
     public VpnProtectionAction Action { get; init; }
 
+    public bool PostObservationToForums { get; init; } = true;
+
     public string Reason { get; init; } = string.Empty;
 
     public IReadOnlyList<VpnProtectionRuleMatch> MatchedRules { get; init; } = [];
@@ -34,6 +36,8 @@ public sealed record VpnProtectionRuleMatch
     public required string ExpectedValue { get; init; }
 
     public required VpnProtectionAction Action { get; init; }
+
+    public bool PostObservationToForums { get; init; } = true;
 
     public required string Reason { get; init; }
 
