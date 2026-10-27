@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - main
+    paths:
+      - 'src/**'
+      - 'terraform/**'
   workflow_dispatch:
   schedule:
     - cron: "0 5 * * 3"
@@ -21,7 +24,6 @@ jobs:
     outputs:
       src: ${{ steps.changes.outputs.src }}
       terraform: ${{ steps.changes.outputs.terraform }}
-      workload: ${{ steps.workload.outputs.src }}
     steps:
       - id: changes
         uses: frasermolyneux/actions/detect-changes@detect-changes/v1.0
@@ -29,19 +31,9 @@ jobs:
           filters: |
             src:src/**
             terraform:terraform/**
-      - name: Detect deployable workload inputs
-        id: workload
-        uses: frasermolyneux/actions/detect-changes@detect-changes/v1.0
-        with:
-          perform-checkout: 'false'
-          filters: |
-            src:src/**,terraform/**
 
   terraform-state-check-dev:
-    needs: [detect-changes]
-    if: |
-      (github.event_name != 'schedule') &&
-      (github.event_name != 'push' || needs.detect-changes.outputs.workload == 'true')
+    if: github.event_name != 'schedule'
     permissions:
       contents: read
       id-token: write
@@ -68,9 +60,7 @@ jobs:
     needs:
       - detect-changes
       - terraform-state-check-dev
-    if: |
-      (!failure() && !cancelled() && (needs.detect-changes.outputs.src == 'true' || needs.terraform-state-check-dev.outputs.state_tainted == 'true')) &&
-      (github.event_name != 'push' || needs.detect-changes.outputs.workload == 'true')
+    if: "!failure() && !cancelled() && (needs.detect-changes.outputs.src == 'true' || needs.terraform-state-check-dev.outputs.state_tainted == 'true')"
     runs-on: ubuntu-latest
     steps:
       - id: ci
@@ -85,9 +75,7 @@ jobs:
       build_version: ${{ steps.ci.outputs.build_version }}
 
   terraform-plan-and-apply-dev:
-    if: |
-      (github.event_name != 'schedule') &&
-      (github.event_name != 'push' || needs.detect-changes.outputs.workload == 'true')
+    if: github.event_name != 'schedule'
     permissions:
       contents: read
       id-token: write
@@ -150,10 +138,9 @@ jobs:
     concurrency:
       group: ${{ github.repository }}-dev
     if: |
-      (!failure() && !cancelled() &&
+      !failure() && !cancelled() &&
       github.event_name != 'schedule' &&
-      (needs.detect-changes.outputs.src == 'true' || needs.terraform-state-check-dev.outputs.state_tainted == 'true')) &&
-      (github.event_name != 'push' || needs.detect-changes.outputs.workload == 'true')
+      (needs.detect-changes.outputs.src == 'true' || needs.terraform-state-check-dev.outputs.state_tainted == 'true')
     steps:
       - uses: frasermolyneux/actions/deploy-function-app@deploy-function-app/v1.2
         with:
@@ -178,9 +165,8 @@ jobs:
     concurrency:
       group: ${{ github.repository }}-prd
     if: |
-      (!failure() && !cancelled() &&
-      (needs.terraform-plan-and-apply-dev.result == 'success' || github.event_name == 'schedule')) &&
-      (github.event_name != 'push' || needs.detect-changes.outputs.workload == 'true')
+      !failure() && !cancelled() &&
+      (needs.terraform-plan-and-apply-dev.result == 'success' || github.event_name == 'schedule')
     steps:
       - uses: frasermolyneux/actions/terraform-plan-and-apply@terraform-plan-and-apply/v2.0.0
         if: needs.detect-changes.outputs.terraform == 'true'
@@ -233,10 +219,9 @@ jobs:
     concurrency:
       group: ${{ github.repository }}-prd
     if: |
-      (!failure() && !cancelled() &&
+      !failure() && !cancelled() &&
       needs.terraform-plan-and-apply-prd.result == 'success' &&
-      needs.detect-changes.outputs.src == 'true') &&
-      (github.event_name != 'push' || needs.detect-changes.outputs.workload == 'true')
+      needs.detect-changes.outputs.src == 'true'
     steps:
       - uses: frasermolyneux/actions/deploy-function-app@deploy-function-app/v1.2
         with:
