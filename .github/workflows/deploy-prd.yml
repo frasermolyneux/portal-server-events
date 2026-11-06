@@ -26,7 +26,7 @@ jobs:
       terraform: ${{ steps.changes.outputs.terraform }}
     steps:
       - id: changes
-        uses: frasermolyneux/actions/detect-changes@detect-changes/v1.0
+        uses: frasermolyneux/actions/detect-changes@8e7ca58b7821e01192ee4f23756c55e4ee057496 # v1.0.4
         with:
           filters: |
             src:src/**
@@ -44,7 +44,7 @@ jobs:
       state_tainted: ${{ steps.state-check.outputs.state_tainted }}
     steps:
       - id: state-check
-        uses: frasermolyneux/actions/terraform-state-check@terraform-state-check/v2.0.1
+        uses: frasermolyneux/actions/terraform-state-check@027d7e31bb32b734090aaed01b36d74f1d658b61 # v2.0.2
         with:
           terraform-folder: "terraform"
           terraform-var-file: "tfvars/dev.tfvars"
@@ -64,7 +64,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - id: ci
-        uses: frasermolyneux/actions/dotnet-func-ci@dotnet-func-ci/v2.1
+        uses: frasermolyneux/actions/dotnet-func-ci@a6271c58ed8e8f3b6fbdb738ac7566863fdc38c8 # v2.1.2
         with:
           test-reporting: "true"
           dotnet-project: "XtremeIdiots.Portal.Server.Events.Processor.App"
@@ -87,7 +87,7 @@ jobs:
     concurrency:
       group: ${{ github.repository }}-dev
     steps:
-      - uses: frasermolyneux/actions/terraform-plan-and-apply@terraform-plan-and-apply/v2.0.1
+      - uses: frasermolyneux/actions/terraform-plan-and-apply@027d7e31bb32b734090aaed01b36d74f1d658b61 # v5.0.0
         if: needs.detect-changes.outputs.terraform == 'true' || needs.terraform-state-check-dev.outputs.state_tainted == 'true'
         with:
           terraform-folder: "terraform"
@@ -97,7 +97,7 @@ jobs:
           AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
           AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
-      - uses: frasermolyneux/actions/terraform-output@terraform-output/v2.0.1
+      - uses: frasermolyneux/actions/terraform-output@027d7e31bb32b734090aaed01b36d74f1d658b61 # v2.0.2
         if: needs.detect-changes.outputs.terraform != 'true' && needs.terraform-state-check-dev.outputs.state_tainted != 'true'
         with:
           terraform-folder: "terraform"
@@ -142,7 +142,7 @@ jobs:
       github.event_name != 'schedule' &&
       (needs.detect-changes.outputs.src == 'true' || needs.terraform-state-check-dev.outputs.state_tainted == 'true')
     steps:
-      - uses: frasermolyneux/actions/deploy-function-app@deploy-function-app/v1.2
+      - uses: frasermolyneux/actions/deploy-function-app@027d7e31bb32b734090aaed01b36d74f1d658b61 # v1.2.7
         with:
           function-app-artifact-name: "XtremeIdiots.Portal.Server.Events.Processor.App"
           function-app-name: ${{ needs.terraform-plan-and-apply-dev.outputs.function_app_name }}
@@ -168,7 +168,7 @@ jobs:
       !failure() && !cancelled() &&
       (needs.terraform-plan-and-apply-dev.result == 'success' || github.event_name == 'schedule')
     steps:
-      - uses: frasermolyneux/actions/terraform-plan-and-apply@terraform-plan-and-apply/v2.0.1
+      - uses: frasermolyneux/actions/terraform-plan-and-apply@027d7e31bb32b734090aaed01b36d74f1d658b61 # v5.0.0
         if: needs.detect-changes.outputs.terraform == 'true'
         with:
           terraform-folder: "terraform"
@@ -178,7 +178,7 @@ jobs:
           AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
           AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
-      - uses: frasermolyneux/actions/terraform-output@terraform-output/v2.0.1
+      - uses: frasermolyneux/actions/terraform-output@027d7e31bb32b734090aaed01b36d74f1d658b61 # v2.0.2
         if: needs.detect-changes.outputs.terraform != 'true'
         with:
           terraform-folder: "terraform"
@@ -223,7 +223,7 @@ jobs:
       needs.terraform-plan-and-apply-prd.result == 'success' &&
       needs.detect-changes.outputs.src == 'true'
     steps:
-      - uses: frasermolyneux/actions/deploy-function-app@deploy-function-app/v1.2
+      - uses: frasermolyneux/actions/deploy-function-app@027d7e31bb32b734090aaed01b36d74f1d658b61 # v1.2.7
         with:
           function-app-artifact-name: "XtremeIdiots.Portal.Server.Events.Processor.App"
           function-app-name: ${{ needs.terraform-plan-and-apply-prd.outputs.function_app_name }}
