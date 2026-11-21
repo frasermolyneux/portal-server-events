@@ -162,6 +162,7 @@ public class ChatMessageProcessor(
                 EventGeneratedUtc = chatEvent.EventGeneratedUtc,
                 EventPublishedUtc = chatEvent.EventPublishedUtc,
                 SequenceId = chatEvent.SequenceId,
+                SourceMessageId = message.MessageId,
                 PlayerId = playerId,
                 AuthorizationSnapshot = playerContext.Value.AuthorizationSnapshot
             };

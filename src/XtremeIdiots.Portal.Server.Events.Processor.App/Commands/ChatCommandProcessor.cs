@@ -207,6 +207,8 @@ public sealed class ChatCommandProcessor : IChatCommandProcessor
         }
 
         CommandIdempotencyKey? idempotencyKey = null;
+        var usesRepositoryIdempotency = string.Equals(command.Metadata.Name,
+            ChatCommandDescriptorCatalog.Register.Name, StringComparison.OrdinalIgnoreCase);
         if (command.Metadata.IsMutating)
         {
             if (context.SequenceId <= 0)
@@ -220,19 +222,23 @@ public sealed class ChatCommandProcessor : IChatCommandProcessor
                 return CommandResult.Failed("Command cannot be processed right now.");
             }
 
-            idempotencyKey = BuildIdempotencyKey(context, canonicalCommand);
-            var decision = await _idempotencyStore
-                .TryBeginAsync(idempotencyKey, _clock.UtcNow, ct)
-                .ConfigureAwait(false);
-
-            if (decision.State is CommandIdempotencyState.InProgress)
+            // Repository owns claim replay; do not cache an ambiguous submission failure locally.
+            if (!usesRepositoryIdempotency)
             {
-                return CommandResult.Failed("Command is already being processed. Please try again.");
-            }
+                idempotencyKey = BuildIdempotencyKey(context, canonicalCommand);
+                var decision = await _idempotencyStore
+                    .TryBeginAsync(idempotencyKey, _clock.UtcNow, ct)
+                    .ConfigureAwait(false);
 
-            if (decision.State is CommandIdempotencyState.Completed && decision.ExistingResult is not null)
-            {
-                return decision.ExistingResult;
+                if (decision.State is CommandIdempotencyState.InProgress)
+                {
+                    return CommandResult.Failed("Command is already being processed. Please try again.");
+                }
+
+                if (decision.State is CommandIdempotencyState.Completed && decision.ExistingResult is not null)
+                {
+                    return decision.ExistingResult;
+                }
             }
         }
 
@@ -241,7 +247,7 @@ public sealed class ChatCommandProcessor : IChatCommandProcessor
         {
             result = await command.ExecuteAsync(context with { ParsedCommand = canonicalCommand }, ct).ConfigureAwait(false);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (!usesRepositoryIdempotency)
         {
             _logger.LogError(ex, "Command {CommandPrefix} failed for player {Username}",
                 command.Prefix, context.Username);

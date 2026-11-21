@@ -122,6 +122,21 @@ public class Cod4xPluginCommandExecutionPolicyTests
     }
 
     [Fact]
+    public async Task ShouldSkipBackendExecutionAsync_RegisterRemainsBackendOwned()
+    {
+        _globalConfigurationsApi.Setup(x => x.GetConfigurations(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(SuccessCollectionResult([
+                CreateConfigurationDto(Cod4xPluginSettingsConstants.Namespace,
+                    /*lang=json,strict*/
+                    """{"schemaVersion":1,"enabled":true}""")
+            ]));
+        _cod4xRconApi.Setup(x => x.AdminListCommands(TestServerId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<string>(HttpStatusCode.OK, new ApiResponse<string>("register 40")));
+
+        Assert.False(await _sut.ShouldSkipBackendExecutionAsync(TestServerId, "CallOfDuty4x", "!register AB12CD"));
+    }
+
+    [Fact]
     public async Task ShouldSkipBackendExecutionAsync_WhenPluginEnabledAndCommandIsEnabledOnServer_ReturnsTrue()
     {
         _globalConfigurationsApi

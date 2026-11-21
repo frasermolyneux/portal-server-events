@@ -1,12 +1,14 @@
 using System.Net;
 
 using Microsoft.Extensions.Logging;
-
 using Moq;
-
+using MX.Api.Abstractions;
 using MX.Observability.ApplicationInsights.Auditing;
+using MX.Observability.ApplicationInsights.Auditing.Models;
 
 using XtremeIdiots.Portal.Repository.Abstractions.Interfaces.V1;
+using XtremeIdiots.Portal.Repository.Abstractions.Constants.V1;
+using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.ConnectedPlayers;
 using XtremeIdiots.Portal.Repository.Api.Client.V1;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Commands;
 
@@ -14,252 +16,231 @@ namespace XtremeIdiots.Portal.Server.Events.Processor.App.Tests.Commands;
 
 public class RegisterCommandTests
 {
-    private readonly Mock<IRepositoryApiClient> _repoClient = new();
-    private readonly Mock<IVersionedConnectedPlayersApi> _versionedConnectedPlayers = new();
-    private readonly Mock<IConnectedPlayersApi> _connectedPlayersApi = new();
-    private readonly Mock<IRconResponseService> _rconResponseService = new();
-    private readonly Mock<IRegisterCommandRateLimiter> _rateLimiter = new();
-    private readonly Mock<IAuditLogger> _auditLogger = new();
-    private readonly Mock<ILogger<RegisterCommand>> _logger = new();
-
+    private readonly Mock<IConnectedPlayersApi> _api = new();
+    private readonly Mock<IRconResponseService> _responses = new();
+    private readonly Mock<IRegisterCommandRateLimiter> _limiter = new();
+    private readonly Mock<IAuditLogger> _audit = new();
     private readonly RegisterCommand _sut;
-
-    private static readonly Guid TestServerId = Guid.Parse("11111111-1111-1111-1111-111111111111");
-    private static readonly Guid TestPlayerId = Guid.Parse("22222222-2222-2222-2222-222222222222");
 
     public RegisterCommandTests()
     {
-        _versionedConnectedPlayers.Setup(x => x.V1).Returns(_connectedPlayersApi.Object);
-        _repoClient.Setup(x => x.ConnectedPlayers).Returns(_versionedConnectedPlayers.Object);
-        _rateLimiter
-            .Setup(x => x.TryAcquire(It.IsAny<Guid>(), It.IsAny<DateTime>(), out It.Ref<TimeSpan>.IsAny))
-            .Returns((Guid _, DateTime _, out TimeSpan retryAfter) =>
-            {
-                retryAfter = TimeSpan.Zero;
-                return true;
-            });
-
-        _rconResponseService
-            .Setup(x => x.TryTellAsync(
-                It.IsAny<Guid>(),
-                It.IsAny<string>(),
-                It.IsAny<string>(),
-                It.IsAny<int>(),
-                It.IsAny<string>(),
-                It.IsAny<string?>(),
-                It.IsAny<DateTime>(),
-                It.IsAny<CancellationToken>()))
+        var versioned = new Mock<IVersionedConnectedPlayersApi>();
+        versioned.Setup(x => x.V1).Returns(_api.Object);
+        var repository = new Mock<IRepositoryApiClient>();
+        repository.Setup(x => x.ConnectedPlayers).Returns(versioned.Object);
+        _limiter.Setup(x => x.TryAcquire(It.IsAny<Guid>(), It.IsAny<DateTime>(), out It.Ref<TimeSpan>.IsAny))
+            .Returns(true);
+        _responses.Setup(x => x.TryTellAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<string>(),
+            It.IsAny<int>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(true);
-
-        _sut = new RegisterCommand(_repoClient.Object, _rconResponseService.Object, _rateLimiter.Object, _auditLogger.Object, _logger.Object);
+        _sut = new RegisterCommand(repository.Object, _responses.Object, _limiter.Object, _audit.Object,
+            Mock.Of<ILogger<RegisterCommand>>());
     }
 
-    private static CommandContext CreateContext(string message = "!register AB12CD", Guid? playerId = null) => new()
+    [Theory]
+    [InlineData(HttpStatusCode.Created)]
+    [InlineData(HttpStatusCode.OK)]
+    public async Task Submission_UsesTrustedIdentityAndRequiresWebsiteApproval(HttpStatusCode status)
     {
-        ServerId = TestServerId,
-        GameType = "CallOfDuty4",
-        PlayerGuid = "abc123",
-        Username = "TestPlayer",
-        SlotId = 3,
-        Message = message,
-        EventGeneratedUtc = DateTime.UtcNow,
-        EventPublishedUtc = DateTime.UtcNow,
-        SequenceId = 1,
-        PlayerId = playerId ?? TestPlayerId
-    };
+        _api.Setup(x => x.SubmitConnectedPlayerClaim(It.IsAny<SubmitConnectedPlayerClaimDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<ConnectedPlayerClaimDto>(status));
+        var context = CreateContext();
 
-    [Fact]
-    public async Task ExecuteAsync_WhenPlayerIdMissing_ReturnsFailed()
-    {
-        var result = await _sut.ExecuteAsync(CreateContext(playerId: null) with { PlayerId = null });
+        var result = await _sut.ExecuteAsync(context);
+        await _sut.ExecuteAsync(context with { EventPublishedUtc = context.EventPublishedUtc.AddMinutes(1) });
 
-        Assert.True(result.Handled);
-        Assert.False(result.Success);
-        Assert.Equal("Player context unavailable", result.ResponseMessage);
-
-        _rconResponseService.Verify(x => x.TryTellAsync(
-            TestServerId,
-                It.IsAny<string>(),
-            "abc123",
-            3,
-            "Player context unavailable",
-            "TestPlayer",
-            It.IsAny<DateTime>(),
-            It.IsAny<CancellationToken>()), Times.Once);
-
-        _connectedPlayersApi.Verify(x => x.ConsumeConnectedPlayerActivationCode(It.IsAny<Repository.Abstractions.Models.V1.ConnectedPlayers.ConsumeConnectedPlayerActivationCodeDto>(), It.IsAny<CancellationToken>()), Times.Never);
+        Assert.True(result.Success);
+        Assert.Contains("Approve it on the website", result.ResponseMessage);
+        Assert.Contains("not linked", result.ResponseMessage);
+        _api.Verify(x => x.SubmitConnectedPlayerClaim(It.Is<SubmitConnectedPlayerClaimDto>(dto =>
+            dto.RequestId == ConnectedPlayerClaimRequestId.FromEvent(context) &&
+            dto.PlayerId == context.PlayerId && dto.GameServerId == context.ServerId && dto.Code == "AB12CD"),
+            It.IsAny<CancellationToken>()), Times.Exactly(2));
+        _api.Verify(x => x.ConsumeConnectedPlayerActivationCode(It.IsAny<ConsumeConnectedPlayerActivationCodeDto>(),
+            It.IsAny<CancellationToken>()), Times.Never);
+        _audit.Verify(x => x.LogAudit(It.Is<AuditEvent>(audit => audit.EventName == "ConnectedPlayerClaimSubmitted")),
+            status == HttpStatusCode.Created ? Times.Exactly(2) : Times.Never());
     }
 
     [Theory]
     [InlineData("!register")]
     [InlineData("!register AB12CD EXTRA")]
-    [InlineData("!register 123")]
     [InlineData("!register abc!23")]
-    public async Task ExecuteAsync_WhenCommandFormatInvalid_ReturnsFailed(string message)
+    [InlineData("!register 123")]
+    public async Task InvalidFormat_DoesNotSubmit(string message)
     {
-        var result = await _sut.ExecuteAsync(CreateContext(message));
-
-        Assert.True(result.Handled);
-        Assert.False(result.Success);
-        _connectedPlayersApi.Verify(x => x.ConsumeConnectedPlayerActivationCode(It.IsAny<Repository.Abstractions.Models.V1.ConnectedPlayers.ConsumeConnectedPlayerActivationCodeDto>(), It.IsAny<CancellationToken>()), Times.Never);
+        Assert.False((await _sut.ExecuteAsync(CreateContext() with { Message = message })).Success);
+        _api.Verify(x => x.SubmitConnectedPlayerClaim(It.IsAny<SubmitConnectedPlayerClaimDto>(),
+            It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
-    public async Task ExecuteAsync_WhenConsumeSucceeds_ReturnsSuccessAndUsesNormalizedCode()
+    public async Task MissingPlayer_DoesNotSubmit()
     {
-        _connectedPlayersApi
-            .Setup(x => x.ConsumeConnectedPlayerActivationCode(It.IsAny<Repository.Abstractions.Models.V1.ConnectedPlayers.ConsumeConnectedPlayerActivationCodeDto>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new MX.Api.Abstractions.ApiResult<Repository.Abstractions.Models.V1.ConnectedPlayers.ConnectedPlayerDto>(HttpStatusCode.Created));
-
-        var result = await _sut.ExecuteAsync(CreateContext("!register ab12cd"));
-
-        Assert.True(result.Handled);
-        Assert.True(result.Success);
-
-        _rconResponseService.Verify(x => x.TryTellAsync(
-            TestServerId,
-                It.IsAny<string>(),
-            "abc123",
-            3,
-            "Registration successful. Your account is now linked.",
-            "TestPlayer",
-            It.IsAny<DateTime>(),
-            It.IsAny<CancellationToken>()), Times.Once);
-
-        _connectedPlayersApi.Verify(x => x.ConsumeConnectedPlayerActivationCode(
-            It.Is<Repository.Abstractions.Models.V1.ConnectedPlayers.ConsumeConnectedPlayerActivationCodeDto>(dto =>
-                dto.PlayerId == TestPlayerId && dto.Code == "AB12CD"),
-            It.IsAny<CancellationToken>()), Times.Once);
+        Assert.False((await _sut.ExecuteAsync(CreateContext() with { PlayerId = null })).Success);
+        _api.Verify(x => x.SubmitConnectedPlayerClaim(It.IsAny<SubmitConnectedPlayerClaimDto>(),
+            It.IsAny<CancellationToken>()), Times.Never);
     }
 
-    [Fact]
-    public async Task ExecuteAsync_WhenConsumeReturnsOk_ReturnsSuccess()
+    [Theory]
+    [InlineData(HttpStatusCode.BadRequest, "invalid, expired")]
+    [InlineData(HttpStatusCode.Conflict, "already linked")]
+    public async Task Rejection_DoesNotClaimSuccess(HttpStatusCode status, string expected)
     {
-        _connectedPlayersApi
-            .Setup(x => x.ConsumeConnectedPlayerActivationCode(It.IsAny<Repository.Abstractions.Models.V1.ConnectedPlayers.ConsumeConnectedPlayerActivationCodeDto>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new MX.Api.Abstractions.ApiResult<Repository.Abstractions.Models.V1.ConnectedPlayers.ConnectedPlayerDto>(HttpStatusCode.OK));
-
+        _api.Setup(x => x.SubmitConnectedPlayerClaim(It.IsAny<SubmitConnectedPlayerClaimDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<ConnectedPlayerClaimDto>(status));
         var result = await _sut.ExecuteAsync(CreateContext());
-
-        Assert.True(result.Handled);
-        Assert.True(result.Success);
-    }
-
-    [Fact]
-    public async Task ExecuteAsync_WithTabSeparatedArguments_ParsesAndSucceeds()
-    {
-        _connectedPlayersApi
-            .Setup(x => x.ConsumeConnectedPlayerActivationCode(It.IsAny<Repository.Abstractions.Models.V1.ConnectedPlayers.ConsumeConnectedPlayerActivationCodeDto>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new MX.Api.Abstractions.ApiResult<Repository.Abstractions.Models.V1.ConnectedPlayers.ConnectedPlayerDto>(HttpStatusCode.OK));
-
-        var result = await _sut.ExecuteAsync(CreateContext("!register\tAB12CD"));
-
-        Assert.True(result.Handled);
-        Assert.True(result.Success);
-    }
-
-    [Fact]
-    public async Task ExecuteAsync_WhenConsumeConflicts_ReturnsFailed()
-    {
-        _connectedPlayersApi
-            .Setup(x => x.ConsumeConnectedPlayerActivationCode(It.IsAny<Repository.Abstractions.Models.V1.ConnectedPlayers.ConsumeConnectedPlayerActivationCodeDto>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new MX.Api.Abstractions.ApiResult<Repository.Abstractions.Models.V1.ConnectedPlayers.ConnectedPlayerDto>(HttpStatusCode.Conflict));
-
-        var result = await _sut.ExecuteAsync(CreateContext());
-
-        Assert.True(result.Handled);
         Assert.False(result.Success);
-        Assert.Equal("Player is already linked to a different profile", result.ResponseMessage);
-
-        _rconResponseService.Verify(x => x.TryTellAsync(
-            TestServerId,
-                It.IsAny<string>(),
-            "abc123",
-            3,
-            "Player is already linked to a different profile",
-            "TestPlayer",
-            It.IsAny<DateTime>(),
-            It.IsAny<CancellationToken>()), Times.Once);
+        Assert.Contains(expected, result.ResponseMessage);
+        _audit.Verify(x => x.LogAudit(It.Is<AuditEvent>(audit => audit.EventName == "ConnectedPlayerRegisterFailed" &&
+            audit.Outcome == AuditOutcome.Failure)), Times.Once);
     }
 
     [Fact]
-    public async Task ExecuteAsync_WhenConsumeBadRequest_ReturnsFailed()
+    public async Task RateLimit_IsPreserved()
     {
-        _connectedPlayersApi
-            .Setup(x => x.ConsumeConnectedPlayerActivationCode(It.IsAny<Repository.Abstractions.Models.V1.ConnectedPlayers.ConsumeConnectedPlayerActivationCodeDto>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new MX.Api.Abstractions.ApiResult<Repository.Abstractions.Models.V1.ConnectedPlayers.ConnectedPlayerDto>(HttpStatusCode.BadRequest));
-
-        var result = await _sut.ExecuteAsync(CreateContext());
-
-        Assert.True(result.Handled);
-        Assert.False(result.Success);
-        Assert.Equal("Activation code is invalid, expired, inactive, or exhausted", result.ResponseMessage);
-
-        _rconResponseService.Verify(x => x.TryTellAsync(
-            TestServerId,
-                It.IsAny<string>(),
-            "abc123",
-            3,
-            "Activation code is invalid, expired, inactive, or exhausted",
-            "TestPlayer",
-            It.IsAny<DateTime>(),
-            It.IsAny<CancellationToken>()), Times.Once);
-    }
-
-    [Fact]
-    public async Task ExecuteAsync_WhenConsumeThrows_ReturnsFailedAndSendsPrivateFailure()
-    {
-        _connectedPlayersApi
-            .Setup(x => x.ConsumeConnectedPlayerActivationCode(It.IsAny<Repository.Abstractions.Models.V1.ConnectedPlayers.ConsumeConnectedPlayerActivationCodeDto>(), It.IsAny<CancellationToken>()))
-            .ThrowsAsync(new InvalidOperationException("boom"));
-
-        var result = await _sut.ExecuteAsync(CreateContext());
-
-        Assert.True(result.Handled);
-        Assert.False(result.Success);
-        Assert.Equal("Registration failed due to a temporary error. Please try again.", result.ResponseMessage);
-
-        _rconResponseService.Verify(x => x.TryTellAsync(
-            TestServerId,
-                It.IsAny<string>(),
-            "abc123",
-            3,
-            "Registration failed due to a temporary error. Please try again.",
-            "TestPlayer",
-            It.IsAny<DateTime>(),
-            It.IsAny<CancellationToken>()), Times.Once);
-    }
-
-    [Fact]
-    public async Task ExecuteAsync_WhenRateLimited_ReturnsFailedAndDoesNotCallConsumeApi()
-    {
-        _rateLimiter
-            .Setup(x => x.TryAcquire(It.IsAny<Guid>(), It.IsAny<DateTime>(), out It.Ref<TimeSpan>.IsAny))
+        _limiter.Setup(x => x.TryAcquire(It.IsAny<Guid>(), It.IsAny<DateTime>(), out It.Ref<TimeSpan>.IsAny))
             .Returns((Guid _, DateTime _, out TimeSpan retryAfter) =>
             {
                 retryAfter = TimeSpan.FromSeconds(42);
                 return false;
             });
+        var result = await _sut.ExecuteAsync(CreateContext());
+        Assert.Contains("42 seconds", result.ResponseMessage);
+        _api.Verify(x => x.SubmitConnectedPlayerClaim(It.IsAny<SubmitConnectedPlayerClaimDto>(),
+            It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task TemporaryFailure_PropagatesForServiceBusRetryWithoutSuccessAudit()
+    {
+        _api.Setup(x => x.SubmitConnectedPlayerClaim(It.IsAny<SubmitConnectedPlayerClaimDto>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("temporary"));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => _sut.ExecuteAsync(CreateContext()));
+        _audit.Verify(x => x.LogAudit(It.IsAny<AuditEvent>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task ServerFailure_PropagatesForServiceBusRetry()
+    {
+        _api.Setup(x => x.SubmitConnectedPlayerClaim(It.IsAny<SubmitConnectedPlayerClaimDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<ConnectedPlayerClaimDto>(HttpStatusCode.ServiceUnavailable));
+        await Assert.ThrowsAsync<HttpRequestException>(() => _sut.ExecuteAsync(CreateContext()));
+        _api.Verify(x => x.ConsumeConnectedPlayerActivationCode(It.IsAny<ConsumeConnectedPlayerActivationCodeDto>(),
+            It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task LegacyCode_RemainsUsableOnlyAfterKnownCodeRejection()
+    {
+        SetupCodeRejection();
+        _api.Setup(x => x.ConsumeConnectedPlayerActivationCode(It.IsAny<ConsumeConnectedPlayerActivationCodeDto>(),
+            It.IsAny<CancellationToken>())).ReturnsAsync(new ApiResult<ConnectedPlayerDto>(HttpStatusCode.Created));
 
         var result = await _sut.ExecuteAsync(CreateContext());
 
-        Assert.True(result.Handled);
-        Assert.False(result.Success);
-        Assert.Equal("Too many !register attempts. Please wait 42 seconds and try again.", result.ResponseMessage);
-
-        _connectedPlayersApi.Verify(x => x.ConsumeConnectedPlayerActivationCode(
-            It.IsAny<Repository.Abstractions.Models.V1.ConnectedPlayers.ConsumeConnectedPlayerActivationCodeDto>(),
-            It.IsAny<CancellationToken>()), Times.Never);
-
-        _rconResponseService.Verify(x => x.TryTellAsync(
-            TestServerId,
-                It.IsAny<string>(),
-            "abc123",
-            3,
-            "Too many !register attempts. Please wait 42 seconds and try again.",
-            "TestPlayer",
-            It.IsAny<DateTime>(),
+        Assert.True(result.Success);
+        Assert.Contains("Legacy registration completed", result.ResponseMessage);
+        _audit.Verify(x => x.LogAudit(It.Is<AuditEvent>(audit =>
+            audit.EventName == "ConnectedPlayerLegacyRegistrationSucceeded")), Times.Once);
+        _api.Verify(x => x.ConsumeConnectedPlayerActivationCode(It.Is<ConsumeConnectedPlayerActivationCodeDto>(
+            dto => dto.Code == "AB12CD" && dto.PlayerId == CreateContext().PlayerId),
             It.IsAny<CancellationToken>()), Times.Once);
     }
 
+    [Fact]
+    public async Task ApprovalCodeRejectedByLegacyEndpoint_CannotBypassApproval()
+    {
+        SetupCodeRejection();
+        _api.Setup(x => x.ConsumeConnectedPlayerActivationCode(It.IsAny<ConsumeConnectedPlayerActivationCodeDto>(),
+            It.IsAny<CancellationToken>())).ReturnsAsync(new ApiResult<ConnectedPlayerDto>(HttpStatusCode.Conflict,
+                new ApiResponse<ConnectedPlayerDto>(new ApiError(ApiErrorCodes.EntityConflict, "This code requires member approval."))));
+        var result = await _sut.ExecuteAsync(CreateContext());
+        Assert.False(result.Success);
+        Assert.Contains("requires approval", result.ResponseMessage);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.Conflict)]
+    [InlineData(HttpStatusCode.BadRequest)]
+    [InlineData(HttpStatusCode.Unauthorized)]
+    public async Task UnknownOrConflictResponse_NeverFallsBack(HttpStatusCode status)
+    {
+        _api.Setup(x => x.SubmitConnectedPlayerClaim(It.IsAny<SubmitConnectedPlayerClaimDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<ConnectedPlayerClaimDto>(status));
+        Assert.False((await _sut.ExecuteAsync(CreateContext())).Success);
+        _api.Verify(x => x.ConsumeConnectedPlayerActivationCode(It.IsAny<ConsumeConnectedPlayerActivationCodeDto>(),
+            It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task LegacyTemporaryFailure_Propagates()
+    {
+        SetupCodeRejection();
+        _api.Setup(x => x.ConsumeConnectedPlayerActivationCode(It.IsAny<ConsumeConnectedPlayerActivationCodeDto>(),
+            It.IsAny<CancellationToken>())).ReturnsAsync(new ApiResult<ConnectedPlayerDto>(HttpStatusCode.ServiceUnavailable));
+        await Assert.ThrowsAsync<HttpRequestException>(() => _sut.ExecuteAsync(CreateContext()));
+    }
+
+    [Fact]
+    public async Task ConcurrentDuplicateDeliveries_SubmitTheSameDurableRequestId()
+    {
+        var requests = new System.Collections.Concurrent.ConcurrentBag<Guid>();
+        _api.Setup(x => x.SubmitConnectedPlayerClaim(It.IsAny<SubmitConnectedPlayerClaimDto>(), It.IsAny<CancellationToken>()))
+            .Callback<SubmitConnectedPlayerClaimDto, CancellationToken>((dto, _) => requests.Add(dto.RequestId))
+            .ReturnsAsync(new ApiResult<ConnectedPlayerClaimDto>(HttpStatusCode.OK));
+        var context = CreateContext();
+        await Task.WhenAll(_sut.ExecuteAsync(context), _sut.ExecuteAsync(context));
+        Assert.Equal(2, requests.Count);
+        Assert.All(requests, id => Assert.Equal(ConnectedPlayerClaimRequestId.FromEvent(context), id));
+    }
+
+    [Theory]
+    [InlineData("Approved")]
+    [InlineData("Declined")]
+    [InlineData("Expired")]
+    public async Task ResolvedClaimReplay_DoesNotAskForApprovalAgain(string status)
+    {
+        _api.Setup(x => x.SubmitConnectedPlayerClaim(It.IsAny<SubmitConnectedPlayerClaimDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<ConnectedPlayerClaimDto>(HttpStatusCode.OK,
+                new ApiResponse<ConnectedPlayerClaimDto>(new ConnectedPlayerClaimDto { Status = status })));
+        var result = await _sut.ExecuteAsync(CreateContext());
+        Assert.True(result.Success);
+        Assert.Contains("already processed", result.ResponseMessage);
+        _api.Verify(x => x.ConsumeConnectedPlayerActivationCode(It.IsAny<ConsumeConnectedPlayerActivationCodeDto>(),
+            It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Cancellation_PropagatesWithoutLegacyFallback()
+    {
+        _api.Setup(x => x.SubmitConnectedPlayerClaim(It.IsAny<SubmitConnectedPlayerClaimDto>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new OperationCanceledException());
+        await Assert.ThrowsAsync<OperationCanceledException>(() => _sut.ExecuteAsync(CreateContext()));
+        _api.Verify(x => x.ConsumeConnectedPlayerActivationCode(It.IsAny<ConsumeConnectedPlayerActivationCodeDto>(),
+            It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    private void SetupCodeRejection()
+    {
+        _api.Setup(x => x.SubmitConnectedPlayerClaim(It.IsAny<SubmitConnectedPlayerClaimDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<ConnectedPlayerClaimDto>(HttpStatusCode.BadRequest,
+                new ApiResponse<ConnectedPlayerClaimDto>(new ApiError(ApiErrorCodes.EntityConflict,
+                    "The registration code is invalid or expired."))));
+    }
+
+    private static CommandContext CreateContext() => new()
+    {
+        ServerId = Guid.Parse("11111111-1111-1111-1111-111111111111"),
+        PlayerId = Guid.Parse("22222222-2222-2222-2222-222222222222"),
+        GameType = "CallOfDuty4",
+        PlayerGuid = "abc123",
+        Username = "TestPlayer",
+        SlotId = 3,
+        Message = "!register\tab12cd",
+        EventGeneratedUtc = DateTime.UtcNow,
+        EventPublishedUtc = DateTime.UtcNow,
+        SequenceId = 1,
+        SourceMessageId = "message"
+    };
 }

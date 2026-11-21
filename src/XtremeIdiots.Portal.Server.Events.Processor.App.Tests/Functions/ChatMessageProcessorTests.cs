@@ -202,7 +202,7 @@ public class ChatMessageProcessorTests
     }
 
     [Fact]
-    public async Task ValidMessage_PassesSlotToCommandContext()
+    public async Task ValidMessage_PassesSlotAndSourceMessageIdToCommandContext()
     {
         var evt = CreateValidEvent(slotId: 9);
         var message = CreateMessage(evt);
@@ -217,7 +217,7 @@ public class ChatMessageProcessorTests
         await _sut.ProcessChatMessage(message, _functionContext.Object);
 
         _commandProcessor.Verify(x => x.ProcessAsync(
-            It.Is<CommandContext>(ctx => ctx.SlotId == 9),
+            It.Is<CommandContext>(ctx => ctx.SlotId == 9 && ctx.SourceMessageId == message.MessageId),
             It.IsAny<CancellationToken>()), Times.Once);
     }
 

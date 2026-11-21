@@ -57,6 +57,11 @@ public sealed class Cod4xPluginCommandExecutionPolicy(
             return false;
         }
 
+        if (string.Equals(normalizedCommand, ChatCommandDescriptorCatalog.Register.Name, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
         var enabledCommands = await GetEnabledCommandsAsync(serverId, ct).ConfigureAwait(false);
         if (enabledCommands is null)
         {
