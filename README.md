@@ -83,6 +83,15 @@ identifiers. The repository does not automatically resolve identities, and
 ordinary replay cannot supply a missing source identifier or classify an unknown
 bot. Those cases require a separate supported correction or remain unresolved.
 
+The CoD4x APIM ingress is `POST /ingest/events/playtime-observation` and accepts
+an array of playtime envelopes. It forwards each envelope body unchanged and
+sets the Service Bus broker `MessageId` from `playtime.observationId` in canonical
+GUID format. Missing, invalid or empty observation IDs are rejected with HTTP
+400 before forwarding. Other ingress routes retain their existing message-ID
+behavior. Stable broker IDs aid retry correlation, but Service Bus duplicate
+detection is not enabled on this queue; repository idempotency remains keyed by
+`observationId`.
+
 ## NuGet Packages
 
 | Package                                                                                                                                 | Latest                                                                                                                                                                              | Description                                                                              |

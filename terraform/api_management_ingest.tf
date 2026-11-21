@@ -56,6 +56,11 @@ locals {
       display_name = "Post Server Status Events"
       queue_name   = "server-status"
     }
+    playtime_observation = {
+      operation_id = "post-events-playtime-observation"
+      display_name = "Post Playtime Observation Events"
+      queue_name   = "playtime-observation"
+    }
     ban_file_changed = {
       operation_id = "post-events-ban-file-changed"
       display_name = "Post Ban File Changed Events"
@@ -123,6 +128,35 @@ resource "azurerm_api_management_api_operation_policy" "cod4x_ingest_events_post
     <base />
     <set-variable name="requestBodyJson" value="@(context.Request.Body.As&lt;string&gt;(true))" />
 
+    <choose>
+      <when condition="@{
+        if (&quot;${each.value.queue_name}&quot; != &quot;playtime-observation&quot;) return false;
+
+        var payload = Newtonsoft.Json.Linq.JArray.Parse((string)context.Variables[&quot;requestBodyJson&quot;]);
+        foreach (var item in payload)
+        {
+          if (item == null || item.Type != Newtonsoft.Json.Linq.JTokenType.Object) return true;
+
+          var playtime = item[&quot;playtime&quot;] ?? item[&quot;Playtime&quot;];
+          if (playtime == null || playtime.Type != Newtonsoft.Json.Linq.JTokenType.Object) return true;
+
+          var observationIdToken = playtime[&quot;observationId&quot;] ?? playtime[&quot;ObservationId&quot;];
+          if (observationIdToken == null) return true;
+
+          System.Guid observationId;
+          if (!System.Guid.TryParse((string)observationIdToken, out observationId)) return true;
+          if (observationId == System.Guid.Empty) return true;
+        }
+
+        return false;
+      }">
+        <return-response>
+          <set-status code="400" reason="Invalid playtime observation" />
+          <set-body>Each playtime event requires a non-empty playtime.observationId GUID.</set-body>
+        </return-response>
+      </when>
+    </choose>
+
     <authentication-managed-identity resource="https://servicebus.azure.net/"
                                      client-id="${local.managed_identities.api_management.client_id}"
                                      output-token-variable-name="serviceBusToken" />
@@ -142,8 +176,18 @@ resource "azurerm_api_management_api_operation_policy" "cod4x_ingest_events_post
 
         foreach (var item in payload)
         {
-          var messageIdToken = item[&quot;messageId&quot;] ?? item[&quot;MessageId&quot;];
-          var messageId = messageIdToken == null ? System.Guid.NewGuid().ToString(&quot;D&quot;) : (string)messageIdToken;
+          string messageId;
+          if (&quot;${each.value.queue_name}&quot; == &quot;playtime-observation&quot;)
+          {
+            var playtime = item[&quot;playtime&quot;] ?? item[&quot;Playtime&quot;];
+            var observationIdToken = playtime[&quot;observationId&quot;] ?? playtime[&quot;ObservationId&quot;];
+            messageId = System.Guid.Parse((string)observationIdToken).ToString(&quot;D&quot;);
+          }
+          else
+          {
+            var messageIdToken = item[&quot;messageId&quot;] ?? item[&quot;MessageId&quot;];
+            messageId = messageIdToken == null ? System.Guid.NewGuid().ToString(&quot;D&quot;) : (string)messageIdToken;
+          }
 
           batch.Add(new Newtonsoft.Json.Linq.JObject(
             new Newtonsoft.Json.Linq.JProperty(&quot;Body&quot;, item.ToString()),
