@@ -14,6 +14,7 @@ public sealed record CommandContext
     public required DateTime EventGeneratedUtc { get; init; }
     public required DateTime EventPublishedUtc { get; init; }
     public required long SequenceId { get; init; }
+    public string? SourceMessageId { get; init; }
 
     /// <summary>
     /// The player's Repository API ID (resolved from GameType + PlayerGuid).

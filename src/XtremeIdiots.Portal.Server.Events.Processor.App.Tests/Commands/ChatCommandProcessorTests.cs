@@ -76,6 +76,32 @@ public class ChatCommandProcessorTests
         PlayerId = Guid.NewGuid()
     };
 
+    [Fact]
+    public async Task RegisterTransientFailure_PropagatesAndDoesNotBecomeCompletedInMemory()
+    {
+        var command = new Mock<IChatCommand>();
+        command.Setup(x => x.Prefix).Returns("!register");
+        command.Setup(x => x.Metadata).Returns(new ChatCommandMetadata
+        {
+            Name = "register",
+            Prefix = "!register",
+            Usage = "!register CODE",
+            IsMutating = true
+        });
+        command.SetupSequence(x => x.ExecuteAsync(It.IsAny<CommandContext>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new HttpRequestException("temporary"))
+            .ReturnsAsync(CommandResult.Ok("pending"));
+        var sut = new ChatCommandProcessor([command.Object], _parser, _authorizationService.Object,
+            _idempotencyStore.Object, _clock.Object, _settingsProvider.Object, _rconResponseService.Object,
+            _auditLogger.Object, _logger.Object);
+        var context = CreateContext("!register AB12CD");
+
+        await Assert.ThrowsAsync<HttpRequestException>(() => sut.ProcessAsync(context));
+        Assert.True((await sut.ProcessAsync(context)).Success);
+        _idempotencyStore.Verify(x => x.TryBeginAsync(It.IsAny<CommandIdempotencyKey>(),
+            It.IsAny<DateTime>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
     [Theory]
     [InlineData("Hello world")]
     [InlineData("no prefix")]
@@ -602,12 +628,12 @@ public class ChatCommandProcessorTests
         var command = new Mock<IChatCommand>();
         var capturedKeys = new List<CommandIdempotencyKey>();
 
-        command.Setup(c => c.Prefix).Returns("!register");
+        command.Setup(c => c.Prefix).Returns("!mutate");
         command.Setup(c => c.Metadata).Returns(new ChatCommandMetadata
         {
-            Name = "register",
-            Prefix = "!register",
-            Usage = "!register CODE",
+            Name = "mutate",
+            Prefix = "!mutate",
+            Usage = "!mutate CODE",
             IsMutating = true,
             Aliases = ["!link"]
         });
@@ -620,7 +646,7 @@ public class ChatCommandProcessorTests
             .ReturnsAsync(CommandIdempotencyDecision.Acquired());
 
         var sut = new ChatCommandProcessor([command.Object], _parser, _authorizationService.Object, _idempotencyStore.Object, _clock.Object, _settingsProvider.Object, _rconResponseService.Object, _auditLogger.Object, _logger.Object);
-        var baseContext = CreateContext("!register ABC123");
+        var baseContext = CreateContext("!mutate ABC123");
 
         var canonicalResult = await sut.ProcessAsync(baseContext);
         var aliasResult = await sut.ProcessAsync(baseContext with { Message = "!link ABC123" });

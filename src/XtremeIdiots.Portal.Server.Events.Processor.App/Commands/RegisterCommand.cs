@@ -7,6 +7,7 @@ using MX.Observability.ApplicationInsights.Auditing;
 using MX.Observability.ApplicationInsights.Auditing.Models;
 
 using XtremeIdiots.Portal.Repository.Api.Client.V1;
+using XtremeIdiots.Portal.Repository.Abstractions.Constants.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.ConnectedPlayers;
 
 namespace XtremeIdiots.Portal.Server.Events.Processor.App.Commands;
@@ -90,13 +91,16 @@ public sealed class RegisterCommand : IChatCommand
             return await FailAsync(context, "Activation code must be 6 characters [0-9A-Z]", ct).ConfigureAwait(false);
         }
 
-        MX.Api.Abstractions.ApiResult<ConnectedPlayerDto> consumeResult;
+        var requestId = ConnectedPlayerClaimRequestId.FromEvent(context);
+        MX.Api.Abstractions.ApiResult<ConnectedPlayerClaimDto> submitResult;
         try
         {
-            consumeResult = await _repositoryClient.ConnectedPlayers.V1
-                .ConsumeConnectedPlayerActivationCode(new ConsumeConnectedPlayerActivationCodeDto
+            submitResult = await _repositoryClient.ConnectedPlayers.V1
+                .SubmitConnectedPlayerClaim(new SubmitConnectedPlayerClaimDto
                 {
+                    RequestId = requestId,
                     PlayerId = context.PlayerId.Value,
+                    GameServerId = context.ServerId,
                     Code = code
                 }, ct)
                 .ConfigureAwait(false);
@@ -106,34 +110,84 @@ public sealed class RegisterCommand : IChatCommand
             _logger.LogWarning(ex, "Connected player registration API threw for {Username} on server {ServerId}",
                 context.Username, context.ServerId);
 
-            return await FailAsync(context, "Registration failed due to a temporary error. Please try again.", ct)
-                .ConfigureAwait(false);
+            throw;
         }
 
-        if (consumeResult.StatusCode is HttpStatusCode.OK or HttpStatusCode.Created)
+        if (submitResult.StatusCode is HttpStatusCode.OK or HttpStatusCode.Created)
         {
-            _auditLogger.LogAudit(AuditEvent.ServerAction("ConnectedPlayerRegisterSucceeded", AuditAction.Update)
-                .WithGameContext(context.GameType, context.ServerId)
-                .WithPlayer(context.PlayerGuid, context.Username)
-                .WithSource("RegisterCommand")
-                .Build());
+            if (submitResult.StatusCode == HttpStatusCode.Created)
+            {
+                _auditLogger.LogAudit(AuditEvent.ServerAction("ConnectedPlayerClaimSubmitted", AuditAction.Create)
+                    .WithGameContext(context.GameType, context.ServerId)
+                    .WithPlayer(context.PlayerGuid, context.Username)
+                    .WithSource("RegisterCommand")
+                    .WithProperty("RequestId", requestId.ToString())
+                    .Build());
+            }
 
-            _logger.LogInformation("Connected player registration succeeded for {Username} on server {ServerId}",
+            _logger.LogInformation("Connected player claim submitted for {Username} on server {ServerId}",
                 context.Username, context.ServerId);
 
-            await TryTellAsync(context, "Registration successful. Your account is now linked.", ct).ConfigureAwait(false);
+            var response = submitResult.Result?.Data?.Status is "Approved" or "Declined" or "Expired"
+                ? "Registration request already processed. Check its status on the website."
+                : "Registration request submitted. Approve it on the website within 24 hours. Your account is not linked by this command.";
+            await TryTellAsync(context, response, ct).ConfigureAwait(false);
 
-            return CommandResult.Ok();
+            return CommandResult.Ok(response);
         }
 
-        var failureReason = consumeResult.StatusCode switch
+        if ((int)submitResult.StatusCode >= 500 || submitResult.StatusCode is HttpStatusCode.RequestTimeout or HttpStatusCode.TooManyRequests)
         {
-            HttpStatusCode.Conflict => "Player is already linked to a different profile",
+            throw new HttpRequestException("Registration submission failed temporarily.", null, submitResult.StatusCode);
+        }
+
+        if (submitResult.StatusCode == HttpStatusCode.BadRequest &&
+            submitResult.Result?.Errors?.Any(error => error.Code == ApiErrorCodes.EntityConflict &&
+                error.Message == "The registration code is invalid or expired.") == true)
+        {
+            return await TryConsumeLegacyCodeAsync(context, context.PlayerId.Value, code, ct).ConfigureAwait(false);
+        }
+
+        var failureReason = submitResult.StatusCode switch
+        {
+            HttpStatusCode.Conflict => "Player is already linked or the registration request conflicts with an existing claim",
             HttpStatusCode.BadRequest => "Activation code is invalid, expired, inactive, or exhausted",
             _ => "Registration failed due to an unexpected API response"
         };
 
         return await FailAsync(context, failureReason, ct).ConfigureAwait(false);
+    }
+
+    private async Task<CommandResult> TryConsumeLegacyCodeAsync(CommandContext context, Guid playerId, string code, CancellationToken ct)
+    {
+        // Temporary rollout compatibility: Repository atomically rejects ApprovalRequired codes here.
+        var result = await _repositoryClient.ConnectedPlayers.V1
+            .ConsumeConnectedPlayerActivationCode(new ConsumeConnectedPlayerActivationCodeDto
+            {
+                PlayerId = playerId,
+                Code = code
+            }, ct).ConfigureAwait(false);
+
+        if (result.StatusCode is HttpStatusCode.OK or HttpStatusCode.Created)
+        {
+            _auditLogger.LogAudit(AuditEvent.ServerAction("ConnectedPlayerLegacyRegistrationSucceeded", AuditAction.Update)
+                .WithGameContext(context.GameType, context.ServerId)
+                .WithPlayer(context.PlayerGuid, context.Username)
+                .WithSource("RegisterCommand")
+                .Build());
+            const string response = "Legacy registration completed. Future registration requests require approval on the website.";
+            await TryTellAsync(context, response, ct).ConfigureAwait(false);
+            return CommandResult.Ok(response);
+        }
+
+        if ((int)result.StatusCode >= 500 || result.StatusCode is HttpStatusCode.RequestTimeout or HttpStatusCode.TooManyRequests)
+        {
+            throw new HttpRequestException("Legacy registration failed temporarily.", null, result.StatusCode);
+        }
+
+        return await FailAsync(context, result.StatusCode == HttpStatusCode.Conflict
+            ? "Player is already linked or this code requires approval on the website"
+            : "Activation code is invalid, expired, inactive, or exhausted", ct).ConfigureAwait(false);
     }
 
     private async Task<CommandResult> FailAsync(CommandContext context, string reason, CancellationToken ct)
@@ -142,6 +196,7 @@ public sealed class RegisterCommand : IChatCommand
             .WithGameContext(context.GameType, context.ServerId)
             .WithPlayer(context.PlayerGuid, context.Username)
             .WithSource("RegisterCommand")
+            .WithOutcome(AuditOutcome.Failure)
             .WithProperty("Reason", reason)
             .Build());
 
