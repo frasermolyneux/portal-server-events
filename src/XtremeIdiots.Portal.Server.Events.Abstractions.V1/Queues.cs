@@ -11,6 +11,7 @@ public static class Queues
     public const string ServerConnected = "server-connected";
     public const string MapChange = "map-change";
     public const string ServerStatus = "server-status";
+    public const string PlaytimeObservation = "playtime-observation";
     public const string BanFileChanged = "ban-file-changed";
     public const string BanApplied = "ban-applied";
     public const string BanLiftApplied = "ban-lift-applied";

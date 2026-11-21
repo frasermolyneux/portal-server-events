@@ -10,6 +10,7 @@ using Microsoft.Extensions.Options;
 
 using Moq;
 
+using XtremeIdiots.Portal.Server.Events.Abstractions.V1;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Functions;
 
 namespace XtremeIdiots.Portal.Server.Events.Processor.App.Tests.Functions;
@@ -191,5 +192,62 @@ public class ReprocessDeadLetterQueueTests
         Assert.Equal(0, count);
         mockSender.Verify(s => s.SendMessageAsync(It.IsAny<ServiceBusMessage>(), It.IsAny<CancellationToken>()), Times.Never);
         mockReceiver.Verify(r => r.CompleteMessageAsync(dlqMessage, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task PlaytimeReplay_ResendsExhaustedMessageBeforeCompletingIt()
+    {
+        var message = ServiceBusModelFactory.ServiceBusReceivedMessage(
+            body: new BinaryData("{}"),
+            messageId: "playtime-1",
+            properties: new Dictionary<string, object> { ["DlqReplayCount"] = 3 });
+        var receiver = new Mock<ServiceBusReceiver>();
+        receiver.Setup(r => r.ReceiveMessagesAsync(It.IsAny<int>(), It.IsAny<TimeSpan>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new[] { message });
+        var sender = new Mock<ServiceBusSender>();
+        sender.Setup(s => s.SendMessageAsync(It.IsAny<ServiceBusMessage>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new ServiceBusException("Send failed", ServiceBusFailureReason.ServiceTimeout));
+        _serviceBusClient.Setup(c => c.CreateReceiver(Queues.PlaytimeObservation, It.IsAny<ServiceBusReceiverOptions>()))
+            .Returns(receiver.Object);
+        _serviceBusClient.Setup(c => c.CreateSender(Queues.PlaytimeObservation)).Returns(sender.Object);
+
+        await Assert.ThrowsAsync<ServiceBusException>(() => _sut.ReplayDeadLetterMessages(Queues.PlaytimeObservation, 1));
+
+        sender.Verify(s => s.SendMessageAsync(It.Is<ServiceBusMessage>(m =>
+            m.MessageId == "playtime-1" && (int)m.ApplicationProperties["DlqReplayCount"] == 4), It.IsAny<CancellationToken>()), Times.Once);
+        receiver.Verify(r => r.CompleteMessageAsync(message, It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task PlaytimeReplay_PreservesObservationBodyAndMessageId()
+    {
+        const string body = /*lang=json,strict*/ """{"playtime":{"observationId":"22222222-2222-2222-2222-222222222222"}}""";
+        var message = ServiceBusModelFactory.ServiceBusReceivedMessage(
+            body: new BinaryData(body),
+            messageId: "playtime-1",
+            properties: new Dictionary<string, object> { ["DlqReplayCount"] = 3 });
+        var receiver = new Mock<ServiceBusReceiver>();
+        receiver.Setup(r => r.ReceiveMessagesAsync(It.IsAny<int>(), It.IsAny<TimeSpan>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new[] { message });
+        ServiceBusMessage? sent = null;
+        var sender = new Mock<ServiceBusSender>();
+        sender.Setup(s => s.SendMessageAsync(It.IsAny<ServiceBusMessage>(), It.IsAny<CancellationToken>()))
+            .Callback<ServiceBusMessage, CancellationToken>((replay, _) => sent = replay)
+            .Returns(Task.CompletedTask);
+        receiver.Setup(r => r.CompleteMessageAsync(message, It.IsAny<CancellationToken>()))
+            .Callback<ServiceBusReceivedMessage, CancellationToken>((_, _) => Assert.NotNull(sent))
+            .Returns(Task.CompletedTask);
+        _serviceBusClient.Setup(c => c.CreateReceiver(Queues.PlaytimeObservation, It.IsAny<ServiceBusReceiverOptions>()))
+            .Returns(receiver.Object);
+        _serviceBusClient.Setup(c => c.CreateSender(Queues.PlaytimeObservation)).Returns(sender.Object);
+
+        var count = await _sut.ReplayDeadLetterMessages(Queues.PlaytimeObservation, 1);
+
+        Assert.Equal(1, count);
+        Assert.NotNull(sent);
+        Assert.Equal(body, sent.Body.ToString());
+        Assert.Equal("playtime-1", sent.MessageId);
+        Assert.Equal(4, sent.ApplicationProperties["DlqReplayCount"]);
+        receiver.Verify(r => r.CompleteMessageAsync(message, It.IsAny<CancellationToken>()), Times.Once);
     }
 }

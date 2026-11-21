@@ -6,8 +6,8 @@ namespace XtremeIdiots.Portal.Server.Events.Abstractions.V1.Events;
 public abstract class ServerEventBase
 {
     /// <summary>
-    /// When the event occurred on the game server (derived from log line timestamp).
-    /// Used for staleness checks and out-of-order resolution.
+    /// Source-provided event time used for existing staleness checks. Some producers
+    /// set this to log parse time rather than the time gameplay occurred.
     /// </summary>
     public required DateTime EventGeneratedUtc { get; init; }
 
