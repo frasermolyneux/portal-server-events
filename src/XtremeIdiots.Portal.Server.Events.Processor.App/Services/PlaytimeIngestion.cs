@@ -112,7 +112,7 @@ public sealed class PlaytimeIngestion(
                         ? null
                         : await ResolvePlayerAsync(
                             gameType, serverEvent.PlayerGuid!, serverEvent.Username!, serverEvent.ServerId,
-                            serverEvent.Kind == EventKind.PlayerJoined, serverEvent.SteamId).ConfigureAwait(false)
+                            serverEvent.Kind == EventKind.PlayerJoined, cancellationToken, serverEvent.SteamId).ConfigureAwait(false)
                 };
                 if (serverEvent.IsBot != true && observation.CanonicalPlayerId is null)
                 {
@@ -129,13 +129,14 @@ public sealed class PlaytimeIngestion(
                 break;
 
             case EventKind.ServerRoster:
-                if (serverEvent.Players is null)
+                if (serverEvent.Players is null && metadata.RosterCompleteness != EventRosterCompleteness.Failed)
                 {
                     throw new InvalidOperationException($"Roster is required for playtime observation {metadata.ObservationId}.");
                 }
                 var roster = new List<PlaytimeRosterPlayerDto>();
-                foreach (var player in metadata.RosterCompleteness == EventRosterCompleteness.Failed ? [] : serverEvent.Players)
+                foreach (var player in metadata.RosterCompleteness == EventRosterCompleteness.Failed ? [] : serverEvent.Players!)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     if (player.IsBot == true)
                     {
                         roster.Add(new PlaytimeRosterPlayerDto
@@ -155,7 +156,7 @@ public sealed class PlaytimeIngestion(
                     }
                     var playerId = await ResolvePlayerAsync(
                         gameType, player.PlayerGuid, player.Username, serverEvent.ServerId,
-                        !string.IsNullOrWhiteSpace(player.Username)).ConfigureAwait(false);
+                        !string.IsNullOrWhiteSpace(player.Username), cancellationToken).ConfigureAwait(false);
                     if (playerId is null)
                     {
                         unresolvedIdentities.Add($"player {player.PlayerGuid}");
@@ -229,6 +230,7 @@ public sealed class PlaytimeIngestion(
         string username,
         Guid serverId,
         bool create,
+        CancellationToken cancellationToken,
         string? steamId = null)
     {
         var result = await repository.Players.V1.GetPlayerByGameType(gameType, playerGuid, PlayerEntityOptions.None).ConfigureAwait(false);
@@ -246,6 +248,7 @@ public sealed class PlaytimeIngestion(
             return null;
         }
 
+        cancellationToken.ThrowIfCancellationRequested();
         var created = await repository.Players.V1.CreatePlayer(new CreatePlayerDto(username, playerGuid, gameType)
         {
             SteamId = steamId

@@ -132,7 +132,15 @@ resource "azurerm_api_management_api_operation_policy" "cod4x_ingest_events_post
       <when condition="@{
         if (&quot;${each.value.queue_name}&quot; != &quot;playtime-observation&quot;) return false;
 
-        var payload = Newtonsoft.Json.Linq.JArray.Parse((string)context.Variables[&quot;requestBodyJson&quot;]);
+        Newtonsoft.Json.Linq.JArray payload;
+        try
+        {
+          payload = Newtonsoft.Json.Linq.JArray.Parse((string)context.Variables[&quot;requestBodyJson&quot;]);
+        }
+        catch (Newtonsoft.Json.JsonException)
+        {
+          return true;
+        }
         foreach (var item in payload)
         {
           if (item == null || item.Type != Newtonsoft.Json.Linq.JTokenType.Object) return true;
@@ -152,7 +160,7 @@ resource "azurerm_api_management_api_operation_policy" "cod4x_ingest_events_post
       }">
         <return-response>
           <set-status code="400" reason="Invalid playtime observation" />
-          <set-body>Each playtime event requires a non-empty playtime.observationId GUID.</set-body>
+          <set-body>Expected an array of playtime events with non-empty playtime.observationId GUIDs.</set-body>
         </return-response>
       </when>
     </choose>

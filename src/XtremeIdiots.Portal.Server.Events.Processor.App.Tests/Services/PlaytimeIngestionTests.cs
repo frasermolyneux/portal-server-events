@@ -257,6 +257,100 @@ public class PlaytimeIngestionTests
     }
 
     [Fact]
+    public async Task FailedRosterWithoutPlayers_SubmitsFailureAndCoverage()
+    {
+        var timestamp = DateTime.UtcNow;
+        var epoch = Guid.NewGuid();
+        var status = new PlaytimeObservationEvent
+        {
+            EventGeneratedUtc = timestamp,
+            EventPublishedUtc = timestamp,
+            ServerId = ServerId,
+            GameType = "CallOfDuty4",
+            SequenceId = 1,
+            Kind = EventKind.ServerRoster,
+            Playtime = new PlaytimeEventMetadata
+            {
+                ObservationId = ObservationId,
+                EventUtc = timestamp,
+                TimestampQuality = EventTimestampQuality.RosterSnapshotTimestamp,
+                RosterCompleteness = EventRosterCompleteness.Failed,
+                ProducerEpoch = epoch
+            },
+            PlaytimeCoverage = new PlaytimeCoverage
+            {
+                ProducerStartedUtc = timestamp.AddMinutes(-1),
+                DroppedCapacity = 1,
+                DroppedAttempts = 2,
+                DroppedAge = 3
+            }
+        };
+
+        await sut.ProcessAsync(status, CancellationToken.None);
+
+        players.Verify(x => x.GetPlayerByGameType(It.IsAny<GameType>(), It.IsAny<string>(), It.IsAny<PlayerEntityOptions>()), Times.Never);
+        playtime.Verify(x => x.BatchObservations(It.Is<PlaytimeObservationBatchDto>(batch =>
+            batch.Observations[0].RosterCompleteness == RepositoryRosterCompleteness.Failed &&
+            batch.Observations[0].Roster!.Count == 0 &&
+            batch.Observations[0].Coverage!.ProducerEpoch == epoch &&
+            batch.Observations[0].Coverage!.DroppedAttemptsMax == 2)), Times.Once);
+    }
+
+    [Theory]
+    [InlineData(EventRosterCompleteness.Complete)]
+    [InlineData(EventRosterCompleteness.Partial)]
+    public async Task NonFailedRosterWithoutPlayers_IsNotSubmitted(EventRosterCompleteness completeness)
+    {
+        var status = new PlaytimeObservationEvent
+        {
+            EventGeneratedUtc = DateTime.UtcNow,
+            EventPublishedUtc = DateTime.UtcNow,
+            ServerId = ServerId,
+            GameType = "CallOfDuty4",
+            SequenceId = 1,
+            Kind = EventKind.ServerRoster,
+            Playtime = Metadata(completeness)
+        };
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => sut.ProcessAsync(status, CancellationToken.None));
+
+        playtime.Verify(x => x.BatchObservations(It.IsAny<PlaytimeObservationBatchDto>()), Times.Never);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task CancelledDuringRosterLookup_StopsAdditionalIdentityEffects(bool existingPlayer)
+    {
+        using var cancellation = new CancellationTokenSource();
+        players.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "first", PlayerEntityOptions.None))
+            .Callback(() => cancellation.Cancel())
+            .ReturnsAsync(existingPlayer ? SuccessResult(CreatePlayerDto(PlayerId)) : NotFoundResult<PlayerDto>());
+        var status = new PlaytimeObservationEvent
+        {
+            EventGeneratedUtc = DateTime.UtcNow,
+            EventPublishedUtc = DateTime.UtcNow,
+            ServerId = ServerId,
+            GameType = "CallOfDuty4",
+            SequenceId = 1,
+            Kind = EventKind.ServerRoster,
+            Players =
+            [
+                new() { PlayerGuid = "first", Username = "player", SlotId = 1 },
+                new() { PlayerGuid = "second", Username = "player", SlotId = 2 }
+            ],
+            Playtime = Metadata(EventRosterCompleteness.Partial)
+        };
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => sut.ProcessAsync(status, cancellation.Token));
+
+        players.Verify(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "second", PlayerEntityOptions.None), Times.Never);
+        players.Verify(x => x.CreatePlayer(It.IsAny<CreatePlayerDto>()), Times.Never);
+        auditLogger.Verify(x => x.LogAudit(It.IsAny<AuditEvent>()), Times.Never);
+        playtime.Verify(x => x.BatchObservations(It.IsAny<PlaytimeObservationBatchDto>()), Times.Never);
+    }
+
+    [Fact]
     public async Task PartialRosterWithoutGamePlayerId_IsRetainedWithoutInvalidApiSubmission()
     {
         var status = new PlaytimeObservationEvent
