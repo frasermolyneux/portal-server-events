@@ -46,7 +46,7 @@ public static class ChatCommandDescriptorCatalog
         Name: "register",
         Prefix: "!register",
         Usage: "!register CODE",
-        Description: "Links your in-game identity to a portal profile using an activation code.",
+        Description: "Submits a game-profile registration request for approval on the website.",
         IsMutating: true);
 
     public static ChatCommandDescriptor WhoAmI { get; } = new(
