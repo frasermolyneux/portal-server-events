@@ -48,7 +48,8 @@ public sealed class PlaytimeIngestion(
             metadata.EventUtc == default || metadata.EventUtc.Kind != DateTimeKind.Utc ||
             !Enum.IsDefined(metadata.TimestampQuality) || metadata.TimestampQuality == EventTimestampQuality.Unknown ||
             !Enum.IsDefined(metadata.Freshness) ||
-            metadata.TimestampQuality == EventTimestampQuality.ParseTime && metadata.Freshness != PlaytimeObservationFreshness.Live ||
+            metadata.TimestampQuality == EventTimestampQuality.ParseTime && serverEvent.Kind == EventKind.ServerRoster &&
+                metadata.Freshness != PlaytimeObservationFreshness.Live ||
             !Enum.IsDefined(metadata.RosterCompleteness) ||
             metadata.ProducerSequence.HasValue && !metadata.ProducerEpoch.HasValue ||
             metadata.ProducerEpoch == Guid.Empty ||

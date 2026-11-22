@@ -40,10 +40,14 @@ an authoritative full snapshot. A partial roster can describe observed presence
 but must not be used to infer absence. Consumers and the repository separately
 decide whether a source-complete roster is fresh and identity-complete enough to
 reconcile. Current parser slot maps are not, by themselves, evidence of a complete
-roster. Existing event queues and CoD4x ingest routes are unchanged. Parse-time
-observations must carry `playtime.freshness: 1` (Live), and producers may assert
-it only with evidence that the underlying event is live. `0` (Unknown) is the
-default; unknown-age log catch-up must not be presented as current activity.
+roster. Existing event queues and CoD4x ingest routes are unchanged. Join, leave
+and map observations may use parse time with `playtime.freshness: 0` (Unknown):
+the timestamp is when the log was read, not a verified gameplay time. The
+repository uses it as a practical session or map boundary, which may be delayed.
+Producers must start following at EOF and avoid presenting historical catch-up as
+current activity. They may assert `playtime.freshness: 1` (Live) only with
+evidence that the underlying event is live. Parse-time roster observations still
+require Live; roster capture should use the snapshot timestamp quality instead.
 
 Player join and leave observations, and each roster player, may supply
 `isBot`: `true` for a known bot, `false` for a positively identified non-bot,
