@@ -132,12 +132,13 @@ resource "azurerm_api_management_api_operation_policy" "cod4x_ingest_events_post
       <when condition="@{
         if (&quot;${each.value.queue_name}&quot; != &quot;playtime-observation&quot;) return false;
 
+        var requestBody = (string)context.Variables[&quot;requestBodyJson&quot;];
         Newtonsoft.Json.Linq.JArray payload;
         try
         {
-          payload = Newtonsoft.Json.Linq.JArray.Parse((string)context.Variables[&quot;requestBodyJson&quot;]);
+          payload = Newtonsoft.Json.Linq.JArray.Parse(requestBody);
         }
-        catch (Newtonsoft.Json.JsonException)
+        catch (System.Exception)
         {
           return true;
         }
