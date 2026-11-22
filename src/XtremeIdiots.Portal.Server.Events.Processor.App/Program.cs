@@ -88,6 +88,7 @@ var host = new HostBuilder()
         services.AddObservability();
 
         services.AddPortalServerEventsRepositoryApiClient(configuration);
+        services.AddTransient<IPlaytimeIngestion, PlaytimeIngestion>();
 
         services.AddPortalServerEventsServersApiClient(configuration);
 

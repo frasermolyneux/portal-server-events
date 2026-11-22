@@ -27,6 +27,7 @@ public class ReprocessDeadLetterQueue(
         Queues.ServerConnected,
         Queues.MapChange,
         Queues.ServerStatus,
+        Queues.PlaytimeObservation,
         Queues.BanFileChanged,
         Queues.BanApplied,
         Queues.BanLiftApplied,
@@ -176,7 +177,7 @@ public class ReprocessDeadLetterQueue(
                     replayCount,
                     bodyPreview);
 
-                if (replayCount >= MaxReplayAttempts)
+                if (replayCount >= MaxReplayAttempts && !string.Equals(queueName, Queues.PlaytimeObservation, StringComparison.OrdinalIgnoreCase))
                 {
                     logger.LogWarning(
                         "Skipping message {MessageId} — already replayed {ReplayCount} times (max {Max})",

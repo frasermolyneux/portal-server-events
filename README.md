@@ -21,6 +21,81 @@
 
 Portal Server Events provides the shared Service Bus event contracts and the Azure Functions processor used in the XtremeIdiots server-event pipeline. The abstractions package defines queue names and DTO contracts consumed by both publishers and consumers. The processor app subscribes to those queues for persistence, moderation, enrichment, and downstream event handling flows. Terraform and GitHub Actions manage the infrastructure lifecycle and automated deployments.
 
+## Playtime event metadata
+
+The `playtime-observation` queue carries a dedicated `PlaytimeObservationEvent`,
+separate from the legacy event queues. Its required `playtime.observationId` must
+identify the same source observation across retries and replay, while `eventUtc`
+and `timestampQuality` describe the actual source time:
+`1` is a parsed gameplay timestamp, `2` a producer event timestamp, `3` a roster
+snapshot timestamp, and `4` log parse time. `0` means unknown. A producer may
+also include `producerEpoch`, `producerSequence` and `connectionCorrelationId`;
+an instance-local sequence alone is not a durable identity.
+
+For roster observations, `rosterCompleteness` is `0` not applicable, `1` complete,
+`2` partial or `3` failed. This value records the producer's source assessment and
+is forwarded unchanged; consumer-side identity resolution or staleness checks must
+not rewrite it. Producers may mark a roster complete only when the source provides
+an authoritative full snapshot. A partial roster can describe observed presence
+but must not be used to infer absence. Consumers and the repository separately
+decide whether a source-complete roster is fresh and identity-complete enough to
+reconcile. Current parser slot maps are not, by themselves, evidence of a complete
+roster. Existing event queues and CoD4x ingest routes are unchanged. Parse-time
+observations must carry `playtime.freshness: 1` (Live), and producers may assert
+it only with evidence that the underlying event is live. `0` (Unknown) is the
+default; unknown-age log catch-up must not be presented as current activity.
+
+Player join and leave observations, and each roster player, may supply
+`isBot`: `true` for a known bot, `false` for a positively identified non-bot,
+or null/absent when unknown. A nonzero game identifier alone does not establish
+that a player is human. Unclassified activity must not be reported as confirmed
+human-only coverage.
+
+Roster observations may also carry `playtimeCoverage`, with UTC `producerStartedUtc`
+and cumulative non-negative `droppedCapacity`, `droppedAttempts` and `droppedAge`
+counts for the accompanying non-empty `playtime.producerEpoch`. The consumer uses
+the envelope's `eventPublishedUtc` as the first producer report/publish time, not
+the gameplay observation time, exact counter sampling time or receipt time. The
+producer must freeze the epoch, start time,
+counters and publication time with the original observation and preserve them on
+send, retry and replay; counters must not be refreshed on a pending observation.
+These counters record possible local-retention gaps, not
+confirmed downstream loss. Reordered snapshots must be aggregated by per-epoch
+maxima. Missing or zero counters and changes of epoch do not establish completeness
+or prove a restart.
+
+### Playtime dead letters and recovery
+
+The playtime queue is excluded from automatic dead-letter replay. Invalid,
+rejected or unresolved observations remain in its dead-letter queue with the
+failure reason; a partial roster can already be accepted for known players
+while its original message remains available for unresolved identities.
+Operators can inspect it with `v1/ReprocessDeadLetterQueue` using
+`queueName=playtime-observation&dryRun=true`, then explicitly replay that same
+queue after fixing the cause. Manual replay does not discard messages merely
+because they have been replayed three times.
+
+The proposed repository API rejects a first submission more than 24 hours after
+`eventUtc` and rejects replay or enrichment more than 24 hours after initial
+acceptance. Dead-letter retention extends neither deadline. Monitor and recover
+promptly; after a deadline, leave the message in the dead-letter queue and
+arrange a repository-supported correction. Requeuing a message does not prove
+the repository accepted or projected it.
+
+On replay, the consumer retries canonical identity lookup for supplied game
+identifiers. The repository does not automatically resolve identities, and
+ordinary replay cannot supply a missing source identifier or classify an unknown
+bot. Those cases require a separate supported correction or remain unresolved.
+
+The CoD4x APIM ingress is `POST /ingest/events/playtime-observation` and accepts
+an array of playtime envelopes. It forwards each envelope body unchanged and
+sets the Service Bus broker `MessageId` from `playtime.observationId` in canonical
+GUID format. Missing, invalid or empty observation IDs are rejected with HTTP
+400 before forwarding. Other ingress routes retain their existing message-ID
+behavior. Stable broker IDs aid retry correlation, but Service Bus duplicate
+detection is not enabled on this queue; repository idempotency remains keyed by
+`observationId`.
+
 ## NuGet Packages
 
 | Package                                                                                                                                 | Latest                                                                                                                                                                              | Description                                                                              |
