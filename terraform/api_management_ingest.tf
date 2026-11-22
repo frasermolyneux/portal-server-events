@@ -141,10 +141,10 @@ resource "azurerm_api_management_api_operation_policy" "cod4x_ingest_events_post
           if (playtime == null || playtime.Type != Newtonsoft.Json.Linq.JTokenType.Object) return true;
 
           var observationIdToken = playtime[&quot;observationId&quot;] ?? playtime[&quot;ObservationId&quot;];
-          if (observationIdToken == null) return true;
+          if (observationIdToken == null || observationIdToken.Type != Newtonsoft.Json.Linq.JTokenType.String) return true;
 
           System.Guid observationId;
-          if (!System.Guid.TryParse((string)observationIdToken, out observationId)) return true;
+          if (!System.Guid.TryParseExact((string)observationIdToken, &quot;D&quot;, out observationId)) return true;
           if (observationId == System.Guid.Empty) return true;
         }
 
