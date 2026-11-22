@@ -130,7 +130,10 @@ resource "azurerm_api_management_api_operation_policy" "cod4x_ingest_events_post
 
     <choose>
       <when condition="@{
-        if (&quot;${each.value.queue_name}&quot; != &quot;playtime-observation&quot;) return false;
+        if (&quot;${each.value.queue_name}&quot; != &quot;playtime-observation&quot;)
+        {
+          return false;
+        }
 
         var requestBody = (string)context.Variables[&quot;requestBodyJson&quot;];
         Newtonsoft.Json.Linq.JArray payload;
@@ -144,17 +147,32 @@ resource "azurerm_api_management_api_operation_policy" "cod4x_ingest_events_post
         }
         foreach (var item in payload)
         {
-          if (item == null || item.Type != Newtonsoft.Json.Linq.JTokenType.Object) return true;
+          if (item == null || item.Type != Newtonsoft.Json.Linq.JTokenType.Object)
+          {
+            return true;
+          }
 
           var playtime = item[&quot;playtime&quot;] ?? item[&quot;Playtime&quot;];
-          if (playtime == null || playtime.Type != Newtonsoft.Json.Linq.JTokenType.Object) return true;
+          if (playtime == null || playtime.Type != Newtonsoft.Json.Linq.JTokenType.Object)
+          {
+            return true;
+          }
 
           var observationIdToken = playtime[&quot;observationId&quot;] ?? playtime[&quot;ObservationId&quot;];
-          if (observationIdToken == null || observationIdToken.Type != Newtonsoft.Json.Linq.JTokenType.String) return true;
+          if (observationIdToken == null || observationIdToken.Type != Newtonsoft.Json.Linq.JTokenType.String)
+          {
+            return true;
+          }
 
           System.Guid observationId;
-          if (!System.Guid.TryParseExact((string)observationIdToken, &quot;D&quot;, out observationId)) return true;
-          if (observationId == System.Guid.Empty) return true;
+          if (!System.Guid.TryParseExact((string)observationIdToken, &quot;D&quot;, out observationId))
+          {
+            return true;
+          }
+          if (observationId == System.Guid.Empty)
+          {
+            return true;
+          }
         }
 
         return false;

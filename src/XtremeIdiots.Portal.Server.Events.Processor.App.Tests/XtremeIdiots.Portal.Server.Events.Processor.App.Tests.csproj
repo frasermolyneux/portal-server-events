@@ -36,6 +36,9 @@
     <None Include="..\XtremeIdiots.Portal.Server.Events.Processor.App\host.json"
           Link="Configuration\host.json"
           CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\terraform\api_management_ingest.tf"
+          Link="Configuration\api_management_ingest.tf"
+          CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>
