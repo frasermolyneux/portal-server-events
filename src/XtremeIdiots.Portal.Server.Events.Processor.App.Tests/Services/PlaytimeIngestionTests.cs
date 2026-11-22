@@ -65,10 +65,70 @@ public class PlaytimeIngestionTests
         playtime.Verify(x => x.BatchObservations(It.IsAny<PlaytimeObservationBatchDto>()), Times.Never);
     }
 
-    [Fact]
-    public async Task ParseTimeWithoutLiveEvidence_IsNotProjected()
+    [Theory]
+    [InlineData("CallOfDuty2", EventKind.PlayerJoined, RepositoryKind.PlayerJoined)]
+    [InlineData("CallOfDuty4", EventKind.PlayerLeft, RepositoryKind.PlayerLeft)]
+    [InlineData("CallOfDuty5", EventKind.MapChanged, RepositoryKind.MapChanged)]
+    public async Task ParseTimeWithUnknownFreshness_PreservesLogObservationOnReplay(
+        string gameType, EventKind kind, RepositoryKind expectedKind)
     {
-        var metadata = Metadata(freshness: PlaytimeObservationFreshness.Unknown);
+        players.Setup(x => x.GetPlayerByGameType(It.IsAny<GameType>(), "guid", PlayerEntityOptions.None))
+            .ReturnsAsync(SuccessResult(CreatePlayerDto(PlayerId)));
+        var submissions = new List<PlaytimeObservationDto>();
+        playtime.Setup(x => x.BatchObservations(It.IsAny<PlaytimeObservationBatchDto>()))
+            .Callback<PlaytimeObservationBatchDto, CancellationToken>((batch, _) =>
+                submissions.Add(Assert.Single(batch.Observations)))
+            .ReturnsAsync(SuccessResult(new PlaytimeObservationBatchResultDto
+            {
+                Items = [new() { ObservationId = ObservationId, Outcome = PlaytimeObservationOutcome.Duplicate }]
+            }));
+        var processor = new PlaytimeObservationProcessor(sut, Mock.Of<ILogger<PlaytimeObservationProcessor>>());
+        var message = CreateMessage($$$"""
+            {"eventGeneratedUtc":"2026-01-01T00:01:00Z","eventPublishedUtc":"2026-01-01T00:01:01Z",
+             "serverId":"11111111-1111-1111-1111-111111111111","gameType":"{{{gameType}}}","sequenceId":7,
+             "kind":{{{(int)kind}}},"playerGuid":"guid","username":"player","slotId":2,"mapName":"mp_crash",
+             "playtime":{"observationId":"22222222-2222-2222-2222-222222222222",
+             "eventUtc":"2026-01-01T00:01:00Z","timestampQuality":4,"freshness":0,"rosterCompleteness":0}}
+            """);
+
+        await processor.ProcessPlaytimeObservation(message, Mock.Of<FunctionContext>());
+        await processor.ProcessPlaytimeObservation(message, Mock.Of<FunctionContext>());
+
+        Assert.Equal(2, submissions.Count);
+        Assert.Equal(submissions[0], submissions[1]);
+        Assert.Equal(expectedKind, submissions[0].Kind);
+        Assert.Equal(ObservationId, submissions[0].ObservationId);
+        Assert.Equal(new DateTime(2026, 1, 1, 0, 1, 0, DateTimeKind.Utc), submissions[0].EventUtc);
+        Assert.Equal(RepositoryTimestampQuality.ParseTime, submissions[0].TimestampQuality);
+        if (kind != EventKind.MapChanged)
+        {
+            Assert.Equal(PlayerId, submissions[0].CanonicalPlayerId);
+        }
+    }
+
+    [Fact]
+    public async Task ParseTimeRosterWithoutLiveEvidence_IsNotProjected()
+    {
+        var roster = new PlaytimeObservationEvent
+        {
+            EventGeneratedUtc = DateTime.UtcNow,
+            EventPublishedUtc = DateTime.UtcNow,
+            ServerId = ServerId,
+            GameType = "CallOfDuty4",
+            SequenceId = 1,
+            Kind = EventKind.ServerRoster,
+            Players = [],
+            Playtime = Metadata(EventRosterCompleteness.Partial, PlaytimeObservationFreshness.Unknown)
+        };
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => sut.ProcessAsync(roster, CancellationToken.None));
+        playtime.Verify(x => x.BatchObservations(It.IsAny<PlaytimeObservationBatchDto>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task ParseTimeWithInvalidFreshness_IsNotSubmitted()
+    {
+        var metadata = Metadata(freshness: (PlaytimeObservationFreshness)99);
 
         await Assert.ThrowsAsync<InvalidOperationException>(
             () => sut.ProcessAsync(CreateMapEvent(metadata), CancellationToken.None));
