@@ -53,9 +53,13 @@ human-only coverage.
 
 Roster observations may also carry `playtimeCoverage`, with UTC `producerStartedUtc`
 and cumulative non-negative `droppedCapacity`, `droppedAttempts` and `droppedAge`
-counts for the accompanying `playtime.producerEpoch`. The consumer timestamps a
-coverage report with the envelope's `eventPublishedUtc`, not the gameplay
-observation time. These counters record possible local-retention gaps, not
+counts for the accompanying non-empty `playtime.producerEpoch`. The consumer uses
+the envelope's `eventPublishedUtc` as the first producer report/publish time, not
+the gameplay observation time, exact counter sampling time or receipt time. The
+producer must freeze the epoch, start time,
+counters and publication time with the original observation and preserve them on
+send, retry and replay; counters must not be refreshed on a pending observation.
+These counters record possible local-retention gaps, not
 confirmed downstream loss. Reordered snapshots must be aggregated by per-epoch
 maxima. Missing or zero counters and changes of epoch do not establish completeness
 or prove a restart.

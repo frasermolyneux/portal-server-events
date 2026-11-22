@@ -391,12 +391,78 @@ public class PlaytimeIngestionTests
         };
 
         await sut.ProcessAsync(status, CancellationToken.None);
+        await sut.ProcessAsync(status, CancellationToken.None);
 
         playtime.Verify(x => x.BatchObservations(It.Is<PlaytimeObservationBatchDto>(batch =>
             batch.Observations[0].Coverage != null &&
             batch.Observations[0].Coverage!.ProducerEpoch == status.Playtime.ProducerEpoch &&
+            batch.Observations[0].Coverage!.ProducerStartedUtc == status.PlaytimeCoverage.ProducerStartedUtc &&
             batch.Observations[0].Coverage!.ReportedUtc == publishedUtc &&
-            batch.Observations[0].Coverage!.DroppedCapacityMax == 1)), Times.Once);
+            batch.Observations[0].Coverage!.DroppedCapacityMax == 1 &&
+            batch.Observations[0].Coverage!.DroppedAttemptsMax == 0 &&
+            batch.Observations[0].Coverage!.DroppedAgeMax == 0)), Times.Exactly(2));
+    }
+
+    [Theory]
+    [InlineData("missing-epoch")]
+    [InlineData("empty-epoch")]
+    [InlineData("capacity")]
+    [InlineData("attempts")]
+    [InlineData("age")]
+    [InlineData("missing-report-time")]
+    [InlineData("non-utc-report-time")]
+    [InlineData("report-before-start")]
+    [InlineData("missing-start-time")]
+    [InlineData("non-utc-start-time")]
+    [InlineData("non-roster")]
+    public async Task InvalidCoverage_IsNotSubmitted(string invalidField)
+    {
+        var timestamp = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        var status = new PlaytimeObservationEvent
+        {
+            EventGeneratedUtc = timestamp,
+            EventPublishedUtc = invalidField switch
+            {
+                "missing-report-time" => default,
+                "non-utc-report-time" => DateTime.SpecifyKind(timestamp, DateTimeKind.Unspecified),
+                "report-before-start" => timestamp.AddMinutes(-1),
+                _ => timestamp
+            },
+            ServerId = ServerId,
+            GameType = "CallOfDuty4",
+            SequenceId = 1,
+            Kind = invalidField == "non-roster" ? EventKind.MapChanged : EventKind.ServerRoster,
+            Players = [],
+            Playtime = new PlaytimeEventMetadata
+            {
+                ObservationId = ObservationId,
+                EventUtc = timestamp,
+                TimestampQuality = EventTimestampQuality.RosterSnapshotTimestamp,
+                RosterCompleteness = EventRosterCompleteness.Partial,
+                ProducerEpoch = invalidField switch
+                {
+                    "missing-epoch" => null,
+                    "empty-epoch" => Guid.Empty,
+                    _ => Guid.NewGuid()
+                }
+            },
+            PlaytimeCoverage = new PlaytimeCoverage
+            {
+                ProducerStartedUtc = invalidField switch
+                {
+                    "missing-start-time" => default,
+                    "non-utc-start-time" => DateTime.SpecifyKind(timestamp, DateTimeKind.Unspecified),
+                    _ => timestamp
+                },
+                DroppedCapacity = invalidField == "capacity" ? -1 : 0,
+                DroppedAttempts = invalidField == "attempts" ? -1 : 0,
+                DroppedAge = invalidField == "age" ? -1 : 0
+            }
+        };
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => sut.ProcessAsync(status, CancellationToken.None));
+
+        playtime.Verify(x => x.BatchObservations(It.IsAny<PlaytimeObservationBatchDto>()), Times.Never);
     }
 
     [Fact]
@@ -431,6 +497,7 @@ public class PlaytimeIngestionTests
         Assert.Equal(PlayerId, Assert.Single(captured.Roster!).CanonicalPlayerId);
         Assert.False(captured.Roster![0].IsBot);
         Assert.Equal(2, captured.Coverage!.DroppedAttemptsMax);
+        Assert.Equal(new DateTime(2026, 1, 1, 0, 1, 0, DateTimeKind.Utc), captured.Coverage.ReportedUtc);
 
         var json = JsonSerializer.Serialize(captured, JsonSerializerOptions.Web);
         var roundTrip = JsonSerializer.Deserialize<PlaytimeObservationDto>(json, JsonSerializerOptions.Web);
