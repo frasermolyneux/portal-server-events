@@ -8,4 +8,6 @@ public class PlayerIpResolvedEvent : ServerEventBase
 {
     public required string PlayerGuid { get; init; }
     public required string IpAddress { get; init; }
+    public Guid? ConnectionId { get; init; }
+    public int? SlotId { get; init; }
 }
