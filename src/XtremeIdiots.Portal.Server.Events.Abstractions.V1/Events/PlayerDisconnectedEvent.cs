@@ -5,4 +5,5 @@ public class PlayerDisconnectedEvent : ServerEventBase
     public required string PlayerGuid { get; init; }
     public required string Username { get; init; }
     public required int SlotId { get; init; }
+    public Guid? ConnectionId { get; init; }
 }

@@ -7,4 +7,5 @@ public class PlayerConnectedEvent : ServerEventBase
     public required string Username { get; init; }
     public required string IpAddress { get; init; }
     public required int SlotId { get; init; }
+    public Guid? ConnectionId { get; init; }
 }
