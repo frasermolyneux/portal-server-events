@@ -13,7 +13,7 @@ public class ConnectionEventContractTests
     public void PlayerEvents_ReadConnectionIdentityAndLegacyPayloads(bool includeIdentity)
     {
         var connectionId = includeIdentity
-            ? ",\"connectionId\":\"22222222-2222-2222-2222-222222222222\""
+            ? ",\"connectionId\":\"22222222-2222-2222-2222-222222222222\",\"protectionEvaluatedByPlugin\":true"
             : "";
         var common = """
             {"eventGeneratedUtc":"2026-01-01T00:00:00Z","eventPublishedUtc":"2026-01-01T00:00:01Z",
@@ -34,5 +34,7 @@ public class ConnectionEventContractTests
         Assert.Equal(expected, disconnected!.ConnectionId);
         Assert.Equal(expected, resolved!.ConnectionId);
         Assert.Equal(includeIdentity ? 2 : null, resolved.SlotId);
+        Assert.Equal(includeIdentity ? true : null, connected.ProtectionEvaluatedByPlugin);
+        Assert.Equal(includeIdentity ? true : null, resolved.ProtectionEvaluatedByPlugin);
     }
 }

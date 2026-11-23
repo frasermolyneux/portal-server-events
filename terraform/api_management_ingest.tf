@@ -407,3 +407,82 @@ resource "azurerm_api_management_api_operation_policy" "cod4x_ingest_vpn_protect
 XML
 }
 
+resource "azurerm_api_management_api_operation" "cod4x_ingest_siege_mode_outcome_post" {
+  count = local.cod4x_ingest_enabled ? 1 : 0
+
+  operation_id        = "post-siege-mode-outcome"
+  api_name            = azurerm_api_management_api.cod4x_ingest[0].name
+  api_management_name = local.api_management.name
+  resource_group_name = local.api_management.resource_group_name
+  display_name        = "Record Siege Mode Action Outcome"
+  method              = "POST"
+  url_template        = "/siege-mode/outcome"
+
+  request {
+    description = "Records the correlated outcome of a dispatched Siege Mode action."
+
+    representation {
+      content_type = "application/json"
+    }
+  }
+
+  response {
+    status_code = 204
+    description = "Outcome recorded"
+  }
+
+  response {
+    status_code = 400
+    description = "Invalid request"
+  }
+
+  response {
+    status_code = 404
+    description = "Session or action not found"
+  }
+
+  response {
+    status_code = 409
+    description = "Conflicting outcome"
+  }
+
+  response {
+    status_code = 503
+    description = "Outcome persistence unavailable"
+  }
+}
+
+resource "azurerm_api_management_api_operation_policy" "cod4x_ingest_siege_mode_outcome_post" {
+  count = local.cod4x_ingest_enabled ? 1 : 0
+
+  api_name            = azurerm_api_management_api.cod4x_ingest[0].name
+  api_management_name = local.api_management.name
+  resource_group_name = local.api_management.resource_group_name
+  operation_id        = azurerm_api_management_api_operation.cod4x_ingest_siege_mode_outcome_post[0].operation_id
+
+  xml_content = <<XML
+<policies>
+  <inbound>
+    <base />
+    <authentication-managed-identity resource="${local.server_events_api.application.primary_identifier_uri}"
+                                     client-id="${local.managed_identities.api_management.client_id}"
+                                     output-token-variable-name="serverEventsToken" />
+    <set-header name="Authorization" exists-action="override">
+      <value>@("Bearer " + (string)context.Variables[&quot;serverEventsToken&quot;])</value>
+    </set-header>
+    <set-backend-service base-url="https://${azurerm_linux_function_app.function_app.default_hostname}" />
+    <rewrite-uri template="/api/siege-mode/outcome" copy-unmatched-params="false" />
+  </inbound>
+  <backend>
+    <forward-request timeout="15" />
+  </backend>
+  <outbound>
+    <base />
+  </outbound>
+  <on-error>
+    <base />
+  </on-error>
+</policies>
+XML
+}
+

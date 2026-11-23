@@ -5,6 +5,7 @@ using Microsoft.Azure.Functions.Worker;
 using Microsoft.Azure.Functions.Worker.Http;
 using Microsoft.Extensions.Logging;
 
+using MX.GeoLocation.Abstractions.Models.V1_1;
 using MX.GeoLocation.Api.Client.V1;
 
 using XtremeIdiots.Portal.Repository.Api.Client.V1;
@@ -24,6 +25,7 @@ public sealed class VpnProtectionEvaluation(
     IGeoLocationApiClient geoLocationApiClient,
     IRepositoryApiClient repositoryApiClient,
     IBanAppliedPublisher banAppliedPublisher,
+    ISiegeModeService siegeModeService,
     ILogger<VpnProtectionEvaluation> logger)
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
@@ -51,72 +53,70 @@ public sealed class VpnProtectionEvaluation(
 
         if (evaluationRequest is null ||
             evaluationRequest.ServerId == Guid.Empty ||
-            !IpAddressGuard.IsPersistable(evaluationRequest.IpAddress) ||
+            (!evaluationRequest.SiegeEvaluation && !IpAddressGuard.IsPersistable(evaluationRequest.IpAddress)) ||
             string.IsNullOrWhiteSpace(evaluationRequest.PlayerGuid) ||
             string.IsNullOrWhiteSpace(evaluationRequest.Username) ||
             evaluationRequest.SlotId < 0)
         {
-            return await WriteErrorResponse(request, HttpStatusCode.BadRequest, "serverId, ipAddress, playerGuid, username, and slotId are required", context.CancellationToken).ConfigureAwait(false);
+            return await WriteErrorResponse(request, HttpStatusCode.BadRequest, "serverId, playerGuid, username, and slotId are required; ipAddress is required for VPN evaluation", context.CancellationToken).ConfigureAwait(false);
         }
 
-        if (!await cod4xPolicyProvider.IsEnabledAsync(evaluationRequest.ServerId, context.CancellationToken).ConfigureAwait(false))
+        var hasIpAddress = IpAddressGuard.IsPersistable(evaluationRequest.IpAddress);
+        var vpnUnavailable = false;
+        var vpnDecision = VpnProtectionDecision.NoMatch;
+        var vpnSettings = EffectiveVpnProtectionSettings.Disabled(validationFailed: true);
+        var vpnPolicyEnabled = false;
+        if (hasIpAddress || evaluationRequest.SiegeEvaluation)
         {
-            return await WriteDecisionResponse(request, VpnProtectionEvaluationResponse.NoMatch, context.CancellationToken).ConfigureAwait(false);
+            try
+            {
+                vpnPolicyEnabled = await cod4xPolicyProvider
+                    .IsEnabledAsync(evaluationRequest.ServerId, context.CancellationToken)
+                    .ConfigureAwait(false);
+                if (vpnPolicyEnabled && hasIpAddress)
+                {
+                    vpnSettings = await settingsProvider
+                        .GetEffectiveSettingsAsync(evaluationRequest.ServerId, context.CancellationToken)
+                        .ConfigureAwait(false);
+                }
+            }
+            catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                vpnUnavailable = true;
+                logger.LogWarning(ex, "CoD4x VPN/Siege Mode policy lookup failed for server {ServerId}", evaluationRequest.ServerId);
+            }
         }
-
-        var settings = await settingsProvider
-            .GetEffectiveSettingsAsync(evaluationRequest.ServerId, context.CancellationToken)
-            .ConfigureAwait(false);
-        if (!settings.Enabled || settings.ValidationFailed)
+        var vpnEnabled = hasIpAddress && vpnPolicyEnabled && vpnSettings.Enabled && !vpnSettings.ValidationFailed;
+        if (evaluationRequest.SiegeEvaluation && vpnPolicyEnabled && !hasIpAddress)
         {
-            return await WriteDecisionResponse(request, VpnProtectionEvaluationResponse.NoMatch, context.CancellationToken).ConfigureAwait(false);
+            vpnUnavailable = true;
         }
 
+        IpIntelligenceDto? intelligence = null;
         try
         {
-            var intelligenceResult = await geoLocationApiClient.GeoLookup.V1_1
-                .GetIpIntelligence(evaluationRequest.IpAddress, context.CancellationToken)
-                .ConfigureAwait(false);
-            if (!intelligenceResult.IsSuccess || intelligenceResult.Result?.Data is null)
+            if (hasIpAddress && (vpnEnabled || evaluationRequest.SiegeEvaluation))
             {
-                logger.LogWarning(
-                    "CoD4x VPN Protection intelligence lookup failed for server {ServerId}. Status: {StatusCode}",
-                    evaluationRequest.ServerId,
-                    intelligenceResult.StatusCode);
-                return await WriteErrorResponse(request, HttpStatusCode.ServiceUnavailable, "IP intelligence is unavailable", context.CancellationToken).ConfigureAwait(false);
-            }
-
-            var playerTags = await ResolvePlayerTagsAsync(evaluationRequest.PlayerGuid).ConfigureAwait(false);
-
-            var decision = evaluator.Evaluate(settings, playerTags, intelligenceResult.Result.Data);
-
-            if (decision.IsMatch && decision.Action == VpnProtectionAction.Ban)
-            {
-                // The plugin enforces the ban locally from this decision. Hand the portal import to the
-                // shared ban-applied queue so BanAppliedProcessor creates the admin action + forum topic
-                // off this request's hot path — keeping the response well inside the plugin's evaluation
-                // deadline so the player is always dropped this session. Best-effort: a publish failure
-                // never blocks the decision, and the agent's dumpbanlist reconcile remains a backstop.
-                //
-                // No double-import: this endpoint is only called by the CoD4x plugin, and the agent
-                // suppresses parsed player events (PlayerConnected / PlayerIpResolved) for plugin-source
-                // CoD4x servers (GameServerAgent.ShouldPublishParsedEvent), so the event-path VPN
-                // protection (PlayerConnectedProcessor -> VpnProtectionService) never runs for these
-                // servers. This publish is therefore the sole VPN ban source for a plugin server, and it
-                // shares the RconBanImport idempotency key ({serverId}:{playerGuid}) with the reconcile.
-                await PublishBanAppliedAsync(evaluationRequest, decision, context.CancellationToken).ConfigureAwait(false);
-            }
-
-            var response = decision.IsMatch
-                ? new VpnProtectionEvaluationResponse
+                var intelligenceResult = await geoLocationApiClient.GeoLookup.V1_1
+                    .GetIpIntelligence(evaluationRequest.IpAddress!, context.CancellationToken)
+                    .ConfigureAwait(false);
+                if (!intelligenceResult.IsSuccess || intelligenceResult.Result?.Data is null)
                 {
-                    Matched = true,
-                    Action = decision.Action,
-                    Reason = decision.Reason,
-                    MatchedRuleIds = decision.MatchedRules.Select(static match => match.RuleId).ToArray()
+                    vpnUnavailable |= vpnEnabled || evaluationRequest.SiegeEvaluation;
+                    logger.LogWarning(
+                        "CoD4x VPN/Siege Mode intelligence lookup failed for server {ServerId}. Status: {StatusCode}",
+                        evaluationRequest.ServerId,
+                        intelligenceResult.StatusCode);
                 }
-                : VpnProtectionEvaluationResponse.NoMatch;
-            return await WriteDecisionResponse(request, response, context.CancellationToken).ConfigureAwait(false);
+                else
+                {
+                    intelligence = intelligenceResult.Result.Data;
+                }
+            }
         }
         catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested)
         {
@@ -124,15 +124,83 @@ public sealed class VpnProtectionEvaluation(
         }
         catch (Exception ex)
         {
-            logger.LogWarning(
-                ex,
-                "CoD4x VPN Protection evaluation failed for server {ServerId}",
-                evaluationRequest.ServerId);
+            vpnUnavailable |= vpnEnabled || evaluationRequest.SiegeEvaluation;
+            logger.LogWarning(ex, "CoD4x VPN/Siege Mode intelligence lookup failed for server {ServerId}", evaluationRequest.ServerId);
+        }
+
+        var tagResolution = evaluationRequest.SiegeEvaluation || vpnEnabled
+            ? await ResolvePlayerTagsAsync(evaluationRequest.PlayerGuid, context.CancellationToken).ConfigureAwait(false)
+            : new PlayerTagResolution([], false);
+        if (vpnEnabled && intelligence is not null)
+        {
+            vpnDecision = evaluator.Evaluate(vpnSettings, tagResolution.Tags, intelligence);
+        }
+
+        SiegeModeProcessingResult siegeResult = SiegeModeProcessingResult.NoMatch;
+        if (evaluationRequest.SiegeEvaluation)
+        {
+            siegeResult = await siegeModeService.EvaluateAsync(
+                new SiegeModeEvaluationContext
+                {
+                    ServerId = evaluationRequest.ServerId,
+                    GameType = GameType.CallOfDuty4x,
+                    PlayerGuid = evaluationRequest.PlayerGuid,
+                    Username = evaluationRequest.Username,
+                    SlotId = evaluationRequest.SlotId,
+                    ConnectionId = evaluationRequest.ConnectionId,
+                    IpAddress = hasIpAddress ? evaluationRequest.IpAddress : null,
+                    EventGeneratedUtc = DateTime.UtcNow,
+                    PlayerTags = tagResolution.IsKnown ? tagResolution.Tags : null,
+                    Intelligence = intelligence,
+                    IsPluginPath = true,
+                    SuppressEnforcement = IsDestructiveVpnMatch(vpnDecision)
+                },
+                context.CancellationToken).ConfigureAwait(false);
+        }
+
+        if (vpnDecision.IsMatch && vpnDecision.Action == VpnProtectionAction.Ban)
+        {
+            await PublishBanAppliedAsync(
+                evaluationRequest,
+                vpnDecision,
+                context.CancellationToken).ConfigureAwait(false);
+        }
+
+        var response = vpnDecision.IsMatch
+            ? new VpnProtectionEvaluationResponse
+            {
+                Matched = true,
+                Action = vpnDecision.Action,
+                Reason = vpnDecision.Reason,
+                MatchedRuleIds = vpnDecision.MatchedRules.Select(static match => match.RuleId).ToArray()
+            }
+            : VpnProtectionEvaluationResponse.NoMatch;
+        response = response with
+        {
+            VpnUnavailable = vpnUnavailable,
+            Siege = siegeResult.ShouldDispatch &&
+                siegeResult.Session is not null &&
+                siegeResult.Action is not null &&
+                evaluationRequest.ConnectionId is Guid responseConnectionId
+                ? new SiegeModeEvaluationResponse
+                {
+                    Mode = "Enforce",
+                    SessionId = siegeResult.Session.SessionId,
+                    ActionId = siegeResult.Action.ActionId,
+                    ConnectionId = responseConnectionId,
+                    ExpiresAtUtc = siegeResult.Session.ExpiresAtUtc,
+                    Reason = siegeResult.Reason
+                }
+                : null
+        };
+        if (!evaluationRequest.SiegeEvaluation && vpnUnavailable)
+        {
             return await WriteErrorResponse(request, HttpStatusCode.ServiceUnavailable, "IP intelligence is unavailable", context.CancellationToken).ConfigureAwait(false);
         }
+        return await WriteDecisionResponse(request, response, context.CancellationToken).ConfigureAwait(false);
     }
 
-    private async Task<IReadOnlyCollection<string>> ResolvePlayerTagsAsync(string playerGuid)
+    private async Task<PlayerTagResolution> ResolvePlayerTagsAsync(string playerGuid, CancellationToken ct)
     {
         // Excluded-tag exemptions live in the portal, so the plugin (which only sends the GUID) can
         // never supply them. Resolve the player's tags here — CoD4x players are stored under the
@@ -149,15 +217,19 @@ public sealed class VpnProtectionEvaluation(
                 logger.LogWarning(
                     "CoD4x VPN Protection could not resolve player tags for {PlayerGuid}; excluded-tag exemption cannot be applied",
                     playerGuid);
-                return [];
+                return new PlayerTagResolution([], false);
             }
 
-            return response.Result.Data.Tags
+            return new PlayerTagResolution(response.Result.Data.Tags
                 .Select(static playerTag => playerTag.Tag?.Name)
                 .Where(static tag => !string.IsNullOrWhiteSpace(tag))
                 .Select(static tag => tag!)
                 .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToArray();
+                .ToArray(), true);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex)
         {
@@ -165,9 +237,14 @@ public sealed class VpnProtectionEvaluation(
                 ex,
                 "CoD4x VPN Protection failed to resolve player tags for {PlayerGuid}; excluded-tag exemption cannot be applied",
                 playerGuid);
-            return [];
+            return new PlayerTagResolution([], false);
         }
     }
+
+    private static bool IsDestructiveVpnMatch(VpnProtectionDecision decision) =>
+        decision.IsMatch && decision.Action is VpnProtectionAction.Kick or VpnProtectionAction.Ban;
+
+    private sealed record PlayerTagResolution(IReadOnlyCollection<string> Tags, bool IsKnown);
 
     private async Task PublishBanAppliedAsync(
         VpnProtectionEvaluationRequest request,

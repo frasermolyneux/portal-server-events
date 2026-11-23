@@ -76,6 +76,7 @@ public class ReprocessDeadLetterQueueTests
     [InlineData("ban-applied")]
     [InlineData("ban-lift-applied")]
     [InlineData("ban-sync-failed")]
+    [InlineData("player-ip-resolved")]
     public async Task Run_DryRun_NewBanLifecycleQueues_AreAccepted(string queueName)
     {
         var mockReceiver = new Mock<ServiceBusReceiver>();
@@ -192,6 +193,28 @@ public class ReprocessDeadLetterQueueTests
         Assert.Equal(0, count);
         mockSender.Verify(s => s.SendMessageAsync(It.IsAny<ServiceBusMessage>(), It.IsAny<CancellationToken>()), Times.Never);
         mockReceiver.Verify(r => r.CompleteMessageAsync(dlqMessage, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task PlayerIpResolvedReplay_LeavesExhaustedMessageInDlq()
+    {
+        var dlqMessage = ServiceBusModelFactory.ServiceBusReceivedMessage(
+            body: new BinaryData("{}"),
+            messageId: "ip-resolved-max-retries",
+            properties: new Dictionary<string, object> { ["DlqReplayCount"] = 3 });
+        var receiver = new Mock<ServiceBusReceiver>();
+        receiver.Setup(r => r.ReceiveMessagesAsync(It.IsAny<int>(), It.IsAny<TimeSpan>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new[] { dlqMessage });
+        var sender = new Mock<ServiceBusSender>();
+        _serviceBusClient.Setup(c => c.CreateReceiver(Queues.PlayerIpResolved, It.IsAny<ServiceBusReceiverOptions>()))
+            .Returns(receiver.Object);
+        _serviceBusClient.Setup(c => c.CreateSender(Queues.PlayerIpResolved)).Returns(sender.Object);
+
+        var count = await _sut.ReplayDeadLetterMessages(Queues.PlayerIpResolved, 10);
+
+        Assert.Equal(0, count);
+        sender.Verify(s => s.SendMessageAsync(It.IsAny<ServiceBusMessage>(), It.IsAny<CancellationToken>()), Times.Never);
+        receiver.Verify(r => r.CompleteMessageAsync(dlqMessage, It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]

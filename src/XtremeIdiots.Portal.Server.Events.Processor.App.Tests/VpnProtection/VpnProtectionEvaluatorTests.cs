@@ -90,6 +90,31 @@ public sealed class VpnProtectionEvaluatorTests
     }
 
     [Fact]
+    public void EvaluateSignal_DistinguishesUnknownFromNonMatch()
+    {
+        var intelligence = CreateIntelligence(riskScore: 60);
+
+        Assert.Null(VpnProtectionEvaluator.EvaluateSignal(
+            VpnProtectionSignal.ProxyCheckRiskScore,
+            VpnProtectionComparisonOperator.GreaterThan,
+            "60",
+            null,
+            out _));
+        Assert.False(VpnProtectionEvaluator.EvaluateSignal(
+            VpnProtectionSignal.ProxyCheckRiskScore,
+            VpnProtectionComparisonOperator.GreaterThan,
+            "60",
+            intelligence,
+            out _));
+        Assert.True(VpnProtectionEvaluator.EvaluateSignal(
+            VpnProtectionSignal.ProxyCheckRiskScore,
+            VpnProtectionComparisonOperator.GreaterThan,
+            "59",
+            intelligence,
+            out _));
+    }
+
+    [Fact]
     public void Evaluate_SourceStatusRule_CanMatchUnavailableProvider()
     {
         var settings = new EffectiveVpnProtectionSettings

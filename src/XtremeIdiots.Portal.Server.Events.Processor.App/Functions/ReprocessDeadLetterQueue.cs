@@ -23,6 +23,7 @@ public class ReprocessDeadLetterQueue(
     {
         Queues.PlayerConnected,
         Queues.PlayerDisconnected,
+        Queues.PlayerIpResolved,
         Queues.ChatMessage,
         Queues.ServerConnected,
         Queues.MapChange,
@@ -177,11 +178,20 @@ public class ReprocessDeadLetterQueue(
                     replayCount,
                     bodyPreview);
 
-                if (replayCount >= MaxReplayAttempts && !string.Equals(queueName, Queues.PlaytimeObservation, StringComparison.OrdinalIgnoreCase))
+                if (replayCount >= MaxReplayAttempts &&
+                    !string.Equals(queueName, Queues.PlaytimeObservation, StringComparison.OrdinalIgnoreCase))
                 {
                     logger.LogWarning(
                         "Skipping message {MessageId} — already replayed {ReplayCount} times (max {Max})",
                         message.MessageId, replayCount, MaxReplayAttempts);
+                    if (string.Equals(queueName, Queues.PlayerIpResolved, StringComparison.OrdinalIgnoreCase))
+                    {
+                        logger.LogError(
+                            "PlayerIpResolved message {MessageId} remains in the DLQ after exhausting explicit replay attempts",
+                            message.MessageId);
+                        return totalReplayed;
+                    }
+
                     await receiver.CompleteMessageAsync(message);
                     continue;
                 }

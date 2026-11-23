@@ -76,6 +76,19 @@ public sealed class VpnProtectionRconEnforcerTests
     }
 
     [Fact]
+    public async Task EnforceAsync_StatusUnavailable_ReturnsFailureWithoutKick()
+    {
+        cod4RconApi.Setup(x => x.Status(ServerId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<RconStatusResponseDto>(HttpStatusCode.ServiceUnavailable));
+
+        var result = await CreateSut().EnforceAsync(
+            CreateContext(GameType.CallOfDuty4), VpnProtectionAction.Kick, "Siege", CancellationToken.None);
+
+        Assert.Equal(VpnProtectionRconOutcome.Failed, result);
+        cod4RconApi.Verify(x => x.Kick(It.IsAny<Guid>(), It.IsAny<ClientSlotRequest>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
     public async Task EnforceAsync_Cod4xKick_UsesVerifiedOnlyKickWithReason()
     {
         cod4xRconApi

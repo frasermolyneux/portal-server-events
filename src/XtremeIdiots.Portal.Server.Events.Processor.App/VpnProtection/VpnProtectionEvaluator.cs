@@ -70,20 +70,8 @@ public sealed class VpnProtectionEvaluator : IVpnProtectionEvaluator
         EffectiveVpnProtectionRule rule,
         IpIntelligenceDto intelligence)
     {
-        if (!TryGetSignalValue(rule.Signal, intelligence, out var actualValue, out var valueKind))
-        {
-            return null;
-        }
-
-        var isMatch = valueKind switch
-        {
-            SignalValueKind.Boolean => CompareBoolean(actualValue, rule.ExpectedValue, rule.Operator),
-            SignalValueKind.Numeric => CompareNumeric(actualValue, rule.ExpectedValue, rule.Operator),
-            SignalValueKind.String => CompareString(actualValue, rule.ExpectedValue, rule.Operator),
-            _ => false
-        };
-
-        if (!isMatch)
+        var isMatch = EvaluateSignal(rule.Signal, rule.Operator, rule.ExpectedValue, intelligence, out var actualValue);
+        if (isMatch != true)
         {
             return null;
         }
@@ -98,6 +86,28 @@ public sealed class VpnProtectionEvaluator : IVpnProtectionEvaluator
             PostObservationToForums = rule.PostObservationToForums,
             Reason = RenderReason(rule, actualValue),
             OrderIndex = rule.OrderIndex
+        };
+    }
+
+    internal static bool? EvaluateSignal(
+        VpnProtectionSignal signal,
+        VpnProtectionComparisonOperator comparisonOperator,
+        string expectedValue,
+        IpIntelligenceDto? intelligence,
+        out string actualValue)
+    {
+        actualValue = string.Empty;
+        if (intelligence is null || !TryGetSignalValue(signal, intelligence, out actualValue, out var valueKind))
+        {
+            return null;
+        }
+
+        return valueKind switch
+        {
+            SignalValueKind.Boolean => CompareBoolean(actualValue, expectedValue, comparisonOperator),
+            SignalValueKind.Numeric => CompareNumeric(actualValue, expectedValue, comparisonOperator),
+            SignalValueKind.String => CompareString(actualValue, expectedValue, comparisonOperator),
+            _ => false
         };
     }
 

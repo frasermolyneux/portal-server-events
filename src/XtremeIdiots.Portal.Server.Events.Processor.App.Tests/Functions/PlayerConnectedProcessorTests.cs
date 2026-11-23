@@ -36,6 +36,7 @@ public class PlayerConnectedProcessorTests
     private readonly Mock<MX.GeoLocation.Abstractions.Interfaces.V1_1.IGeoLookupApi> _geoLookupApi = new();
     private readonly Mock<IVpnProtectionService> _vpnProtectionService = new();
     private readonly Mock<IVpnDetectedTagService> _vpnDetectedTagService = new();
+    private readonly Mock<ISiegeModeService> _siegeModeService = new();
     private readonly Mock<IVersionedPlayersApi> _versionedPlayers = new();
     private readonly Mock<IPlayersApi> _playersApi = new();
     private readonly Mock<IVersionedGameServerConfigurationsApi> _versionedServerConfigs = new();
@@ -56,6 +57,12 @@ public class PlayerConnectedProcessorTests
     {
         _versionedPlayers.Setup(x => x.V1).Returns(_playersApi.Object);
         _repoClient.Setup(x => x.Players).Returns(_versionedPlayers.Object);
+        _playersApi
+            .Setup(x => x.RecordPlayerIpObservation(
+                It.IsAny<Guid>(),
+                It.IsAny<RecordPlayerIpObservationDto>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(SuccessResult());
 
         _versionedServerConfigs.Setup(x => x.V1).Returns(_serverConfigsApi.Object);
         _repoClient.Setup(x => x.GameServerConfigurations).Returns(_versionedServerConfigs.Object);
@@ -79,6 +86,9 @@ public class PlayerConnectedProcessorTests
         _vpnDetectedTagService
             .Setup(x => x.AddIfDetectedAsync(It.IsAny<Guid>(), It.IsAny<IpIntelligenceDto>(), It.IsAny<CancellationToken>()))
             .Returns(Task.CompletedTask);
+        _siegeModeService
+            .Setup(x => x.EvaluateAsync(It.IsAny<SiegeModeEvaluationContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(SiegeModeProcessingResult.NoMatch);
 
         _serverConfigsApi
             .Setup(x => x.GetConfigurations(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
@@ -99,7 +109,8 @@ public class PlayerConnectedProcessorTests
             _protectedNameService.Object,
             _welcomeMessageOrchestrator.Object,
             _cache,
-            _auditLogger.Object);
+            _auditLogger.Object,
+            _siegeModeService.Object);
     }
 
     private static PlayerConnectedEvent CreateValidEvent(
@@ -109,7 +120,9 @@ public class PlayerConnectedProcessorTests
         string? steamId = null,
         string? ipAddress = null,
         Guid? serverId = null,
-        DateTime? eventGeneratedUtc = null) => new()
+        DateTime? eventGeneratedUtc = null,
+        bool protectionEvaluatedByPlugin = false,
+        Guid? connectionId = null) => new()
         {
             EventGeneratedUtc = eventGeneratedUtc ?? DateTime.UtcNow.AddSeconds(-10),
             EventPublishedUtc = DateTime.UtcNow.AddSeconds(-5),
@@ -120,8 +133,65 @@ public class PlayerConnectedProcessorTests
             Username = username ?? "TestPlayer",
             SteamId = steamId,
             IpAddress = ipAddress ?? "192.168.1.1",
-            SlotId = 0
+            SlotId = 0,
+            ProtectionEvaluatedByPlugin = protectionEvaluatedByPlugin,
+            ConnectionId = connectionId
         };
+
+    [Fact]
+    public async Task ConnectedEvent_EvaluatesSiegeWithConnectionIdentity()
+    {
+        var evt = CreateValidEvent(ipAddress: "", connectionId: Guid.Parse("33333333-3333-3333-3333-333333333333"));
+        _playersApi.Setup(x => x.HeadPlayerByGameType(GameType.CallOfDuty4, "abc123guid"))
+            .ReturnsAsync(SuccessResult());
+        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.Tags))
+            .ReturnsAsync(SuccessResult(CreatePlayerDto(TestPlayerId)));
+        _playersApi.Setup(x => x.RecordPlayerSession(It.IsAny<RecordPlayerSessionDto>()))
+            .ReturnsAsync(SuccessResult());
+
+        await _sut.ProcessPlayerConnected(CreateMessage(evt), _functionContext.Object);
+
+        _siegeModeService.Verify(x => x.EvaluateAsync(
+            It.Is<SiegeModeEvaluationContext>(evaluation =>
+                evaluation.ServerId == TestServerId &&
+                evaluation.GameType == GameType.CallOfDuty4 &&
+                evaluation.PlayerGuid == "abc123guid" &&
+                evaluation.SlotId == 0 &&
+                evaluation.ConnectionId == evt.ConnectionId &&
+                evaluation.EventGeneratedUtc == evt.EventGeneratedUtc &&
+                string.IsNullOrEmpty(evaluation.IpAddress)),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task PluginEvent_PersistsAndEnrichesWithoutRepeatingProtection(bool newPlayer)
+    {
+        var evt = CreateValidEvent(protectionEvaluatedByPlugin: true);
+        _playersApi.Setup(x => x.HeadPlayerByGameType(GameType.CallOfDuty4, "abc123guid"))
+            .ReturnsAsync(newPlayer ? NotFoundResult() : SuccessResult());
+        _playersApi.Setup(x => x.CreatePlayer(It.IsAny<CreatePlayerDto>())).ReturnsAsync(SuccessResult());
+        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.Tags))
+            .ReturnsAsync(SuccessResult(CreatePlayerDto(TestPlayerId)));
+        _playersApi.Setup(x => x.RecordPlayerSession(It.IsAny<RecordPlayerSessionDto>())).ReturnsAsync(SuccessResult());
+        _playersApi.Setup(x => x.RecordPlayerIpObservation(It.IsAny<Guid>(), It.IsAny<RecordPlayerIpObservationDto>(), It.IsAny<CancellationToken>())).ReturnsAsync(SuccessResult());
+        var intelligence = Newtonsoft.Json.JsonConvert.DeserializeObject<IpIntelligenceDto>(
+            Newtonsoft.Json.JsonConvert.SerializeObject(new { ProxyCheck = new { IsVpn = true } }))!;
+        _geoLookupApi.Setup(x => x.GetIpIntelligence("192.168.1.1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<IpIntelligenceDto>(
+                System.Net.HttpStatusCode.OK, new ApiResponse<IpIntelligenceDto>(intelligence)));
+
+        await _sut.ProcessPlayerConnected(CreateMessage(evt), _functionContext.Object);
+
+        _playersApi.Verify(x => x.CreatePlayer(It.IsAny<CreatePlayerDto>()), newPlayer ? Times.Once : Times.Never);
+        _playersApi.Verify(x => x.RecordPlayerSession(It.IsAny<RecordPlayerSessionDto>()), newPlayer ? Times.Never : Times.Once);
+        _siegeModeService.Verify(
+            x => x.EvaluateAsync(It.IsAny<SiegeModeEvaluationContext>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+        _vpnDetectedTagService.Verify(x => x.AddIfDetectedAsync(TestPlayerId, intelligence, It.IsAny<CancellationToken>()), Times.Once);
+        _vpnProtectionService.Verify(x => x.ProcessAsync(It.IsAny<VpnProtectionContext>(), It.IsAny<IpIntelligenceDto>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
 
     [Fact]
     public async Task ValidNewPlayer_CreatesPlayer()
@@ -145,7 +215,24 @@ public class PlayerConnectedProcessorTests
             dto.Username == "TestPlayer" &&
             dto.Guid == "abc123guid" &&
             dto.SteamId == "76561198000000001" &&
-            dto.IpAddress == "192.168.1.1")), Times.Once);
+            dto.IpAddress == null)), Times.Once);
+        _playersApi.Verify(x => x.RecordPlayerIpObservation(
+            TestPlayerId,
+            It.Is<RecordPlayerIpObservationDto>(dto =>
+                dto.MessageId == message.MessageId &&
+                dto.IpAddress == "192.168.1.1" &&
+                dto.ObservedAtUtc.HasValue &&
+                dto.ObservedAtUtc.Value.UtcDateTime == DateTime.SpecifyKind(evt.EventGeneratedUtc, DateTimeKind.Utc)),
+            It.IsAny<CancellationToken>()), Times.Once);
+        _siegeModeService.Verify(x => x.EvaluateAsync(
+            It.Is<SiegeModeEvaluationContext>(evaluation =>
+                evaluation.ObservationPlayerId == TestPlayerId &&
+                evaluation.IpObservation != null &&
+                evaluation.IpObservation.MessageId == message.MessageId &&
+                evaluation.IpObservation.IpAddress == evt.IpAddress &&
+                evaluation.IpObservation.ObservedAtUtc.HasValue &&
+                evaluation.IpObservation.ObservedAtUtc.Value.UtcDateTime == DateTime.SpecifyKind(evt.EventGeneratedUtc, DateTimeKind.Utc)),
+            It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -164,7 +251,7 @@ public class PlayerConnectedProcessorTests
         _playersApi.Setup(x => x.RecordPlayerSession(It.IsAny<RecordPlayerSessionDto>()))
             .ReturnsAsync(SuccessResult());
 
-        _playersApi.Setup(x => x.UpdatePlayerIpAddress(It.IsAny<UpdatePlayerIpAddressDto>()))
+        _playersApi.Setup(x => x.RecordPlayerIpObservation(It.IsAny<Guid>(), It.IsAny<RecordPlayerIpObservationDto>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(SuccessResult());
 
         await _sut.ProcessPlayerConnected(message, _functionContext.Object);
@@ -174,9 +261,23 @@ public class PlayerConnectedProcessorTests
             dto.Username == "TestPlayer" &&
             dto.SteamId == "76561198000000002")), Times.Once);
 
-        _playersApi.Verify(x => x.UpdatePlayerIpAddress(It.Is<UpdatePlayerIpAddressDto>(dto =>
-            dto.PlayerId == TestPlayerId &&
-            dto.IpAddress == "192.168.1.1")), Times.Once);
+        _playersApi.Verify(x => x.RecordPlayerIpObservation(
+            TestPlayerId,
+            It.Is<RecordPlayerIpObservationDto>(dto =>
+                dto.MessageId == message.MessageId &&
+                dto.IpAddress == "192.168.1.1" &&
+                dto.ObservedAtUtc.HasValue &&
+                dto.ObservedAtUtc.Value.UtcDateTime == DateTime.SpecifyKind(evt.EventGeneratedUtc, DateTimeKind.Utc)),
+            It.IsAny<CancellationToken>()), Times.Once);
+        _siegeModeService.Verify(x => x.EvaluateAsync(
+            It.Is<SiegeModeEvaluationContext>(evaluation =>
+                evaluation.ObservationPlayerId == TestPlayerId &&
+                evaluation.IpObservation != null &&
+                evaluation.IpObservation.MessageId == message.MessageId &&
+                evaluation.IpObservation.IpAddress == evt.IpAddress &&
+                evaluation.IpObservation.ObservedAtUtc.HasValue &&
+                evaluation.IpObservation.ObservedAtUtc.Value.UtcDateTime == DateTime.SpecifyKind(evt.EventGeneratedUtc, DateTimeKind.Utc)),
+            It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -198,7 +299,7 @@ public class PlayerConnectedProcessorTests
         _playersApi.Setup(x => x.RecordPlayerSession(It.IsAny<RecordPlayerSessionDto>()))
             .ReturnsAsync(SuccessResult());
 
-        _playersApi.Setup(x => x.UpdatePlayerIpAddress(It.IsAny<UpdatePlayerIpAddressDto>()))
+        _playersApi.Setup(x => x.RecordPlayerIpObservation(It.IsAny<Guid>(), It.IsAny<RecordPlayerIpObservationDto>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(SuccessResult());
 
         await _sut.ProcessPlayerConnected(message, _functionContext.Object);
@@ -276,7 +377,7 @@ public class PlayerConnectedProcessorTests
         _playersApi.Setup(x => x.RecordPlayerSession(It.IsAny<RecordPlayerSessionDto>()))
             .ReturnsAsync(SuccessResult());
 
-        _playersApi.Setup(x => x.UpdatePlayerIpAddress(It.IsAny<UpdatePlayerIpAddressDto>()))
+        _playersApi.Setup(x => x.RecordPlayerIpObservation(It.IsAny<Guid>(), It.IsAny<RecordPlayerIpObservationDto>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(SuccessResult());
 
         var geoData = Newtonsoft.Json.JsonConvert.DeserializeObject<IpIntelligenceDto>(
@@ -311,7 +412,7 @@ public class PlayerConnectedProcessorTests
             .ReturnsAsync(SuccessResult(CreatePlayerDto(TestPlayerId)));
         _playersApi.Setup(x => x.RecordPlayerSession(It.IsAny<RecordPlayerSessionDto>()))
             .ReturnsAsync(SuccessResult());
-        _playersApi.Setup(x => x.UpdatePlayerIpAddress(It.IsAny<UpdatePlayerIpAddressDto>()))
+        _playersApi.Setup(x => x.RecordPlayerIpObservation(It.IsAny<Guid>(), It.IsAny<RecordPlayerIpObservationDto>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(SuccessResult());
         var geoData = Newtonsoft.Json.JsonConvert.DeserializeObject<IpIntelligenceDto>(
             Newtonsoft.Json.JsonConvert.SerializeObject(new { ProxyCheck = new { IsVpn = true } }))!;
@@ -367,7 +468,7 @@ public class PlayerConnectedProcessorTests
         _playersApi.Setup(x => x.RecordPlayerSession(It.IsAny<RecordPlayerSessionDto>()))
             .ReturnsAsync(SuccessResult());
 
-        _playersApi.Setup(x => x.UpdatePlayerIpAddress(It.IsAny<UpdatePlayerIpAddressDto>()))
+        _playersApi.Setup(x => x.RecordPlayerIpObservation(It.IsAny<Guid>(), It.IsAny<RecordPlayerIpObservationDto>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(SuccessResult());
 
         _geoLookupApi.Setup(x => x.GetIpIntelligence("192.168.1.1", It.IsAny<CancellationToken>()))
@@ -400,7 +501,7 @@ public class PlayerConnectedProcessorTests
         await _sut.ProcessPlayerConnected(message, _functionContext.Object);
 
         _geoLookupApi.Verify(x => x.GetIpIntelligence(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
-        _playersApi.Verify(x => x.UpdatePlayerIpAddress(It.IsAny<UpdatePlayerIpAddressDto>()), Times.Never);
+        _playersApi.Verify(x => x.RecordPlayerIpObservation(It.IsAny<Guid>(), It.IsAny<RecordPlayerIpObservationDto>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -466,7 +567,7 @@ public class PlayerConnectedProcessorTests
         _playersApi.Setup(x => x.RecordPlayerSession(It.IsAny<RecordPlayerSessionDto>()))
             .ReturnsAsync(SuccessResult());
 
-        _playersApi.Setup(x => x.UpdatePlayerIpAddress(It.IsAny<UpdatePlayerIpAddressDto>()))
+        _playersApi.Setup(x => x.RecordPlayerIpObservation(It.IsAny<Guid>(), It.IsAny<RecordPlayerIpObservationDto>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(SuccessResult());
 
         await _sut.ProcessPlayerConnected(message, _functionContext.Object);
@@ -495,7 +596,7 @@ public class PlayerConnectedProcessorTests
         _playersApi.Setup(x => x.RecordPlayerSession(It.IsAny<RecordPlayerSessionDto>()))
             .ReturnsAsync(SuccessResult());
 
-        _playersApi.Setup(x => x.UpdatePlayerIpAddress(It.IsAny<UpdatePlayerIpAddressDto>()))
+        _playersApi.Setup(x => x.RecordPlayerIpObservation(It.IsAny<Guid>(), It.IsAny<RecordPlayerIpObservationDto>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(SuccessResult());
 
         await _sut.ProcessPlayerConnected(message, _functionContext.Object);
@@ -519,7 +620,7 @@ public class PlayerConnectedProcessorTests
         _playersApi.Setup(x => x.RecordPlayerSession(It.IsAny<RecordPlayerSessionDto>()))
             .ReturnsAsync(SuccessResult());
 
-        _playersApi.Setup(x => x.UpdatePlayerIpAddress(It.IsAny<UpdatePlayerIpAddressDto>()))
+        _playersApi.Setup(x => x.RecordPlayerIpObservation(It.IsAny<Guid>(), It.IsAny<RecordPlayerIpObservationDto>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(SuccessResult());
 
         _serverConfigsApi
@@ -564,7 +665,7 @@ public class PlayerConnectedProcessorTests
         _playersApi.Setup(x => x.RecordPlayerSession(It.IsAny<RecordPlayerSessionDto>()))
             .ReturnsAsync(SuccessResult());
 
-        _playersApi.Setup(x => x.UpdatePlayerIpAddress(It.IsAny<UpdatePlayerIpAddressDto>()))
+        _playersApi.Setup(x => x.RecordPlayerIpObservation(It.IsAny<Guid>(), It.IsAny<RecordPlayerIpObservationDto>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(SuccessResult());
 
         _serverConfigsApi
