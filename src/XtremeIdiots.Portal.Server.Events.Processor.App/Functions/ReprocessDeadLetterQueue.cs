@@ -16,6 +16,7 @@ public class ReprocessDeadLetterQueue(
 {
     private const int BatchSize = 20;
     private const int MaxReplayAttempts = 3;
+    private const int MaxRetainedIpMessagesPerScan = 1000;
     private static readonly TimeSpan BatchThrottle = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan ReceiveTimeout = TimeSpan.FromSeconds(5);
 
@@ -23,6 +24,7 @@ public class ReprocessDeadLetterQueue(
     {
         Queues.PlayerConnected,
         Queues.PlayerDisconnected,
+        Queues.PlayerIpResolved,
         Queues.ChatMessage,
         Queues.ServerConnected,
         Queues.MapChange,
@@ -146,10 +148,15 @@ public class ReprocessDeadLetterQueue(
         await using var sender = serviceBusClient.CreateSender(queueName);
 
         int totalReplayed = 0;
+        int retainedIpMessages = 0;
 
-        while (totalReplayed < maxMessages)
+        while (totalReplayed < maxMessages && retainedIpMessages < MaxRetainedIpMessagesPerScan)
         {
             var batchSize = Math.Min(BatchSize, maxMessages - totalReplayed);
+            if (string.Equals(queueName, Queues.PlayerIpResolved, StringComparison.OrdinalIgnoreCase))
+            {
+                batchSize = Math.Min(batchSize, MaxRetainedIpMessagesPerScan - retainedIpMessages);
+            }
             var messages = await receiver.ReceiveMessagesAsync(batchSize, ReceiveTimeout);
 
             if (messages.Count == 0)
@@ -177,11 +184,22 @@ public class ReprocessDeadLetterQueue(
                     replayCount,
                     bodyPreview);
 
-                if (replayCount >= MaxReplayAttempts && !string.Equals(queueName, Queues.PlaytimeObservation, StringComparison.OrdinalIgnoreCase))
+                if (replayCount >= MaxReplayAttempts &&
+                    !string.Equals(queueName, Queues.PlaytimeObservation, StringComparison.OrdinalIgnoreCase))
                 {
                     logger.LogWarning(
                         "Skipping message {MessageId} — already replayed {ReplayCount} times (max {Max})",
                         message.MessageId, replayCount, MaxReplayAttempts);
+                    if (string.Equals(queueName, Queues.PlayerIpResolved, StringComparison.OrdinalIgnoreCase))
+                    {
+                        logger.LogError(
+                            "PlayerIpResolved message {MessageId} remains in the DLQ after exhausting explicit replay attempts",
+                            message.MessageId);
+                        // Keep the lock until receiver disposal so the next receive can advance.
+                        retainedIpMessages++;
+                        continue;
+                    }
+
                     await receiver.CompleteMessageAsync(message);
                     continue;
                 }
@@ -202,7 +220,15 @@ public class ReprocessDeadLetterQueue(
                 break;
             }
 
-            await Task.Delay(BatchThrottle);
+            if (retainedIpMessages == 0)
+            {
+                await Task.Delay(BatchThrottle);
+            }
+        }
+
+        if (retainedIpMessages >= MaxRetainedIpMessagesPerScan)
+        {
+            logger.LogWarning("Stopped PlayerIpResolved DLQ replay after retaining {Count} exhausted messages", retainedIpMessages);
         }
 
         return totalReplayed;

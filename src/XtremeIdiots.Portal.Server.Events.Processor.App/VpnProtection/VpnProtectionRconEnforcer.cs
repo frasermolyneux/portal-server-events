@@ -61,8 +61,13 @@ public sealed class VpnProtectionRconEnforcer(
         CancellationToken ct)
     {
         var status = await serversApiClient.Cod2Rcon.V1.Status(context.ServerId, ct).ConfigureAwait(false);
+        if (!status.IsSuccess || status.Result?.Data is null)
+        {
+            logger.LogWarning("RCON status failed for server {ServerId}: {StatusCode}", context.ServerId, status.StatusCode);
+            return VpnProtectionRconOutcome.Failed;
+        }
         var player = status.Result?.Data?.Players.FirstOrDefault(candidate => IsExpectedPlayer(candidate, context));
-        if (!status.IsSuccess || player is null)
+        if (player is null)
         {
             return VpnProtectionRconOutcome.PlayerNotConnected;
         }
@@ -80,8 +85,13 @@ public sealed class VpnProtectionRconEnforcer(
         CancellationToken ct)
     {
         var status = await serversApiClient.Cod4Rcon.V1.Status(context.ServerId, ct).ConfigureAwait(false);
+        if (!status.IsSuccess || status.Result?.Data is null)
+        {
+            logger.LogWarning("RCON status failed for server {ServerId}: {StatusCode}", context.ServerId, status.StatusCode);
+            return VpnProtectionRconOutcome.Failed;
+        }
         var player = status.Result?.Data?.Players.FirstOrDefault(candidate => IsExpectedPlayer(candidate, context));
-        if (!status.IsSuccess || player is null)
+        if (player is null)
         {
             return VpnProtectionRconOutcome.PlayerNotConnected;
         }
@@ -99,8 +109,13 @@ public sealed class VpnProtectionRconEnforcer(
         CancellationToken ct)
     {
         var status = await serversApiClient.Cod5Rcon.V1.Status(context.ServerId, ct).ConfigureAwait(false);
+        if (!status.IsSuccess || status.Result?.Data is null)
+        {
+            logger.LogWarning("RCON status failed for server {ServerId}: {StatusCode}", context.ServerId, status.StatusCode);
+            return VpnProtectionRconOutcome.Failed;
+        }
         var player = status.Result?.Data?.Players.FirstOrDefault(candidate => IsExpectedPlayer(candidate, context));
-        if (!status.IsSuccess || player is null)
+        if (player is null)
         {
             return VpnProtectionRconOutcome.PlayerNotConnected;
         }
@@ -119,10 +134,15 @@ public sealed class VpnProtectionRconEnforcer(
         CancellationToken ct)
     {
         var status = await serversApiClient.CoD4xRcon.V1.Status(context.ServerId, ct).ConfigureAwait(false);
+        if (!status.IsSuccess || status.Result?.Data is null)
+        {
+            logger.LogWarning("RCON status failed for server {ServerId}: {StatusCode}", context.ServerId, status.StatusCode);
+            return VpnProtectionRconOutcome.Failed;
+        }
         var player = status.Result?.Data?.Players.FirstOrDefault(candidate =>
             string.Equals(candidate.PlayerIdentifier, context.PlayerGuid, StringComparison.OrdinalIgnoreCase) &&
             (!context.SlotId.HasValue || candidate.Num == context.SlotId.Value));
-        if (!status.IsSuccess || player is null)
+        if (player is null)
         {
             return VpnProtectionRconOutcome.PlayerNotConnected;
         }

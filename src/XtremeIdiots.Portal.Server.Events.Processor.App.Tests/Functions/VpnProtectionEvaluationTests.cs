@@ -19,6 +19,7 @@ using XtremeIdiots.Portal.Repository.Api.Client.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Constants.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Interfaces.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.Players;
+using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.SiegeMode;
 using XtremeIdiots.Portal.Server.Events.Abstractions.V1.Events;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Functions;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Publishing;
@@ -40,6 +41,7 @@ public sealed class VpnProtectionEvaluationTests
     private readonly Mock<IVersionedPlayersApi> versionedPlayers = new();
     private readonly Mock<IPlayersApi> playersApi = new();
     private readonly Mock<IBanAppliedPublisher> banAppliedPublisher = new();
+    private readonly Mock<ISiegeModeService> siegeModeService = new();
     private readonly Mock<ILogger<VpnProtectionEvaluation>> logger = new();
 
     public VpnProtectionEvaluationTests()
@@ -52,6 +54,9 @@ public sealed class VpnProtectionEvaluationTests
             .ReturnsAsync(new EffectiveVpnProtectionSettings { Enabled = true });
         versionedGeoLookupApi.Setup(x => x.V1_1).Returns(geoLookupApi.Object);
         geoLocationApiClient.Setup(x => x.GeoLookup).Returns(versionedGeoLookupApi.Object);
+        siegeModeService
+            .Setup(x => x.EvaluateAsync(It.IsAny<SiegeModeEvaluationContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(SiegeModeProcessingResult.NoMatch);
 
         versionedPlayers.Setup(x => x.V1).Returns(playersApi.Object);
         repositoryApiClient.Setup(x => x.Players).Returns(versionedPlayers.Object);
@@ -141,6 +146,119 @@ public sealed class VpnProtectionEvaluationTests
         var response = await CreateSut().EvaluateVpnProtection(request, context);
 
         Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task EvaluateSiegeMode_VpnSettingsUnavailable_StillEvaluatesSiegeWithGuidAndIp()
+    {
+        settingsProvider
+            .Setup(x => x.GetEffectiveSettingsAsync(ServerId, It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new HttpRequestException("VPN settings unavailable"));
+        var (request, context) = CreateRequest($$"""
+            {
+                "serverId": "{{ServerId}}",
+                "ipAddress": "198.51.100.10",
+                "playerGuid": "player-guid",
+                "username": "TestPlayer",
+                "slotId": 4,
+                "connectionId": "33333333-3333-3333-3333-333333333333",
+                "siegeEvaluation": true
+            }
+            """);
+
+        var response = await CreateSut().EvaluateVpnProtection(request, context);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        siegeModeService.Verify(x => x.EvaluateAsync(
+            It.Is<SiegeModeEvaluationContext>(evaluation =>
+                evaluation.PlayerGuid == "player-guid" &&
+                evaluation.IpAddress == "198.51.100.10" &&
+                evaluation.Intelligence == null &&
+                evaluation.SlotId == 4 &&
+                evaluation.ConnectionId == Guid.Parse("33333333-3333-3333-3333-333333333333")),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task EvaluateSiegeMode_WithoutIp_StillEvaluatesGuidOnlyRequest()
+    {
+        var (request, context) = CreateRequest($$"""
+            {
+                "serverId": "{{ServerId}}",
+                "playerGuid": "player-guid",
+                "username": "TestPlayer",
+                "slotId": 4,
+                "connectionId": "33333333-3333-3333-3333-333333333333",
+                "siegeEvaluation": true
+            }
+            """);
+
+        var response = await CreateSut().EvaluateVpnProtection(request, context);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        siegeModeService.Verify(x => x.EvaluateAsync(
+            It.Is<SiegeModeEvaluationContext>(evaluation =>
+                evaluation.PlayerGuid == "player-guid" &&
+                evaluation.IpAddress == null &&
+                evaluation.Intelligence == null &&
+                evaluation.SlotId == 4),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task EvaluateSiegeMode_ClaimReturnsCorrelatedEnforceAction()
+    {
+        var session = new SiegeSessionDto
+        {
+            SessionId = Guid.Parse("22222222-2222-2222-2222-222222222222"),
+            GameServerId = ServerId,
+            GameType = (int)GameType.CallOfDuty4x,
+            StartedAtUtc = DateTime.UtcNow.AddMinutes(-1),
+            ExpiresAtUtc = DateTime.UtcNow.AddMinutes(10),
+            Mode = SiegeSessionMode.Enforce
+        };
+        var action = new SiegeActionDto
+        {
+            ActionId = Guid.Parse("44444444-4444-4444-4444-444444444444"),
+            SessionId = session.SessionId,
+            GameServerId = ServerId,
+            GameType = (int)GameType.CallOfDuty4x,
+            Mode = SiegeSessionMode.Enforce,
+            ConnectionId = Guid.Parse("33333333-3333-3333-3333-333333333333"),
+            PlayerGuid = "player-guid",
+            SlotId = 4,
+            RuleId = "new-guid",
+            Outcome = SiegeActionOutcomes.Pending
+        };
+        siegeModeService
+            .Setup(x => x.EvaluateAsync(It.IsAny<SiegeModeEvaluationContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new SiegeModeProcessingResult
+            {
+                Session = session,
+                Action = action,
+                Matched = true,
+                ShouldDispatch = true,
+                Reason = "Siege Mode rule new-guid"
+            });
+        var (request, context) = CreateRequest(/*lang=json,strict*/ """
+            {
+                "serverId": "11111111-1111-1111-1111-111111111111",
+                "playerGuid": "player-guid",
+                "username": "TestPlayer",
+                "slotId": 4,
+                "connectionId": "33333333-3333-3333-3333-333333333333",
+                "siegeEvaluation": true
+            }
+            """);
+
+        var response = await CreateSut().EvaluateVpnProtection(request, context);
+        var body = await ReadBody(response);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains("\"mode\":\"Enforce\"", body, StringComparison.Ordinal);
+        Assert.Contains($"\"sessionId\":\"{session.SessionId}\"", body, StringComparison.Ordinal);
+        Assert.Contains($"\"actionId\":\"{action.ActionId}\"", body, StringComparison.Ordinal);
+        Assert.Contains("\"connectionId\":\"33333333-3333-3333-3333-333333333333\"", body, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -336,6 +454,7 @@ public sealed class VpnProtectionEvaluationTests
         geoLocationApiClient.Object,
         repositoryApiClient.Object,
         banAppliedPublisher.Object,
+        siegeModeService.Object,
         logger.Object);
 
     private static (HttpRequestData Request, FunctionContext Context) CreateRequest(string json)

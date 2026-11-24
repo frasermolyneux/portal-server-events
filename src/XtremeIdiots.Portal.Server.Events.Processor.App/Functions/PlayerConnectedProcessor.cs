@@ -32,7 +32,8 @@ public class PlayerConnectedProcessor(
     IProtectedNameService protectedNameService,
     IWelcomeMessageOrchestrator welcomeMessageOrchestrator,
     IMemoryCache memoryCache,
-    IAuditLogger auditLogger)
+    IAuditLogger auditLogger,
+    ISiegeModeService? siegeModeService = null)
 {
     private static readonly TimeSpan StaleThreshold = TimeSpan.FromMinutes(30);
     private static readonly TimeSpan PlayerCacheExpiration = TimeSpan.FromMinutes(15);
@@ -107,7 +108,7 @@ public class PlayerConnectedProcessor(
                 gameType)
             {
                 SteamId = playerEvent.SteamId,
-                IpAddress = IpAddressGuard.IsPersistable(playerEvent.IpAddress) ? playerEvent.IpAddress : null
+                IpAddress = null
             };
 
             var createResult = await repositoryApiClient.Players.V1
@@ -127,8 +128,20 @@ public class PlayerConnectedProcessor(
                     .WithPlayer(playerEvent.PlayerGuid, playerEvent.Username)
                     .Build());
 
-                // Protected name enforcement (best-effort, never blocks player processing)
                 var newPlayerContext = await GetPlayerContext(gameType, playerEvent.PlayerGuid).ConfigureAwait(false);
+                if (newPlayerContext.PlayerId == Guid.Empty)
+                {
+                    throw new InvalidOperationException(
+                        $"Player not found after successful creation for Guid '{playerEvent.PlayerGuid}'. Will retry.");
+                }
+
+                if (IpAddressGuard.IsPersistable(playerEvent.IpAddress))
+                {
+                    await RecordIpObservationAsync(newPlayerContext.PlayerId, playerEvent, message.MessageId, context.CancellationToken)
+                        .ConfigureAwait(false);
+                }
+
+                // Protected name enforcement (best-effort, never blocks player processing)
                 var newPlayerId = newPlayerContext.PlayerId;
                 if (newPlayerId != Guid.Empty && string.Equals(playerEvent.GameType, GameType.CallOfDuty4x.ToString(), StringComparison.OrdinalIgnoreCase))
                 {
@@ -150,7 +163,15 @@ public class PlayerConnectedProcessor(
                     newPlayerContext,
                     enrichment.Intelligence,
                     context.CancellationToken).ConfigureAwait(false);
-                if (!IsDestructiveMatch(vpnProtectionResult))
+                var newPlayerSiegeResult = await ProcessSiegeProtection(
+                    playerEvent,
+                    gameType,
+                    newPlayerContext,
+                    enrichment.Intelligence,
+                    vpnProtectionResult,
+                    message.MessageId,
+                    context.CancellationToken).ConfigureAwait(false);
+                if (!IsDestructiveMatch(vpnProtectionResult) && !newPlayerSiegeResult.WasEnforced)
                 {
                     await TryProcessWelcomeMessage(playerEvent, gameType, newPlayerContext.Tags, enrichment.Country, context.CancellationToken).ConfigureAwait(false);
                 }
@@ -178,19 +199,11 @@ public class PlayerConnectedProcessor(
 
         await repositoryApiClient.Players.V1.RecordPlayerSession(sessionDto).ConfigureAwait(false);
 
-        // Persist IP separately if available at connect time
+        // Persist IP separately so duplicate event delivery is idempotent and source-time ordered.
         if (IpAddressGuard.IsPersistable(playerEvent.IpAddress))
         {
-            try
-            {
-                await repositoryApiClient.Players.V1
-                    .UpdatePlayerIpAddress(new UpdatePlayerIpAddressDto(playerId, playerEvent.IpAddress))
-                    .ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                logger.LogWarning(ex, "Failed to persist IP at connect time for {PlayerGuid}", playerEvent.PlayerGuid);
-            }
+            await RecordIpObservationAsync(playerId, playerEvent, message.MessageId, context.CancellationToken)
+                .ConfigureAwait(false);
         }
 
         InvalidatePlayerCache(gameType, playerEvent.PlayerGuid);
@@ -221,7 +234,15 @@ public class PlayerConnectedProcessor(
             playerContext,
             enriched.Intelligence,
             context.CancellationToken).ConfigureAwait(false);
-        if (!IsDestructiveMatch(vpnResult))
+        var siegeResult = await ProcessSiegeProtection(
+            playerEvent,
+            gameType,
+            playerContext,
+            enriched.Intelligence,
+            vpnResult,
+            message.MessageId,
+            context.CancellationToken).ConfigureAwait(false);
+        if (!IsDestructiveMatch(vpnResult) && !siegeResult.WasEnforced)
         {
             await TryProcessWelcomeMessage(playerEvent, gameType, playerContext.Tags, enriched.Country, context.CancellationToken).ConfigureAwait(false);
         }
@@ -315,6 +336,43 @@ public class PlayerConnectedProcessor(
         return IpEnrichmentResult.Empty;
     }
 
+    private async Task RecordIpObservationAsync(
+        Guid playerId,
+        PlayerConnectedEvent playerEvent,
+        string messageId,
+        CancellationToken ct)
+    {
+        try
+        {
+            var result = await repositoryApiClient.Players.V1
+                .RecordPlayerIpObservation(
+                    playerId,
+                    new RecordPlayerIpObservationDto
+                    {
+                        MessageId = messageId,
+                        IpAddress = playerEvent.IpAddress,
+                        ObservedAtUtc = new DateTimeOffset(DateTime.SpecifyKind(playerEvent.EventGeneratedUtc, DateTimeKind.Utc))
+                    },
+                    ct)
+                .ConfigureAwait(false);
+
+            if (!result.IsSuccess)
+            {
+                throw new InvalidOperationException($"IP observation persistence returned {result.StatusCode}.");
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Failed to persist connect-time IP observation; delivery will retry");
+            await Task.Delay(TimeSpan.FromSeconds(1), ct).ConfigureAwait(false);
+            throw;
+        }
+    }
+
     private async Task<VpnProtectionProcessingResult> ProcessVpnProtection(
         PlayerConnectedEvent playerEvent,
         GameType gameType,
@@ -322,7 +380,7 @@ public class PlayerConnectedProcessor(
         IpIntelligenceDto? intelligence,
         CancellationToken ct)
     {
-        if (intelligence is null || playerContext.PlayerId == Guid.Empty)
+        if (playerEvent.ProtectionEvaluatedByPlugin == true || intelligence is null || playerContext.PlayerId == Guid.Empty)
         {
             return new VpnProtectionProcessingResult();
         }
@@ -344,6 +402,48 @@ public class PlayerConnectedProcessor(
 
     private static bool IsDestructiveMatch(VpnProtectionProcessingResult result) =>
         result.Decision.IsMatch && result.Decision.Action is VpnProtectionAction.Kick or VpnProtectionAction.Ban;
+
+    private async Task<SiegeModeProcessingResult> ProcessSiegeProtection(
+        PlayerConnectedEvent playerEvent,
+        GameType gameType,
+        PlayerContext playerContext,
+        IpIntelligenceDto? intelligence,
+        VpnProtectionProcessingResult vpnResult,
+        string messageId,
+        CancellationToken ct)
+    {
+        if (siegeModeService is null || playerEvent.ProtectionEvaluatedByPlugin == true)
+        {
+            return SiegeModeProcessingResult.NoMatch;
+        }
+
+        return await siegeModeService.EvaluateAsync(
+            new SiegeModeEvaluationContext
+            {
+                ServerId = playerEvent.ServerId,
+                GameType = gameType,
+                PlayerGuid = playerEvent.PlayerGuid,
+                Username = playerEvent.Username,
+                SlotId = playerEvent.SlotId,
+                ConnectionId = playerEvent.ConnectionId,
+                IpAddress = playerEvent.IpAddress,
+                EventGeneratedUtc = playerEvent.EventGeneratedUtc,
+                PlayerTags = playerContext.PlayerId == Guid.Empty ? null : playerContext.Tags,
+                Intelligence = intelligence,
+                IsPluginPath = false,
+                SuppressEnforcement = IsDestructiveMatch(vpnResult),
+                ObservationPlayerId = playerContext.PlayerId,
+                IpObservation = IpAddressGuard.IsPersistable(playerEvent.IpAddress)
+                    ? new RecordPlayerIpObservationDto
+                    {
+                        MessageId = messageId,
+                        IpAddress = playerEvent.IpAddress,
+                        ObservedAtUtc = new DateTimeOffset(DateTime.SpecifyKind(playerEvent.EventGeneratedUtc, DateTimeKind.Utc))
+                    }
+                    : null
+            },
+            ct).ConfigureAwait(false);
+    }
 
     private async Task<PlayerContext> GetPlayerContext(GameType gameType, string guid)
     {

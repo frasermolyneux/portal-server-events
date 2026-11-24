@@ -23,7 +23,7 @@ namespace XtremeIdiots.Portal.Server.Events.Processor.App.Functions;
 
 /// <summary>
 /// Processes PlayerIpResolved events emitted by the agent when RCON sync discovers a player's IP.
-/// Persists the IP to the Players table via the dedicated UpdatePlayerIpAddress endpoint.
+/// Persists the IP observation with its source event time before running protection checks.
 /// </summary>
 public class PlayerIpResolvedProcessor(
     ILogger<PlayerIpResolvedProcessor> logger,
@@ -32,7 +32,8 @@ public class PlayerIpResolvedProcessor(
     IVpnProtectionService vpnProtectionService,
     IVpnDetectedTagService vpnDetectedTagService,
     IMemoryCache memoryCache,
-    IAuditLogger auditLogger)
+    IAuditLogger auditLogger,
+    ISiegeModeService? siegeModeService = null)
 {
     private static readonly TimeSpan StaleThreshold = TimeSpan.FromMinutes(30);
     private static readonly TimeSpan PlayerCacheExpiration = TimeSpan.FromMinutes(15);
@@ -87,11 +88,11 @@ public class PlayerIpResolvedProcessor(
             return;
         }
 
-        if (evt.IsStale(StaleThreshold))
+        var isStale = evt.IsStale(StaleThreshold);
+        if (isStale)
         {
-            logger.LogWarning("PlayerIpResolved event is stale ({Age} old). ServerId: {ServerId}, PlayerGuid: {PlayerGuid}",
+            logger.LogWarning("PlayerIpResolved event is stale ({Age} old); persisting history without enforcement. ServerId: {ServerId}, PlayerGuid: {PlayerGuid}",
                 DateTime.UtcNow - evt.EventGeneratedUtc, evt.ServerId, evt.PlayerGuid);
-            return;
         }
 
         using var scope = logger.BeginScope(new Dictionary<string, object>
@@ -101,26 +102,60 @@ public class PlayerIpResolvedProcessor(
             ["PlayerGuid"] = evt.PlayerGuid
         });
 
-        var playerContext = await GetPlayerContext(gameType, evt.PlayerGuid).ConfigureAwait(false);
+        PlayerContext playerContext;
+        try
+        {
+            playerContext = await GetPlayerContext(gameType, evt.PlayerGuid).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            await DelayRetryAsync(message, context.CancellationToken).ConfigureAwait(false);
+            throw new InvalidOperationException($"Failed to resolve player for IP persistence: {evt.PlayerGuid}", ex);
+        }
 
         if (playerContext.PlayerId == Guid.Empty)
         {
-            logger.LogDebug("Player not yet created for {PlayerGuid}, skipping IP persistence", evt.PlayerGuid);
-            return;
+            logger.LogWarning("Player not yet available for IP persistence: {PlayerGuid}; retrying delivery {DeliveryCount}",
+                evt.PlayerGuid, message.DeliveryCount);
+            await DelayRetryAsync(message, context.CancellationToken).ConfigureAwait(false);
+            throw new InvalidOperationException($"Player not available for IP persistence: {evt.PlayerGuid}");
         }
 
         try
         {
-            await repositoryApiClient.Players.V1
-                .UpdatePlayerIpAddress(new UpdatePlayerIpAddressDto(playerContext.PlayerId, evt.IpAddress))
+            var updateResult = await repositoryApiClient.Players.V1
+                .RecordPlayerIpObservation(
+                    playerContext.PlayerId,
+                    new RecordPlayerIpObservationDto
+                    {
+                        MessageId = message.MessageId,
+                        IpAddress = evt.IpAddress,
+                        ObservedAtUtc = new DateTimeOffset(DateTime.SpecifyKind(evt.EventGeneratedUtc, DateTimeKind.Utc))
+                    },
+                    context.CancellationToken)
                 .ConfigureAwait(false);
+
+            if (!updateResult.IsSuccess)
+            {
+                throw new InvalidOperationException($"IP observation persistence returned {updateResult.StatusCode}.");
+            }
 
             InvalidatePlayerCache(gameType, evt.PlayerGuid);
         }
+        catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
         catch (Exception ex)
         {
-            logger.LogWarning(ex, "Failed to persist IP {IpAddress} for player {PlayerGuid}", evt.IpAddress, evt.PlayerGuid);
-            return;
+            logger.LogWarning(ex, "Failed to persist IP for player {PlayerGuid}; retrying delivery {DeliveryCount}",
+                evt.PlayerGuid, message.DeliveryCount);
+            await DelayRetryAsync(message, context.CancellationToken).ConfigureAwait(false);
+            throw;
         }
 
         auditLogger.LogAudit(AuditEvent.ServerAction("PlayerIpResolved", AuditAction.Update)
@@ -131,46 +166,95 @@ public class PlayerIpResolvedProcessor(
 
         logger.LogInformation("Persisted IP {IpAddress} for player {PlayerGuid}", evt.IpAddress, evt.PlayerGuid);
 
-        MX.Api.Abstractions.ApiResult<MX.GeoLocation.Abstractions.Models.V1_1.IpIntelligenceDto> intelligenceResult;
+        MX.GeoLocation.Abstractions.Models.V1_1.IpIntelligenceDto? intelligence = null;
         try
         {
-            intelligenceResult = await geoLocationApiClient.GeoLookup.V1_1
+            var intelligenceResult = await geoLocationApiClient.GeoLookup.V1_1
                 .GetIpIntelligence(evt.IpAddress, context.CancellationToken)
                 .ConfigureAwait(false);
+            if (intelligenceResult.IsSuccess && intelligenceResult.Result?.Data is not null)
+            {
+                intelligence = intelligenceResult.Result.Data;
+            }
+            else
+            {
+                logger.LogWarning(
+                    "IP intelligence lookup failed for resolved IP {IpAddress}. Status: {StatusCode}",
+                    evt.IpAddress,
+                    intelligenceResult.StatusCode);
+            }
+        }
+        catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex)
         {
             logger.LogWarning(ex, "IP intelligence lookup failed for resolved IP {IpAddress}", evt.IpAddress);
-            return;
         }
 
-        if (!intelligenceResult.IsSuccess || intelligenceResult.Result?.Data is null)
+        if (intelligence is not null)
         {
-            logger.LogWarning(
-                "IP intelligence lookup failed for resolved IP {IpAddress}. Status: {StatusCode}",
-                evt.IpAddress,
-                intelligenceResult.StatusCode);
+            await vpnDetectedTagService
+                .AddIfDetectedAsync(playerContext.PlayerId, intelligence, context.CancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        if (evt.ProtectionEvaluatedByPlugin == true || isStale)
+        {
             return;
         }
 
-        await vpnDetectedTagService
-            .AddIfDetectedAsync(playerContext.PlayerId, intelligenceResult.Result.Data, context.CancellationToken)
-            .ConfigureAwait(false);
+        var vpnResult = new VpnProtectionProcessingResult();
+        if (intelligence is not null)
+        {
+            vpnResult = await vpnProtectionService.ProcessAsync(
+                new VpnProtectionContext
+                {
+                    ServerId = evt.ServerId,
+                    GameType = gameType,
+                    PlayerId = playerContext.PlayerId,
+                    PlayerGuid = evt.PlayerGuid,
+                    Username = playerContext.Username,
+                    PlayerTags = playerContext.Tags,
+                    SlotId = null
+                },
+                intelligence,
+                context.CancellationToken).ConfigureAwait(false);
+        }
 
-        await vpnProtectionService.ProcessAsync(
-            new VpnProtectionContext
-            {
-                ServerId = evt.ServerId,
-                GameType = gameType,
-                PlayerId = playerContext.PlayerId,
-                PlayerGuid = evt.PlayerGuid,
-                Username = playerContext.Username,
-                PlayerTags = playerContext.Tags,
-                SlotId = null
-            },
-            intelligenceResult.Result.Data,
-            context.CancellationToken).ConfigureAwait(false);
+        if (siegeModeService is not null)
+        {
+            await siegeModeService.EvaluateAsync(
+                new SiegeModeEvaluationContext
+                {
+                    ServerId = evt.ServerId,
+                    GameType = gameType,
+                    PlayerGuid = evt.PlayerGuid,
+                    Username = playerContext.Username,
+                    SlotId = evt.SlotId,
+                    ConnectionId = evt.ConnectionId,
+                    IpAddress = evt.IpAddress,
+                    EventGeneratedUtc = evt.EventGeneratedUtc,
+                    PlayerTags = playerContext.Tags,
+                    Intelligence = intelligence,
+                    IsPluginPath = false,
+                    SuppressEnforcement = vpnResult.Decision.IsMatch &&
+                        vpnResult.Decision.Action is VpnProtectionAction.Kick or VpnProtectionAction.Ban,
+                    ObservationPlayerId = playerContext.PlayerId,
+                    IpObservation = new RecordPlayerIpObservationDto
+                    {
+                        MessageId = message.MessageId,
+                        IpAddress = evt.IpAddress,
+                        ObservedAtUtc = new DateTimeOffset(DateTime.SpecifyKind(evt.EventGeneratedUtc, DateTimeKind.Utc))
+                    }
+                },
+                context.CancellationToken).ConfigureAwait(false);
+        }
     }
+
+    private static Task DelayRetryAsync(ServiceBusReceivedMessage message, CancellationToken ct) =>
+        Task.Delay(TimeSpan.FromSeconds(Math.Clamp(message.DeliveryCount, 1, 10)), ct);
 
     private async Task<PlayerContext> GetPlayerContext(GameType gameType, string guid)
     {
@@ -185,9 +269,14 @@ public class PlayerIpResolvedProcessor(
             .GetPlayerByGameType(gameType, guid, PlayerEntityOptions.Tags)
             .ConfigureAwait(false);
 
-        if (!response.IsSuccess || response.Result?.Data is null)
+        if (response.IsNotFound)
         {
             return PlayerContext.Empty;
+        }
+
+        if (!response.IsSuccess || response.Result?.Data is null)
+        {
+            throw new InvalidOperationException($"Player lookup failed with status {response.StatusCode}.");
         }
 
         var player = response.Result.Data;

@@ -8,4 +8,5 @@ public class PlayerConnectedEvent : ServerEventBase
     public required string IpAddress { get; init; }
     public required int SlotId { get; init; }
     public Guid? ConnectionId { get; init; }
+    public bool? ProtectionEvaluatedByPlugin { get; init; }
 }
