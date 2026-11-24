@@ -9,4 +9,8 @@ public class PlayerConnectedEvent : ServerEventBase
     public required int SlotId { get; init; }
     public Guid? ConnectionId { get; init; }
     public bool? ProtectionEvaluatedByPlugin { get; init; }
+    public Guid? ObservationId { get; init; }
+    public ulong? ConnectionGeneration { get; init; }
+    public RuleRuntimeDescriptor? Runtime { get; init; }
+    public bool? RulesEvaluatedByPlugin { get; init; }
 }

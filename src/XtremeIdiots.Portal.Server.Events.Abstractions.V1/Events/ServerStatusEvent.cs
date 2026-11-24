@@ -9,6 +9,10 @@ public class ServerStatusEvent : ServerEventBase
     public string? ServerTitle { get; init; }
     public string? ServerMod { get; init; }
     public int? MaxPlayers { get; init; }
+    public Guid? SnapshotId { get; init; }
+    public ulong? Sequence { get; init; }
+    public DateTimeOffset? ObservedAtUtc { get; init; }
+    public RuleRuntimeDescriptor? Runtime { get; init; }
 }
 
 public class ConnectedPlayer
@@ -21,4 +25,7 @@ public class ConnectedPlayer
     public int Score { get; init; }
     public int Ping { get; init; }
     public int Rate { get; init; }
+    public string? State { get; init; }
+    public Guid? ConnectionId { get; init; }
+    public ulong? ConnectionGeneration { get; init; }
 }

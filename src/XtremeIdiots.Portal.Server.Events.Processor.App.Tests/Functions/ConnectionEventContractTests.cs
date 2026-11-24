@@ -7,6 +7,64 @@ namespace XtremeIdiots.Portal.Server.Events.Processor.App.Tests.Functions;
 
 public class ConnectionEventContractTests
 {
+    [Fact]
+    public void StatusAndDisconnect_PreserveRuntimeAndExactConnectionEvidence()
+    {
+        const string common = """
+            {"eventGeneratedUtc":"2026-11-24T00:00:00Z","eventPublishedUtc":"2026-11-24T00:00:01Z",
+             "serverId":"11111111-1111-1111-1111-111111111111","gameType":"CallOfDuty4x","sequenceId":12,
+             "snapshotId":"33333333-3333-3333-3333-333333333333","sequence":12,
+             "observedAtUtc":"2026-11-24T00:00:00Z",
+             "runtime":{"id":"cod4x-plugin","version":"0.3.0","protocolVersion":1,"capabilities":[],
+               "instanceId":"44444444-4444-4444-4444-444444444444","startedAtUtc":"2026-11-23T23:00:00Z"}
+            """;
+        const string player = /*lang=json,strict*/ """
+            {"playerGuid":"abc","username":"player","ipAddress":"8.8.8.8","slotId":2,
+             "connectedAtUtc":"2026-11-23T23:59:00Z","state":"Connected",
+             "connectionId":"22222222-2222-2222-2222-222222222222","connectionGeneration":42}
+            """;
+        var status = JsonSerializer.Deserialize<ServerStatusEvent>(common +
+            ",\"mapName\":\"map\",\"gameName\":\"game\",\"playerCount\":1,\"players\":[" + player + "]}", JsonOptions.Default)!;
+        var disconnect = JsonSerializer.Deserialize<PlayerDisconnectedEvent>(common +
+            ",\"playerGuid\":\"abc\",\"username\":\"player\",\"slotId\":2," +
+            "\"connectionId\":\"22222222-2222-2222-2222-222222222222\",\"connectionGeneration\":42}", JsonOptions.Default)!;
+
+        var connected = Assert.Single(status.Players);
+        Assert.Equal("Connected", connected.State);
+        Assert.Equal(connected.ConnectionId, disconnect.ConnectionId);
+        Assert.Equal(connected.ConnectionGeneration, disconnect.ConnectionGeneration);
+        Assert.Equal(status.Runtime!.InstanceId, disconnect.Runtime!.InstanceId);
+        Assert.Equal(status.Runtime.StartedAtUtc, disconnect.Runtime.StartedAtUtc);
+        Assert.Equal((ulong)12, status.Sequence);
+        Assert.Equal(status.SnapshotId, disconnect.SnapshotId);
+    }
+
+    [Fact]
+    public void PlayerEvents_ReadUniversalRuntimeIdentityWithoutLosingGenerationPrecision()
+    {
+        const string common = """
+            {"eventGeneratedUtc":"2026-11-24T00:00:00Z","eventPublishedUtc":"2026-11-24T00:00:01Z",
+             "serverId":"11111111-1111-1111-1111-111111111111","gameType":"CallOfDuty4x",
+             "sequenceId":1,"playerGuid":"abc","ipAddress":"8.8.8.8","slotId":2,
+             "connectionId":"22222222-2222-2222-2222-222222222222",
+             "observationId":"33333333-3333-3333-3333-333333333333",
+             "connectionGeneration":18446744073709551615,"rulesEvaluatedByPlugin":true,
+             "runtime":{"id":"cod4x-plugin","version":"2.0.0","protocolVersion":1,
+               "capabilities":["cod4x.player.drop","cod4x.chat.private"]}
+            """;
+
+        var connected = JsonSerializer.Deserialize<PlayerConnectedEvent>(common + ",\"username\":\"player\"}", JsonOptions.Default)!;
+        var resolved = JsonSerializer.Deserialize<PlayerIpResolvedEvent>(common + "}", JsonOptions.Default)!;
+
+        Assert.Equal(ulong.MaxValue, connected.ConnectionGeneration);
+        Assert.Equal(connected.ConnectionGeneration, resolved.ConnectionGeneration);
+        Assert.Equal(connected.ObservationId, resolved.ObservationId);
+        Assert.True(connected.RulesEvaluatedByPlugin);
+        Assert.True(resolved.RulesEvaluatedByPlugin);
+        Assert.Equal("cod4x-plugin", connected.Runtime!.Id);
+        Assert.Equal(["cod4x.player.drop", "cod4x.chat.private"], resolved.Runtime!.Capabilities);
+    }
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
