@@ -15,6 +15,22 @@ This document defines how `portal-server-events` consumes platform settings afte
 - New approach: canonical contracts are owned in `portal-repository` via `XtremeIdiots.Portal.Settings.Contracts.V1`.
 - `XtremeIdiots.Portal.ChatCommands.Abstractions.V1` is compatibility-only and not canonical for new behavior.
 
+## VPN Protection and Siege rules
+
+VPN Protection schema version 2 uses nested condition trees; version 1 flat rules
+are rejected and disable VPN enforcement until the configuration is replaced.
+Server overrides can inherit the global condition or replace its entire tree.
+Effective settings are cached for up to three minutes (invalid settings for 30
+seconds). Coordinate the contract and configuration cutover across consumers;
+verify effective VPN settings are disabled after the cache interval before
+replacing existing overrides.
+
+Siege evaluates the settings captured when its session was activated, retaining
+the existing snapshot JSON shape. Both features use three-valued AND/OR: an
+unknown result does not match. VPN reason placeholders for a matching compound
+rule contain the corresponding values of contributing true leaves, in depth-first
+order, separated by commas.
+
 ## Troubleshooting Runbook
 
 Registration uses `!register CODE` to submit a pending game-profile claim, including

@@ -87,6 +87,28 @@ public sealed class SiegeModeServiceTests
     }
 
     [Fact]
+    public async Task LegacyNumericSnapshot_PreservesNestedRuleMeaning()
+    {
+        SetupSession(/*lang=json,strict*/ """
+            {"schemaVersion":1,"durationMinutes":60,"rules":[{"id":"legacy","enabled":true,"condition":
+              {"groupOperator":2,"conditions":[
+                {"playerSignal":1,"operator":1,"expectedValue":"true"},
+                {"playerSignal":2,"operator":1,"expectedValue":"true"}
+              ]}}]}
+            """);
+        SetupBaseline(new SiegeBaselineDto { NewGuid = true, NewIp = null, BaselineRevision = 7 });
+        SetupClaim(SiegeSessionMode.Enforce, SiegeActionOutcomes.Pending, shouldDispatch: true);
+
+        var result = await CreateSut().EvaluateAsync(CreateContext());
+
+        Assert.True(result.Matched);
+        Assert.True(result.ShouldDispatch);
+        siegeModeApi.Verify(x => x.ClaimAction(
+            ServerId, SessionId, It.Is<ClaimSiegeActionDto>(claim => claim.RuleId == "legacy"),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
     public async Task AndRule_WithUnknownVpnSignalDoesNotClaimAction()
     {
         SetupSession(NestedAndRule);

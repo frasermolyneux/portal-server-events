@@ -12,6 +12,7 @@ using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.SiegeMode;
 using XtremeIdiots.Portal.Repository.Api.Client.V1;
 using XtremeIdiots.Portal.Settings.Contracts.V1.Contracts.SiegeMode;
 using XtremeIdiots.Portal.Settings.Contracts.V1.Contracts.VpnProtection;
+using XtremeIdiots.Portal.Server.Events.Processor.App.Rules;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Services;
 
 namespace XtremeIdiots.Portal.Server.Events.Processor.App.VpnProtection;
@@ -436,26 +437,17 @@ public sealed class SiegeModeService(
         SiegeBaselineDto baseline,
         SiegeModeEvaluationContext context)
     {
-        if (condition is null)
-        {
-            return null;
-        }
+        return RuleMatcher.Evaluate(
+            condition,
+            static node => (node.GroupOperator, node.Conditions),
+            node => EvaluateLeaf(node, baseline, context));
+    }
 
-        if (condition.GroupOperator is { } groupOperator && condition.Conditions is not null)
-        {
-            var values = condition.Conditions.Select(child => EvaluateCondition(child, baseline, context)).ToArray();
-            return groupOperator switch
-            {
-                SiegeConditionGroupOperator.And when values.Any(static value => value == false) => false,
-                SiegeConditionGroupOperator.And when values.All(static value => value == true) => true,
-                SiegeConditionGroupOperator.And => null,
-                SiegeConditionGroupOperator.Or when values.Any(static value => value == true) => true,
-                SiegeConditionGroupOperator.Or when values.All(static value => value == false) => false,
-                SiegeConditionGroupOperator.Or => null,
-                _ => null
-            };
-        }
-
+    private static bool? EvaluateLeaf(
+        SiegeModeCondition condition,
+        SiegeBaselineDto baseline,
+        SiegeModeEvaluationContext context)
+    {
         if (condition.Operator is not { } comparisonOperator || condition.ExpectedValue is null)
         {
             return null;
@@ -487,7 +479,7 @@ public sealed class SiegeModeService(
 
     private static bool? CompareBoolean(
         bool? actual,
-        VpnProtectionComparisonOperator comparisonOperator,
+        RuleComparisonOperator comparisonOperator,
         string expectedValue)
     {
         if (actual is null || !bool.TryParse(expectedValue, out var expected))
@@ -497,15 +489,15 @@ public sealed class SiegeModeService(
 
         return comparisonOperator switch
         {
-            VpnProtectionComparisonOperator.Equal => actual == expected,
-            VpnProtectionComparisonOperator.NotEqual => actual != expected,
+            RuleComparisonOperator.Equal => actual == expected,
+            RuleComparisonOperator.NotEqual => actual != expected,
             _ => false
         };
     }
 
     private static bool? ComparePlayerTag(
         IReadOnlyCollection<string>? tags,
-        VpnProtectionComparisonOperator comparisonOperator,
+        RuleComparisonOperator comparisonOperator,
         string expectedTag)
     {
         if (tags is null)
@@ -516,8 +508,8 @@ public sealed class SiegeModeService(
         var contains = tags.Contains(expectedTag, StringComparer.OrdinalIgnoreCase);
         return comparisonOperator switch
         {
-            VpnProtectionComparisonOperator.Equal => contains,
-            VpnProtectionComparisonOperator.NotEqual => !contains,
+            RuleComparisonOperator.Equal => contains,
+            RuleComparisonOperator.NotEqual => !contains,
             _ => false
         };
     }

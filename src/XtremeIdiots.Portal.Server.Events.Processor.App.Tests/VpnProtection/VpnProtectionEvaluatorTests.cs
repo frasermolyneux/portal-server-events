@@ -16,7 +16,7 @@ public sealed class VpnProtectionEvaluatorTests
         var settings = new EffectiveVpnProtectionSettings
         {
             Enabled = false,
-            Rules = [CreateRule("vpn", VpnProtectionSignal.ProxyCheckIsVpn, VpnProtectionComparisonOperator.Equal, "true", VpnProtectionAction.Ban, 0)]
+            Rules = [CreateRule("vpn", VpnProtectionSignal.ProxyCheckIsVpn, RuleComparisonOperator.Equal, "true", VpnProtectionAction.Ban, 0)]
         };
 
         var decision = evaluator.Evaluate(settings, CreateIntelligence(isVpn: true));
@@ -32,9 +32,9 @@ public sealed class VpnProtectionEvaluatorTests
             Enabled = true,
             Rules =
             [
-                CreateRule("vpn", VpnProtectionSignal.ProxyCheckIsVpn, VpnProtectionComparisonOperator.Equal, "true", VpnProtectionAction.Kick, 0),
-                CreateRule("risk", VpnProtectionSignal.ProxyCheckRiskScore, VpnProtectionComparisonOperator.GreaterThanOrEqual, "75", VpnProtectionAction.Ban, 1),
-                CreateRule("proxy-type", VpnProtectionSignal.ProxyCheckProxyType, VpnProtectionComparisonOperator.Contains, "vpn", VpnProtectionAction.Observation, 2)
+                CreateRule("vpn", VpnProtectionSignal.ProxyCheckIsVpn, RuleComparisonOperator.Equal, "true", VpnProtectionAction.Kick, 0),
+                CreateRule("risk", VpnProtectionSignal.ProxyCheckRiskScore, RuleComparisonOperator.GreaterThanOrEqual, "75", VpnProtectionAction.Ban, 1),
+                CreateRule("proxy-type", VpnProtectionSignal.ProxyCheckProxyType, RuleComparisonOperator.Contains, "vpn", VpnProtectionAction.Observation, 2)
             ]
         };
 
@@ -54,8 +54,8 @@ public sealed class VpnProtectionEvaluatorTests
             Enabled = true,
             Rules =
             [
-                CreateRule("later", VpnProtectionSignal.ProxyCheckIsVpn, VpnProtectionComparisonOperator.Equal, "true", VpnProtectionAction.Observation, 1),
-                CreateRule("first", VpnProtectionSignal.ProxyCheckRiskScore, VpnProtectionComparisonOperator.GreaterThan, "67", VpnProtectionAction.Observation, 0) with { PostObservationToForums = false }
+                CreateRule("later", VpnProtectionSignal.ProxyCheckIsVpn, RuleComparisonOperator.Equal, "true", VpnProtectionAction.Observation, 1),
+                CreateRule("first", VpnProtectionSignal.ProxyCheckRiskScore, RuleComparisonOperator.GreaterThan, "67", VpnProtectionAction.Observation, 0) with { PostObservationToForums = false }
             ]
         };
 
@@ -74,7 +74,7 @@ public sealed class VpnProtectionEvaluatorTests
         var settings = new EffectiveVpnProtectionSettings
         {
             Enabled = true,
-            Rules = [CreateRule("vpn", VpnProtectionSignal.ProxyCheckIsVpn, VpnProtectionComparisonOperator.Equal, "true", VpnProtectionAction.Ban, 0)]
+            Rules = [CreateRule("vpn", VpnProtectionSignal.ProxyCheckIsVpn, RuleComparisonOperator.Equal, "true", VpnProtectionAction.Ban, 0)]
         };
         var intelligence = DeserializeIntelligence(new
         {
@@ -96,19 +96,19 @@ public sealed class VpnProtectionEvaluatorTests
 
         Assert.Null(VpnProtectionEvaluator.EvaluateSignal(
             VpnProtectionSignal.ProxyCheckRiskScore,
-            VpnProtectionComparisonOperator.GreaterThan,
+            RuleComparisonOperator.GreaterThan,
             "60",
             null,
             out _));
         Assert.False(VpnProtectionEvaluator.EvaluateSignal(
             VpnProtectionSignal.ProxyCheckRiskScore,
-            VpnProtectionComparisonOperator.GreaterThan,
+            RuleComparisonOperator.GreaterThan,
             "60",
             intelligence,
             out _));
         Assert.True(VpnProtectionEvaluator.EvaluateSignal(
             VpnProtectionSignal.ProxyCheckRiskScore,
-            VpnProtectionComparisonOperator.GreaterThan,
+            RuleComparisonOperator.GreaterThan,
             "59",
             intelligence,
             out _));
@@ -120,7 +120,7 @@ public sealed class VpnProtectionEvaluatorTests
         var settings = new EffectiveVpnProtectionSettings
         {
             Enabled = true,
-            Rules = [CreateRule("source", VpnProtectionSignal.ProxyCheckStatus, VpnProtectionComparisonOperator.Equal, "Failed", VpnProtectionAction.Observation, 0)]
+            Rules = [CreateRule("source", VpnProtectionSignal.ProxyCheckStatus, RuleComparisonOperator.Equal, "Failed", VpnProtectionAction.Observation, 0)]
         };
         var intelligence = DeserializeIntelligence(new
         {
@@ -142,7 +142,7 @@ public sealed class VpnProtectionEvaluatorTests
         var rule = CreateRule(
             "risk",
             VpnProtectionSignal.ProxyCheckRiskScore,
-            VpnProtectionComparisonOperator.GreaterThanOrEqual,
+            RuleComparisonOperator.GreaterThanOrEqual,
             "75",
             VpnProtectionAction.Ban,
             0) with
@@ -159,7 +159,7 @@ public sealed class VpnProtectionEvaluatorTests
     [Fact]
     public void Evaluate_DisabledRule_DoesNotMatch()
     {
-        var rule = CreateRule("vpn", VpnProtectionSignal.ProxyCheckIsVpn, VpnProtectionComparisonOperator.Equal, "true", VpnProtectionAction.Ban, 0) with
+        var rule = CreateRule("vpn", VpnProtectionSignal.ProxyCheckIsVpn, RuleComparisonOperator.Equal, "true", VpnProtectionAction.Ban, 0) with
         {
             Enabled = false
         };
@@ -177,7 +177,7 @@ public sealed class VpnProtectionEvaluatorTests
         {
             Enabled = true,
             ExcludedPlayerTags = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "Trusted VPN" },
-            Rules = [CreateRule("vpn", VpnProtectionSignal.ProxyCheckIsVpn, VpnProtectionComparisonOperator.Equal, "true", VpnProtectionAction.Ban, 0)]
+            Rules = [CreateRule("vpn", VpnProtectionSignal.ProxyCheckIsVpn, RuleComparisonOperator.Equal, "true", VpnProtectionAction.Ban, 0)]
         };
 
         var decision = evaluator.Evaluate(settings, ["Donator", "Trusted VPN"], CreateIntelligence(isVpn: true));
@@ -194,7 +194,7 @@ public sealed class VpnProtectionEvaluatorTests
         {
             Enabled = true,
             ExcludedPlayerTags = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "Trusted VPN" },
-            Rules = [CreateRule("vpn", VpnProtectionSignal.ProxyCheckIsVpn, VpnProtectionComparisonOperator.Equal, "true", VpnProtectionAction.Ban, 0)]
+            Rules = [CreateRule("vpn", VpnProtectionSignal.ProxyCheckIsVpn, RuleComparisonOperator.Equal, "true", VpnProtectionAction.Ban, 0)]
         };
 
         var decision = evaluator.Evaluate(settings, ["Donator"], CreateIntelligence(isVpn: true));
@@ -211,7 +211,7 @@ public sealed class VpnProtectionEvaluatorTests
         {
             Enabled = false,
             ExcludedPlayerTags = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "Trusted VPN" },
-            Rules = [CreateRule("vpn", VpnProtectionSignal.ProxyCheckIsVpn, VpnProtectionComparisonOperator.Equal, "true", VpnProtectionAction.Ban, 0)]
+            Rules = [CreateRule("vpn", VpnProtectionSignal.ProxyCheckIsVpn, RuleComparisonOperator.Equal, "true", VpnProtectionAction.Ban, 0)]
         };
 
         var decision = evaluator.Evaluate(settings, ["Trusted VPN"], CreateIntelligence(isVpn: true));
@@ -220,19 +220,76 @@ public sealed class VpnProtectionEvaluatorTests
         Assert.False(decision.IsMatch);
     }
 
+    [Fact]
+    public void Evaluate_NestedGroups_CollectsOnlyContributingLeavesInOrder()
+    {
+        var rule = CreateRule("nested", VpnProtectionSignal.ProxyCheckIsVpn, RuleComparisonOperator.Equal, "true", VpnProtectionAction.Kick, 0) with
+        {
+            Condition = new VpnProtectionCondition
+            {
+                GroupOperator = RuleConditionGroupOperator.Or,
+                Conditions =
+                [
+                    new VpnProtectionCondition
+                    {
+                        GroupOperator = RuleConditionGroupOperator.And,
+                        Conditions =
+                        [
+                            new() { Signal = VpnProtectionSignal.ProxyCheckRiskScore, Operator = RuleComparisonOperator.GreaterThan, ExpectedValue = "50" },
+                            new() { Signal = VpnProtectionSignal.ProxyCheckIsVpn, Operator = RuleComparisonOperator.Equal, ExpectedValue = "false" }
+                        ]
+                    },
+                    new() { Signal = VpnProtectionSignal.ProxyCheckIsVpn, Operator = RuleComparisonOperator.Equal, ExpectedValue = "true" },
+                    new() { Signal = VpnProtectionSignal.ProxyCheckRiskScore, Operator = RuleComparisonOperator.GreaterThan, ExpectedValue = "75" }
+                ]
+            },
+            ReasonTemplate = "{signal}|{actualValue}|{expectedValue}"
+        };
+        var settings = new EffectiveVpnProtectionSettings { Enabled = true, Rules = [rule] };
+
+        var decision = evaluator.Evaluate(settings, CreateIntelligence(isVpn: true, riskScore: 90));
+
+        Assert.True(decision.IsMatch);
+        Assert.Equal("ProxyCheckIsVpn, ProxyCheckRiskScore|True, 90|true, 75", decision.Reason);
+        Assert.Equal(2, Assert.Single(decision.MatchedRules).Evidence.Count);
+    }
+
+    [Theory]
+    [InlineData(RuleConditionGroupOperator.And, false)]
+    [InlineData(RuleConditionGroupOperator.Or, true)]
+    public void Evaluate_NestedGroups_UnknownSignalsFailOpenUnlessOrHasTrueBranch(
+        RuleConditionGroupOperator op, bool expectedMatch)
+    {
+        var rule = CreateRule("nested", VpnProtectionSignal.IsPartial, RuleComparisonOperator.Equal, "true", VpnProtectionAction.Kick, 0) with
+        {
+            Condition = new VpnProtectionCondition
+            {
+                GroupOperator = op,
+                Conditions =
+                [
+                    new() { Signal = VpnProtectionSignal.IsPartial, Operator = RuleComparisonOperator.Equal, ExpectedValue = "true" },
+                    new() { Signal = VpnProtectionSignal.ProxyCheckIsVpn, Operator = RuleComparisonOperator.Equal, ExpectedValue = "true" }
+                ]
+            }
+        };
+        var intelligence = DeserializeIntelligence(new { ProxyCheck = (object?)null, IsPartial = true });
+
+        var decision = evaluator.Evaluate(new EffectiveVpnProtectionSettings { Enabled = true, Rules = [rule] }, intelligence);
+
+        Assert.Equal(expectedMatch, decision.IsMatch);
+    }
+
     private static EffectiveVpnProtectionRule CreateRule(
         string id,
         VpnProtectionSignal signal,
-        VpnProtectionComparisonOperator comparisonOperator,
+        RuleComparisonOperator comparisonOperator,
         string expectedValue,
         VpnProtectionAction action,
         int orderIndex) => new()
         {
             Id = id,
             Enabled = true,
-            Signal = signal,
-            Operator = comparisonOperator,
-            ExpectedValue = expectedValue,
+            Condition = new VpnProtectionCondition { Signal = signal, Operator = comparisonOperator, ExpectedValue = expectedValue },
             Action = action,
             ReasonTemplate = VpnProtectionSettingsConstants.DefaultReasonTemplate,
             OrderIndex = orderIndex

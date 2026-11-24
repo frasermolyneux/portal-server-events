@@ -136,6 +136,58 @@ public sealed class VpnProtectionEvaluationTests
     }
 
     [Fact]
+    public async Task EvaluateSiegeMode_NestedVpnMatch_SuppressesDuplicateSiegeAction()
+    {
+        var intelligence = JsonConvert.DeserializeObject<IpIntelligenceDto>(
+            /*lang=json,strict*/ """{"proxyCheck":null,"isPartial":true}""")!;
+        geoLookupApi.Setup(x => x.GetIpIntelligence("198.51.100.10", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<IpIntelligenceDto>(HttpStatusCode.OK, new ApiResponse<IpIntelligenceDto>(intelligence)));
+        settingsProvider.Setup(x => x.GetEffectiveSettingsAsync(ServerId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new EffectiveVpnProtectionSettings
+            {
+                Enabled = true,
+                Rules =
+                [
+                    new EffectiveVpnProtectionRule
+                    {
+                        Id = "nested",
+                        Enabled = true,
+                        Condition = new VpnProtectionCondition
+                        {
+                            GroupOperator = RuleConditionGroupOperator.Or,
+                            Conditions =
+                            [
+                                new() { Signal = VpnProtectionSignal.ProxyCheckIsVpn, Operator = RuleComparisonOperator.Equal, ExpectedValue = "true" },
+                                new() { Signal = VpnProtectionSignal.IsPartial, Operator = RuleComparisonOperator.Equal, ExpectedValue = "true" }
+                            ]
+                        },
+                        Action = VpnProtectionAction.Kick,
+                        ReasonTemplate = VpnProtectionSettingsConstants.DefaultReasonTemplate,
+                        OrderIndex = 0
+                    }
+                ]
+            });
+        var (request, context) = CreateRequest($$"""
+            {
+                "serverId":"{{ServerId}}",
+                "ipAddress":"198.51.100.10",
+                "playerGuid":"player-guid",
+                "username":"TestPlayer",
+                "slotId":4,
+                "connectionId":"33333333-3333-3333-3333-333333333333",
+                "siegeEvaluation":true
+            }
+            """);
+
+        var response = await CreateSut(new VpnProtectionEvaluator()).EvaluateVpnProtection(request, context);
+
+        Assert.Contains("\"matchedRuleIds\":[\"nested\"]", await ReadBody(response), StringComparison.Ordinal);
+        siegeModeService.Verify(x => x.EvaluateAsync(
+            It.Is<SiegeModeEvaluationContext>(evaluation => evaluation.IsPluginPath && evaluation.SuppressEnforcement),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
     public async Task EvaluateVpnProtection_IntelligenceUnavailable_ReturnsServiceUnavailable()
     {
         geoLookupApi
@@ -447,10 +499,10 @@ public sealed class VpnProtectionEvaluationTests
         ]
     };
 
-    private VpnProtectionEvaluation CreateSut() => new(
+    private VpnProtectionEvaluation CreateSut(IVpnProtectionEvaluator? actualEvaluator = null) => new(
         policyProvider.Object,
         settingsProvider.Object,
-        evaluator.Object,
+        actualEvaluator ?? evaluator.Object,
         geoLocationApiClient.Object,
         repositoryApiClient.Object,
         banAppliedPublisher.Object,
