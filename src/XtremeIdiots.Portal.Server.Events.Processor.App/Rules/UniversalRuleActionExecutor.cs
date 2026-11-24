@@ -219,7 +219,10 @@ internal sealed class UniversalRuleActionExecutor(
         }
         if (result.Outcome is RuleActionExecutionOutcome.Dispatched or RuleActionExecutionOutcome.Applied)
         {
-            invocation.SuppressWelcome |= command.Effect.Type == RuleNativeEffectType.DropPlayer;
+            if (command.Effect.Type == RuleNativeEffectType.DropPlayer)
+            {
+                invocation.SuppressWelcome = true;
+            }
             return Complete(ActionExecutionOutcome.OutcomeUnknown,
                 "RCON send was dispatched once; UDP cannot confirm application or continuing ban enforcement.");
         }

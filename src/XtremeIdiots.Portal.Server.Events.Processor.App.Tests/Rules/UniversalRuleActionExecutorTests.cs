@@ -132,6 +132,44 @@ public sealed class UniversalRuleActionExecutorTests
     }
 
     [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task NativeDispatchOnlyAddsWelcomeSuppression(bool dropPlayer, bool alreadySuppressed)
+    {
+        var fixture = new Fixture();
+        fixture.Setup(fixture.Binding);
+        fixture.Servers.Setup(item => item.RulesNativeAction.V1.Execute(It.IsAny<Guid>(),
+                It.Is<RuleActionCommand>(command => command.Mode == RuleExecutionMode.Enforce), It.IsAny<CancellationToken>()))
+            .Returns((Guid _, RuleActionCommand command, CancellationToken _) => Task.FromResult(Ok(new RuleActionResult
+            {
+                GameServerId = command.GameServerId,
+                ExecutionId = command.ExecutionId,
+                LogicalEffectId = command.LogicalEffectId,
+                ActionId = command.ActionId,
+                Correlation = command.Correlation,
+                Outcome = RuleActionExecutionOutcome.Dispatched,
+                OccurredAtUtc = DateTimeOffset.UtcNow
+            })));
+        var command = dropPlayer
+            ? fixture.Command with { Effect = new() { Type = RuleNativeEffectType.DropPlayer } }
+            : fixture.Command;
+        var invocation = new RuleInvocation(new(), new(), null) { SuppressWelcome = alreadySuppressed };
+
+        var result = await fixture.Executor.ExecuteAsync(
+            new() { Id = "action", TypeId = dropPlayer ? "moderation.kick-with-record" : "message.public" },
+            command, invocation, default);
+
+        Assert.Equal(ActionExecutionOutcome.OutcomeUnknown, result.Outcome);
+        Assert.Equal(alreadySuppressed || dropPlayer, invocation.SuppressWelcome);
+        Assert.Equal(dropPlayer ? fixture.Records.Id : (Guid?)null, result.AdminActionId);
+        fixture.Servers.Verify(item => item.RulesNativeAction.V1.Execute(It.IsAny<Guid>(),
+            It.Is<RuleActionCommand>(value => value.Mode == RuleExecutionMode.Enforce),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Theory]
     [InlineData(RuleActionExecutionOutcome.SkippedUnsupported)]
     [InlineData(RuleActionExecutionOutcome.Stale)]
     public async Task AgentChecksRealNativeEligibilityBeforeClaimOrModerationRecord(
