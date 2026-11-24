@@ -1,6 +1,8 @@
 using System.Net;
 using System.Text.Json;
 
+using Microsoft.Extensions.Configuration;
+
 using Moq;
 
 using MX.Api.Abstractions;
@@ -34,6 +36,18 @@ public sealed class RepositoryRuleModerationRecordWriterTests
         Assert.Equal(fixture.Command.LogicalEffectId, fixture.Request.LogicalEffectId);
         fixture.Audit.Verify(item => item.LogAudit(It.IsAny<AuditEvent>()), Times.Once);
         Assert.Empty(fixture.Continuations.Messages);
+    }
+
+    [Fact]
+    public async Task ConfiguredAutomationIdentityIsIncludedInAtomicRecordWrite()
+    {
+        var fixture = new Fixture(adminId: "automation-admin");
+        fixture.Action.Parameters["postToForums"] = System.Text.Json.JsonSerializer.SerializeToElement(true);
+
+        await fixture.Writer.PersistAsync(fixture.Action, fixture.Command, fixture.Invocation, default);
+
+        Assert.Equal("automation-admin", fixture.Request!.AdminId);
+        Assert.Equal(fixture.Request.AdminId, Assert.Single(fixture.Continuations.Messages).AdminId);
     }
 
     [Fact]
@@ -150,7 +164,8 @@ public sealed class RepositoryRuleModerationRecordWriterTests
         public EnsureRuleActionAdminActionDto? Request { get; private set; }
         public RepositoryRuleModerationRecordWriter Writer { get; }
 
-        public Fixture(string actionType = "moderation.observation", AdminActionType type = AdminActionType.Observation, bool created = true)
+        public Fixture(string actionType = "moderation.observation", AdminActionType type = AdminActionType.Observation, bool created = true,
+            string? adminId = null)
         {
             Action = new()
             {
@@ -231,7 +246,9 @@ public sealed class RepositoryRuleModerationRecordWriterTests
                         HttpStatusCode.OK, new ApiResponse<EnsureAutomatedActionResultDto>(result)));
                 });
             Audit.Setup(item => item.LogAudit(It.IsAny<AuditEvent>())).Callback(() => Assert.True(persisted));
-            Writer = new(repository.Object, Continuations, Audit.Object);
+            var configuration = new ConfigurationBuilder().AddInMemoryCollection(
+                new Dictionary<string, string?> { ["ContentSafety:BotAdminId"] = adminId }).Build();
+            Writer = new(repository.Object, Continuations, Audit.Object, configuration);
         }
     }
 }

@@ -20,6 +20,20 @@ namespace XtremeIdiots.Portal.Server.Events.Processor.App.Tests.Rules;
 
 public sealed class RulesTriggerServiceTests
 {
+    [Theory]
+    [InlineData("::ffff:8.8.8.8", "8.8.8.8")]
+    [InlineData("2001:0DB8:0000:0000:0000:0000:0000:0001", "2001:db8::1")]
+    public async Task PluginFactsUseCanonicalIpBeforeValidatingRepositoryResponse(string address, string expected)
+    {
+        var fixture = new Fixture();
+
+        await fixture.Service.EvaluateAsync(fixture.Execution.Trigger with { PlayerIpAddress = address }, default);
+
+        fixture.Api.Verify(item => item.CreateFactSnapshot(It.IsAny<Guid>(),
+            It.Is<RuleFactSnapshotRequestDto>(request => request.PlayerIpAddress == expected),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
     [Fact]
     public async Task MirroredPluginQueueEventDoesNotClaimCommandsWithoutDeliveryTransport()
     {

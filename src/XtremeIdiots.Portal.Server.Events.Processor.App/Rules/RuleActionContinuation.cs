@@ -12,7 +12,8 @@ internal sealed record RuleActionPublicationIntent(
     string LogicalEffectId,
     Guid ExecutionId,
     string ActionId,
-    Guid GameServerId);
+    Guid GameServerId,
+    string? AdminId);
 
 internal sealed record RuleActionContinuation(
     string LogicalEffectId,

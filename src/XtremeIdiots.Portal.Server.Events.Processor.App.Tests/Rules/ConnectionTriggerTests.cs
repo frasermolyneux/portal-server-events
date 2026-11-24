@@ -53,6 +53,14 @@ public sealed class ConnectionTriggerTests
     }
 
     [Theory]
+    [InlineData("::ffff:8.8.8.8", "8.8.8.8")]
+    [InlineData("2001:0DB8:0000:0000:0000:0000:0000:0001", "2001:db8::1")]
+    public void IpAddressUsesRepositoryCanonicalRepresentation(string address, string expected)
+    {
+        Assert.Equal(expected, ConnectionTriggerNormalizer.From(Connected(ipAddress: address)).PlayerIpAddress);
+    }
+
+    [Theory]
     [InlineData("Unknown")]
     [InlineData("99999")]
     public void InvalidGame_IsRejected(string gameType)

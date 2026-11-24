@@ -36,6 +36,7 @@ only True acts. Missing capabilities, histories or intelligence remain Unknown.
 Tag conditions compare tag IDs using any/all/none semantics. GUID first-seen
 history is game-specific; IP history spans games. Immutable pre-observation fact
 snapshots prevent current player/IP/tag writes from changing the answer on retry.
+Mapped IPv4 and IPv6 text are canonicalized before snapshot correlation.
 An unresolved IP can supplement previously unavailable context without replaying
 completed actions. Continuations retain that proven observation's trigger
 correlation and IP context; an older retry cannot replace it or substitute a
@@ -87,6 +88,8 @@ Bindings expire at `observedAtUtc + 2 minutes`, never receive time, with at most
 30 seconds of future skew. Unknown/absent status rows are not disconnects.
 Disconnects retire only an exact identity/runtime match. Native work awaiting an initial binding, or record-producing work awaiting a
 new player's profile, is deferred without claiming or dispatching the effect.
+An older reconnect binding can wait within that same deadline; evidence of a
+newer replacement remains stale, including the immediate pre-dispatch recheck.
 The existing `rule-action-continuations` queue resumes agent-owned executions;
 plugin-owned executions remain on plugin polling. Context waits are bounded to
 two minutes and do not replace the frozen pre-observation facts.
@@ -111,6 +114,8 @@ rule-action endpoint, not the retired strongest-action writer. Observation is
 complete once its record exists; other moderation actions still require native
 dispatch. Optional forum publication uses the durable record identity and
 resolves a missing player name in the worker before taking its publication claim.
+The configured `ContentSafety:BotAdminId` attributes the record and is frozen in
+its publication intent so asynchronous forum attribution remains consistent.
 
 Current plugin results are `Dispatched`, not proof of `Applied`. Correlated
 receipts retain their truthful source timestamp, including cached redelivery.

@@ -1,5 +1,7 @@
 using System.Text.Json;
 
+using Microsoft.Extensions.Configuration;
+
 using MX.Observability.ApplicationInsights.Auditing;
 using MX.Observability.ApplicationInsights.Auditing.Models;
 
@@ -13,7 +15,8 @@ namespace XtremeIdiots.Portal.Server.Events.Processor.App.Rules;
 internal sealed class RepositoryRuleModerationRecordWriter(
     IRepositoryApiClient repository,
     IRuleActionContinuationPublisher continuations,
-    IAuditLogger audit) : IRuleModerationRecordWriter
+    IAuditLogger audit,
+    IConfiguration configuration) : IRuleModerationRecordWriter
 {
     public async Task<Guid> PersistAsync(
         RuleActionDefinition action, RuleActionCommand command, RuleInvocation invocation, CancellationToken ct)
@@ -55,10 +58,11 @@ internal sealed class RepositoryRuleModerationRecordWriter(
             expires = claim.ClaimedAtUtc.AddMinutes(minutes).UtcDateTime;
         }
 
+        var adminId = configuration["ContentSafety:BotAdminId"];
         if (action.Parameters.TryGetValue("postToForums", out var forums) && forums.ValueKind == JsonValueKind.True)
         {
             await continuations.PublishAsync(new(
-                command.LogicalEffectId, command.ExecutionId, command.ActionId, command.GameServerId), ct).ConfigureAwait(false);
+                command.LogicalEffectId, command.ExecutionId, command.ActionId, command.GameServerId, adminId), ct).ConfigureAwait(false);
         }
 
         var result = FeatureExecutionOrchestrator.Require(await repository.RuleExecutions.V1.EnsureRuleActionAdminAction(
@@ -66,6 +70,7 @@ internal sealed class RepositoryRuleModerationRecordWriter(
             {
                 ExpectedVersion = execution.Version,
                 LogicalEffectId = command.LogicalEffectId,
+                AdminId = adminId,
                 Type = type,
                 Text = reason.GetString()!,
                 Expires = expires

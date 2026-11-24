@@ -48,7 +48,7 @@ internal static class ConnectionTriggerNormalizer
             ConnectionId = connectionId.Value,
             PlayerGuid = playerGuid,
             SlotId = slotId.Value,
-            PlayerIpAddress = IpAddressGuard.IsPersistable(ipAddress) ? ipAddress : null,
+            PlayerIpAddress = IpAddressGuard.IsPersistable(ipAddress) ? IpAddressGuard.Normalize(ipAddress) : null,
             OccurredAtUtc = new DateTimeOffset(DateTime.SpecifyKind(source.EventGeneratedUtc, DateTimeKind.Utc)),
             ObservationId = observationId.GetValueOrDefault(),
             TriggerOccurrenceId = observationId.GetValueOrDefault(),

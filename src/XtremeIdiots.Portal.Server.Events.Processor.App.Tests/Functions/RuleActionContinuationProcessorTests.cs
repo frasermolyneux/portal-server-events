@@ -41,11 +41,11 @@ public sealed class RuleActionContinuationProcessorTests
     private readonly RuleActionContinuation continuation = new(
         "effect-1", Guid.NewGuid(), "action-1", Guid.NewGuid(), Guid.NewGuid(),
         GameType.CallOfDuty4x, Guid.NewGuid(), "player", AdminActionType.Ban,
-        new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc), "reason", null);
+        new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc), "reason", "automation-admin");
     private readonly RuleActionContinuationProcessor processor;
     private RuleFeatureExecutionDto execution = new();
     private RuleActionPublicationIntent Intent => new(
-        continuation.LogicalEffectId, continuation.ExecutionId, continuation.ActionId, continuation.GameServerId);
+        continuation.LogicalEffectId, continuation.ExecutionId, continuation.ActionId, continuation.GameServerId, continuation.AdminId);
 
     public RuleActionContinuationProcessorTests()
     {

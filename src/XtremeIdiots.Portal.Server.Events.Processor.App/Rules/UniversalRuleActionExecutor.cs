@@ -99,7 +99,7 @@ internal sealed class UniversalRuleActionExecutor(
                 throw new InvalidOperationException($"Unable to verify moderation player readiness: {player.StatusCode}.");
             }
         }
-        var availability = await NativeAvailabilityAsync(command, waitUntilUtc, ct).ConfigureAwait(false);
+        var availability = await NativeAvailabilityAsync(command, invocation, waitUntilUtc, ct).ConfigureAwait(false);
         if (availability.Deferred || availability.Unavailable is not null ||
             command.Effect.Type == RuleNativeEffectType.Unknown ||
             command.Runtime.IdentityModel == RuleRuntimeIdentityModel.PluginRuntimeGeneration)
@@ -129,7 +129,7 @@ internal sealed class UniversalRuleActionExecutor(
     }
 
     private async Task<ActionAvailability> NativeAvailabilityAsync(
-        RuleActionCommand command, DateTimeOffset waitUntilUtc, CancellationToken ct)
+        RuleActionCommand command, RuleInvocation invocation, DateTimeOffset waitUntilUtc, CancellationToken ct)
     {
         if (command.Effect.Type == RuleNativeEffectType.Unknown ||
             command.Runtime.IdentityModel == RuleRuntimeIdentityModel.PluginRuntimeGeneration)
@@ -147,13 +147,27 @@ internal sealed class UniversalRuleActionExecutor(
         var binding = FeatureExecutionOrchestrator.Require(response, "verify current agent connection ownership");
         var now = clock.GetUtcNow();
         if (binding.GameServerId != command.GameServerId || binding.SlotId != command.SlotId ||
-            !string.Equals(binding.PlayerGuid, command.PlayerGuid, StringComparison.Ordinal) ||
-            binding.ConnectionId != command.ConnectionId || binding.ConnectionGeneration != command.ConnectionGeneration ||
-            binding.Runtime.Id != command.Runtime.Id || binding.Runtime.IdentityModel != RuleRuntimeIdentityModel.AgentObservedConnection ||
-            binding.Runtime.InstanceId != command.Runtime.InstanceId || binding.Runtime.StartedAtUtc != command.Runtime.StartedAtUtc ||
-            binding.ObservedAtUtc > now.AddSeconds(30) || binding.ObservedAtUtc < now.AddMinutes(-2) ||
+            !string.Equals(binding.PlayerGuid, command.PlayerGuid, StringComparison.Ordinal))
+        {
+            return new(Unavailable: new(ActionExecutionOutcome.Stale, "Authoritative observed connection ownership has changed or expired."));
+        }
+        if (binding.ObservedAtUtc > now.AddSeconds(30) || binding.ObservedAtUtc < now.AddMinutes(-2) ||
             binding.ExpiresAtUtc != binding.ObservedAtUtc.AddMinutes(2) || binding.ExpiresAtUtc <= now)
         {
+            return new(Unavailable: new(ActionExecutionOutcome.Stale, "Authoritative observed connection ownership has changed or expired."));
+        }
+        if (binding.ConnectionId != command.ConnectionId || binding.ConnectionGeneration != command.ConnectionGeneration ||
+            binding.Runtime.Id != command.Runtime.Id || binding.Runtime.IdentityModel != RuleRuntimeIdentityModel.AgentObservedConnection ||
+            binding.Runtime.InstanceId != command.Runtime.InstanceId || binding.Runtime.StartedAtUtc != command.Runtime.StartedAtUtc)
+        {
+            if (command.Correlation.TriggerOccurrenceId != Guid.Empty &&
+                command.Correlation.TriggerOccurrenceId == invocation.Trigger.TriggerOccurrenceId &&
+                invocation.Trigger.OccurredAtUtc != default && binding.ObservedAtUtc < invocation.Trigger.OccurredAtUtc &&
+                now < waitUntilUtc)
+            {
+                return new(Deferred: true);
+            }
+
             return new(Unavailable: new(ActionExecutionOutcome.Stale, "Authoritative observed connection ownership has changed or expired."));
         }
         return new();
@@ -194,7 +208,7 @@ internal sealed class UniversalRuleActionExecutor(
             return Complete(ActionExecutionOutcome.Dispatched, "Awaiting the correlated native plugin result.", command);
         }
 
-        var availability = await NativeAvailabilityAsync(command, clock.GetUtcNow(), ct).ConfigureAwait(false);
+        var availability = await NativeAvailabilityAsync(command, invocation, clock.GetUtcNow(), ct).ConfigureAwait(false);
         if (availability.Unavailable is { } unavailable)
         {
             return unavailable with { AdminActionId = adminActionId };

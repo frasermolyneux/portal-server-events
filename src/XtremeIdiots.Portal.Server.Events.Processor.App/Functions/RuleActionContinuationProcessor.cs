@@ -87,7 +87,7 @@ public sealed class RuleActionContinuationProcessor(
         var continuation = new RuleActionContinuation(
             intent.LogicalEffectId, intent.ExecutionId, intent.ActionId, record.AdminActionId, intent.GameServerId,
             execution.Trigger.GameType, record.PlayerId, execution.Trigger.Username ?? record.Player?.Username,
-            record.Type, record.Created, record.Text, null);
+            record.Type, record.Created, record.Text, intent.AdminId);
 
         if (string.IsNullOrWhiteSpace(continuation.LogicalEffectId) ||
             string.IsNullOrWhiteSpace(continuation.ActionId) ||

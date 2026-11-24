@@ -352,6 +352,10 @@ internal sealed class RulesTriggerService(
 
     private async Task<PreparedRulesTrigger> PrepareCoreAsync(RuleTriggerEnvelope trigger, CancellationToken ct)
     {
+        if (trigger.PlayerIpAddress is { } ipAddress && IpAddressGuard.IsPersistable(ipAddress))
+        {
+            trigger = trigger with { PlayerIpAddress = IpAddressGuard.Normalize(ipAddress) };
+        }
         var facts = FeatureExecutionOrchestrator.Require(await repository.RuleExecutions.V1.CreateFactSnapshot(
             trigger.GameServerId, new RuleFactSnapshotRequestDto
             {

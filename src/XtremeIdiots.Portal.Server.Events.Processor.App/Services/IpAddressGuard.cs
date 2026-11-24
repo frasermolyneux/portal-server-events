@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Net;
 using System.Net.Sockets;
 
@@ -11,12 +12,18 @@ namespace XtremeIdiots.Portal.Server.Events.Processor.App.Services;
 /// </summary>
 internal static class IpAddressGuard
 {
+    public static string Normalize(string ipAddress)
+    {
+        var parsed = IPAddress.Parse(ipAddress.Trim());
+        return (parsed.IsIPv4MappedToIPv6 ? parsed.MapToIPv4() : parsed).ToString();
+    }
+
     /// <summary>
     /// Returns true when the supplied value is a real, persistable IP address.
     /// Returns false for null/empty/whitespace, unparseable values, and non-routable
     /// placeholders (IPv4 0.0.0.0 / IPv6 :: "any" addresses).
     /// </summary>
-    public static bool IsPersistable(string? ipAddress)
+    public static bool IsPersistable([NotNullWhen(true)] string? ipAddress)
     {
         if (string.IsNullOrWhiteSpace(ipAddress))
         {

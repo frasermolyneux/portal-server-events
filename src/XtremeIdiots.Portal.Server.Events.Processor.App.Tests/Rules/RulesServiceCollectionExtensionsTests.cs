@@ -1,5 +1,6 @@
 using Azure.Messaging.ServiceBus;
 
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
 using Moq;
@@ -24,6 +25,7 @@ public sealed class RulesServiceCollectionExtensionsTests
         var services = new ServiceCollection()
             .AddLogging()
             .AddMemoryCache()
+            .AddSingleton<IConfiguration>(new ConfigurationBuilder().Build())
             .AddSingleton(Mock.Of<IRepositoryApiClient>())
             .AddSingleton(Mock.Of<IServersApiClient>())
             .AddSingleton(Mock.Of<IGeoLocationApiClient>())

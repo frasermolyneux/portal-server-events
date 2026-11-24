@@ -54,10 +54,83 @@ public sealed class UniversalRuleActionExecutorTests
             : fixture.Binding with { ConnectionId = Guid.NewGuid() };
         fixture.Setup(binding);
 
-        var result = await fixture.AvailabilityAsync(DateTimeOffset.UtcNow.AddMinutes(2));
+        var result = await fixture.AvailabilityAsync(DateTimeOffset.UtcNow.AddMinutes(2),
+            DateTimeOffset.UtcNow.AddMinutes(-1));
 
         Assert.False(result.Deferred);
         Assert.Equal(ActionExecutionOutcome.Stale, result.Unavailable?.Outcome);
+    }
+
+    [Fact]
+    public async Task OlderConnectionEvidenceWaitsUntilMatchingStatusArrives()
+    {
+        var clock = new Clock();
+        var fixture = new Fixture(clock);
+        var triggerOccurredAt = clock.GetUtcNow().AddSeconds(-20);
+        var oldBinding = fixture.Binding with
+        {
+            ConnectionId = Guid.NewGuid(),
+            ObservedAtUtc = clock.GetUtcNow().AddSeconds(-30),
+            ExpiresAtUtc = clock.GetUtcNow().AddSeconds(90)
+        };
+        fixture.Bindings.SetupSequence(item => item.GetCurrentBinding(
+                fixture.Command.GameServerId, fixture.Command.SlotId, fixture.Command.PlayerGuid, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Ok(oldBinding))
+            .ReturnsAsync(Ok(fixture.Binding));
+        var deadline = clock.GetUtcNow().AddMinutes(2);
+
+        var waiting = await fixture.AvailabilityAsync(deadline, triggerOccurredAt);
+        var ready = await fixture.AvailabilityAsync(deadline, triggerOccurredAt);
+
+        Assert.True(waiting.Deferred);
+        Assert.False(ready.Deferred);
+        Assert.Null(ready.Unavailable);
+        fixture.Servers.Verify(item => item.RulesNativeAction.V1.Execute(It.IsAny<Guid>(),
+            It.Is<RuleActionCommand>(command => command.Mode == RuleExecutionMode.DryRun),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task OlderConnectionEvidenceIsStaleAtWaitDeadline()
+    {
+        var clock = new Clock();
+        var fixture = new Fixture(clock);
+        var triggerOccurredAt = clock.GetUtcNow().AddSeconds(-20);
+        fixture.Setup(fixture.Binding with
+        {
+            ConnectionId = Guid.NewGuid(),
+            ObservedAtUtc = clock.GetUtcNow().AddSeconds(-30),
+            ExpiresAtUtc = clock.GetUtcNow().AddSeconds(90)
+        });
+        var deadline = clock.GetUtcNow().AddSeconds(5);
+
+        var waiting = await fixture.AvailabilityAsync(deadline, triggerOccurredAt);
+        clock.Advance(TimeSpan.FromSeconds(5));
+        var expired = await fixture.AvailabilityAsync(deadline, triggerOccurredAt);
+
+        Assert.True(waiting.Deferred);
+        Assert.False(expired.Deferred);
+        Assert.Equal(ActionExecutionOutcome.Stale, expired.Unavailable?.Outcome);
+    }
+
+    [Fact]
+    public async Task NewerReplacementEvidenceRemainsStale()
+    {
+        var clock = new Clock();
+        var fixture = new Fixture(clock);
+        fixture.Setup(fixture.Binding with
+        {
+            ConnectionId = Guid.NewGuid(),
+            ObservedAtUtc = clock.GetUtcNow().AddSeconds(-10),
+            ExpiresAtUtc = clock.GetUtcNow().AddSeconds(110)
+        });
+
+        var result = await fixture.AvailabilityAsync(clock.GetUtcNow().AddMinutes(2),
+            clock.GetUtcNow().AddSeconds(-20));
+
+        Assert.False(result.Deferred);
+        Assert.Equal(ActionExecutionOutcome.Stale, result.Unavailable?.Outcome);
+        fixture.Servers.VerifyNoOtherCalls();
     }
 
     [Fact]
@@ -390,6 +463,8 @@ public sealed class UniversalRuleActionExecutorTests
 
     private sealed class Fixture
     {
+        private readonly TimeProvider clock;
+
         public Mock<IRuleConnectionBindingsApi> Bindings { get; } = new();
         public Mock<IPlayersApi> Players { get; } = new();
         public Mock<IServersApiClient> Servers { get; } = new();
@@ -413,12 +488,14 @@ public sealed class UniversalRuleActionExecutorTests
             },
             Mode = RuleExecutionMode.Enforce,
             ExpiresAtUtc = DateTimeOffset.UtcNow.AddSeconds(30),
-            Effect = new() { Type = RuleNativeEffectType.PublicMessage, Message = "Hello" }
+            Effect = new() { Type = RuleNativeEffectType.PublicMessage, Message = "Hello" },
+            Correlation = new() { TriggerOccurrenceId = Guid.NewGuid() }
         };
         public RuleConnectionBindingDto Binding { get; }
 
         public Fixture(TimeProvider? clock = null)
         {
+            this.clock = clock ?? TimeProvider.System;
             var repository = new Mock<IRepositoryApiClient>();
             var versioned = new Mock<IVersionedRuleConnectionBindingsApi>();
             versioned.Setup(item => item.V1).Returns(Bindings.Object);
@@ -426,7 +503,7 @@ public sealed class UniversalRuleActionExecutorTests
             var players = new Mock<IVersionedPlayersApi>();
             players.Setup(item => item.V1).Returns(Players.Object);
             repository.Setup(item => item.Players).Returns(players.Object);
-            var observed = DateTimeOffset.UtcNow;
+            var observed = this.clock.GetUtcNow();
             Binding = new()
             {
                 GameServerId = Command.GameServerId,
@@ -461,8 +538,14 @@ public sealed class UniversalRuleActionExecutorTests
                     It.IsAny<string>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(Ok(binding));
 
-        public Task<ActionAvailability> AvailabilityAsync(DateTimeOffset deadline) => Executor.AvailabilityAsync(
+        public Task<ActionAvailability> AvailabilityAsync(
+            DateTimeOffset deadline, DateTimeOffset? triggerOccurredAtUtc = null) => Executor.AvailabilityAsync(
             new() { Id = "message", TypeId = "message.public" }, Command,
-            new(new() { GameType = GameType.CallOfDuty4 }, new(), null), deadline, default);
+            new(new()
+            {
+                GameType = GameType.CallOfDuty4,
+                TriggerOccurrenceId = Command.Correlation.TriggerOccurrenceId,
+                OccurredAtUtc = triggerOccurredAtUtc ?? clock.GetUtcNow().AddMinutes(-1)
+            }, new(), null), deadline, default);
     }
 }
