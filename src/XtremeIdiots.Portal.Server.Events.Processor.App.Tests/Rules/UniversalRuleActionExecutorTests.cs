@@ -188,20 +188,24 @@ public sealed class UniversalRuleActionExecutorTests
         fixture.Bindings.VerifyNoOtherCalls();
     }
 
-    [Fact]
-    public async Task LegacyKickDisplayReasonIsExplicitlyUnsupported()
+    [Theory]
+    [InlineData(GameType.CallOfDuty2)]
+    [InlineData(GameType.CallOfDuty4)]
+    [InlineData(GameType.CallOfDuty5)]
+    [InlineData(GameType.CallOfDuty4x)]
+    public async Task AgentKickIsEligibleWithoutOnScreenReason(GameType gameType)
     {
         var fixture = new Fixture();
         var invocation = new RuleInvocation(new RuleTriggerEnvelope
         {
-            GameType = GameType.CallOfDuty4,
+            GameType = gameType,
             Runtime = fixture.Command.Runtime
         }, new RuleFactSnapshotDto(), null);
 
         var reason = await fixture.Executor.UnsupportedReasonAsync(
             new RuleActionDefinition { Id = "kick", TypeId = "player.kick" }, invocation, default);
 
-        Assert.Contains("display reason", reason);
+        Assert.Null(reason);
     }
 
     [Theory]

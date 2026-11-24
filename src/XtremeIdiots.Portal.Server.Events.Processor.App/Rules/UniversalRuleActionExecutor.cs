@@ -72,9 +72,7 @@ internal sealed class UniversalRuleActionExecutor(
             {
                 return Task.FromResult<string?>("The immediate-identity-checked RCON adapter is unavailable for this game.");
             }
-            return Task.FromResult(action.TypeId == "player.kick"
-                ? "This RCON adapter cannot deliver the requested kick display reason."
-                : null);
+            return Task.FromResult<string?>(null);
         }
         return Task.FromResult<string?>("Producer identity does not select an implemented executor.");
     }
