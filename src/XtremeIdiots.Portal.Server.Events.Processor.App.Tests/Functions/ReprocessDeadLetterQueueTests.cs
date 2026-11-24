@@ -218,6 +218,54 @@ public class ReprocessDeadLetterQueueTests
     }
 
     [Fact]
+    public async Task PlayerIpResolvedReplay_RetainsExhaustedAndReplaysOtherMessages()
+    {
+        var exhausted = ServiceBusModelFactory.ServiceBusReceivedMessage(
+            body: new BinaryData("{}"), messageId: "exhausted",
+            properties: new Dictionary<string, object> { ["DlqReplayCount"] = 3 });
+        var eligible = ServiceBusModelFactory.ServiceBusReceivedMessage(
+            body: new BinaryData("{}"), messageId: "eligible");
+        var receiver = new Mock<ServiceBusReceiver>();
+        receiver.SetupSequence(r => r.ReceiveMessagesAsync(It.IsAny<int>(), It.IsAny<TimeSpan>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new[] { exhausted, eligible })
+            .ReturnsAsync(Array.Empty<ServiceBusReceivedMessage>());
+        var sender = new Mock<ServiceBusSender>();
+        _serviceBusClient.Setup(c => c.CreateReceiver(Queues.PlayerIpResolved, It.IsAny<ServiceBusReceiverOptions>()))
+            .Returns(receiver.Object);
+        _serviceBusClient.Setup(c => c.CreateSender(Queues.PlayerIpResolved)).Returns(sender.Object);
+
+        var count = await _sut.ReplayDeadLetterMessages(Queues.PlayerIpResolved, 2);
+
+        Assert.Equal(1, count);
+        sender.Verify(s => s.SendMessageAsync(It.Is<ServiceBusMessage>(m => m.MessageId == "eligible"), It.IsAny<CancellationToken>()), Times.Once);
+        receiver.Verify(r => r.CompleteMessageAsync(exhausted, It.IsAny<CancellationToken>()), Times.Never);
+        receiver.Verify(r => r.CompleteMessageAsync(eligible, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task PlayerIpResolvedReplay_AdvancesPastAFullBatchOfExhaustedMessages()
+    {
+        var exhausted = Enumerable.Range(0, 20).Select(i => ServiceBusModelFactory.ServiceBusReceivedMessage(
+            body: new BinaryData("{}"), messageId: $"exhausted-{i}",
+            properties: new Dictionary<string, object> { ["DlqReplayCount"] = 3 })).ToArray();
+        var eligible = ServiceBusModelFactory.ServiceBusReceivedMessage(body: new BinaryData("{}"), messageId: "eligible");
+        var receiver = new Mock<ServiceBusReceiver>();
+        receiver.SetupSequence(r => r.ReceiveMessagesAsync(It.IsAny<int>(), It.IsAny<TimeSpan>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(exhausted)
+            .ReturnsAsync(new[] { eligible });
+        var sender = new Mock<ServiceBusSender>();
+        _serviceBusClient.Setup(c => c.CreateReceiver(Queues.PlayerIpResolved, It.IsAny<ServiceBusReceiverOptions>()))
+            .Returns(receiver.Object);
+        _serviceBusClient.Setup(c => c.CreateSender(Queues.PlayerIpResolved)).Returns(sender.Object);
+
+        var count = await _sut.ReplayDeadLetterMessages(Queues.PlayerIpResolved, 20);
+
+        Assert.Equal(1, count);
+        sender.Verify(s => s.SendMessageAsync(It.Is<ServiceBusMessage>(m => m.MessageId == "eligible"), It.IsAny<CancellationToken>()), Times.Once);
+        receiver.Verify(r => r.CompleteMessageAsync(It.Is<ServiceBusReceivedMessage>(m => m.MessageId.StartsWith("exhausted-")), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
     public async Task PlaytimeReplay_ResendsExhaustedMessageBeforeCompletingIt()
     {
         var message = ServiceBusModelFactory.ServiceBusReceivedMessage(
