@@ -5,6 +5,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 
 using MX.Api.Abstractions;
+using MX.Api.Client;
 
 using XtremeIdiots.Portal.Repository.Abstractions.Interfaces.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.RulesEngine;
@@ -93,6 +94,40 @@ public sealed class RuleConnectionEvidenceTests
 
         await RuleConnectionEvidence.ObserveAsync(fixture.Repository.Object, fixture.Status(), NullLogger.Instance, default);
 
+        fixture.Executions.VerifyNoOtherCalls();
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.BadRequest)]
+    [InlineData(HttpStatusCode.Conflict)]
+    public async Task ThrownSnapshotRejectionCannotSupplyFreshFacts(HttpStatusCode rejection)
+    {
+        var fixture = new Fixture();
+        fixture.Bindings.Setup(item => item.ObserveSnapshot(
+                It.IsAny<Guid>(), It.IsAny<RuleConnectionStatusSnapshotDto>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new ApiHttpRequestException("Rejected snapshot", rejection, null));
+
+        await RuleConnectionEvidence.ObserveAsync(fixture.Repository.Object, fixture.Status(), NullLogger.Instance, default);
+
+        fixture.Executions.VerifyNoOtherCalls();
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.InternalServerError)]
+    [InlineData(HttpStatusCode.Forbidden)]
+    [InlineData(HttpStatusCode.TooManyRequests)]
+    public async Task UnexpectedSnapshotFailureStillPropagates(HttpStatusCode failure)
+    {
+        var fixture = new Fixture();
+        var exception = new ApiHttpRequestException("Snapshot failed", failure, null);
+        fixture.Bindings.Setup(item => item.ObserveSnapshot(
+                It.IsAny<Guid>(), It.IsAny<RuleConnectionStatusSnapshotDto>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(exception);
+
+        var actual = await Assert.ThrowsAsync<ApiHttpRequestException>(() =>
+            RuleConnectionEvidence.ObserveAsync(fixture.Repository.Object, fixture.Status(), NullLogger.Instance, default));
+
+        Assert.Same(exception, actual);
         fixture.Executions.VerifyNoOtherCalls();
     }
 
