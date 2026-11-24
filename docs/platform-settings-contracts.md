@@ -125,8 +125,13 @@ resolves a missing player name in the worker before taking its publication claim
 The configured `ContentSafety:BotAdminId` attributes the record and is frozen in
 its publication intent so asynchronous forum attribution remains consistent.
 
-Current plugin results are `Dispatched`, not proof of `Applied`. Correlated
-receipts retain their truthful source timestamp, including cached redelivery.
+The current plugin reports native invocations as `Dispatched`. A correlated
+plugin receipt for a kick marks the kick `Applied`: success means the validated
+native kick API was invoked, not independently verified player disconnection.
+Processor-side dispatch without the plugin receipt is not success and an
+expired, unacknowledged claim remains unknown without a resend. Receipts for
+other effects retain their existing handling. Correlated receipts retain their
+truthful source timestamp, including cached redelivery.
 Source timestamps use the existing 30-second clock-skew allowance against claim,
 command expiry and receipt time; subsecond precision does not establish clock
 synchronization. Identical cached dispatch receipts do not advance or resume

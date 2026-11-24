@@ -157,6 +157,162 @@ public sealed class RulesTriggerServiceTests
         fixture.Audit.Verify(item => item.LogAudit(It.IsAny<AuditEvent>()), Times.Once);
     }
 
+    [Theory]
+    [InlineData("player.kick", false)]
+    [InlineData("moderation.kick-with-record", true)]
+    [InlineData("moderation.ban", true)]
+    [InlineData("moderation.temporary-ban", true)]
+    public async Task PluginKickDispatchReceiptCompletesKickWithoutClaimingBanEnforcement(string actionType, bool hasRecord)
+    {
+        var fixture = new Fixture();
+        var action = fixture.Execution.Actions[0];
+        fixture.Execution = fixture.Execution with
+        {
+            Actions = [action with { ActionTypeId = actionType, AdminActionId = hasRecord ? action.AdminActionId : null }]
+        };
+        var receipt = fixture.Result(RuleActionExecutionOutcome.Dispatched) with
+        {
+            Detail = "Native API invoked; effect is not confirmed"
+        };
+
+        await fixture.Service.OutcomeAsync(receipt, default);
+        var version = fixture.Execution.Version;
+        var replay = await fixture.Service.OutcomeAsync(receipt, default);
+
+        var updated = Assert.Single(fixture.Execution.Actions);
+        var compositeBan = actionType is "moderation.ban" or "moderation.temporary-ban";
+        Assert.Equal(compositeBan ? RuleActionExecutionOutcome.OutcomeUnknown : RuleActionExecutionOutcome.Applied, updated.Outcome);
+        Assert.Equal(RuleFeatureExecutionState.Evaluating, fixture.Execution.State);
+        Assert.Equal(1, fixture.Execution.ActionIndex);
+        Assert.Equal(version, fixture.Execution.Version);
+        Assert.Empty(replay.Commands);
+        Assert.Equal(hasRecord ? action.AdminActionId : null, updated.AdminActionId);
+        if (compositeBan)
+        {
+            Assert.Contains("ongoing ban-cache enforcement is not confirmed", updated.Detail);
+            Assert.Equal(RuleActionExecutionOutcome.Applied, updated.NativeEvidence!.Outcome);
+            Assert.Equal(receipt.OccurredAtUtc, updated.NativeEvidence.OccurredAtUtc);
+        }
+        else
+        {
+            Assert.Equal("Native kick API invoked.", updated.Detail);
+            Assert.Equal(receipt.OccurredAtUtc, JsonSerializer.Deserialize<RuleActionResult>(
+                updated.ResultJson!, RulesSerialization.Options)!.OccurredAtUtc);
+        }
+        fixture.Audit.Verify(item => item.LogAudit(It.IsAny<AuditEvent>()), Times.Once);
+        fixture.Api.Verify(item => item.UpdateActionOutcome(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<string>(),
+            It.IsAny<UpdateRuleActionOutcomeDto>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task LatePluginKickDispatchReceiptImprovesEvidenceWithoutResuming(bool compositeBan)
+    {
+        var fixture = new Fixture();
+        var action = fixture.Execution.Actions[0];
+        fixture.Execution = fixture.Execution with
+        {
+            State = RuleFeatureExecutionState.Stopped,
+            RuleIndex = 2,
+            ActionIndex = 5,
+            Actions =
+            [
+                action with
+                {
+                    ActionTypeId = compositeBan ? "moderation.temporary-ban" : "player.kick",
+                    AdminActionId = compositeBan ? action.AdminActionId : null,
+                    Outcome = RuleActionExecutionOutcome.OutcomeUnknown,
+                    ClaimedAtUtc = DateTimeOffset.UtcNow.AddMinutes(-1),
+                    Command = action.Command with { ExpiresAtUtc = DateTimeOffset.UtcNow.AddSeconds(-10) },
+                    ResultJson = JsonSerializer.Serialize(fixture.Result(RuleActionExecutionOutcome.OutcomeUnknown),
+                        RulesSerialization.Options)
+                }
+            ]
+        };
+        var receipt = fixture.Result(RuleActionExecutionOutcome.Dispatched) with
+        {
+            OccurredAtUtc = DateTimeOffset.UtcNow.AddSeconds(-20)
+        };
+
+        await fixture.Service.OutcomeAsync(receipt, default);
+        await fixture.Service.OutcomeAsync(receipt, default);
+
+        var updated = Assert.Single(fixture.Execution.Actions);
+        Assert.Equal(compositeBan ? RuleActionExecutionOutcome.OutcomeUnknown : RuleActionExecutionOutcome.Applied, updated.Outcome);
+        Assert.Equal(RuleFeatureExecutionState.Stopped, fixture.Execution.State);
+        Assert.Equal(2, fixture.Execution.RuleIndex);
+        Assert.Equal(5, fixture.Execution.ActionIndex);
+        if (compositeBan)
+        {
+            Assert.Equal(RuleActionExecutionOutcome.Applied, updated.NativeEvidence!.Outcome);
+        }
+        fixture.Api.Verify(item => item.UpdateActionOutcome(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<string>(),
+            It.IsAny<UpdateRuleActionOutcomeDto>(), It.IsAny<CancellationToken>()), Times.Once);
+        fixture.Api.Verify(item => item.CreateFactSnapshot(
+            It.IsAny<Guid>(), It.IsAny<RuleFactSnapshotRequestDto>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task DispatchReceiptOutsideKickCommandWindowIsRejected()
+    {
+        var fixture = new Fixture();
+        var action = fixture.Execution.Actions[0];
+        fixture.Execution = fixture.Execution with
+        {
+            Actions = [action with { Command = action.Command with { ExpiresAtUtc = DateTimeOffset.UtcNow.AddSeconds(-1) } }]
+        };
+        var receipt = fixture.Result(RuleActionExecutionOutcome.Dispatched) with
+        {
+            OccurredAtUtc = fixture.Execution.Actions[0].Command.ExpiresAtUtc.AddSeconds(30.5)
+        };
+
+        await Assert.ThrowsAsync<ArgumentException>(() => fixture.Service.OutcomeAsync(receipt, default));
+
+        fixture.Api.Verify(item => item.UpdateActionOutcome(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<string>(),
+            It.IsAny<UpdateRuleActionOutcomeDto>(), It.IsAny<CancellationToken>()), Times.Never);
+        fixture.Audit.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task DispatchReceiptCannotUseNonPluginIdentityModel()
+    {
+        var fixture = new Fixture();
+        var action = fixture.Execution.Actions[0];
+        var runtime = action.Command.Runtime with { IdentityModel = RuleRuntimeIdentityModel.AgentObservedConnection };
+        fixture.Execution = fixture.Execution with
+        {
+            Trigger = fixture.Execution.Trigger with { Runtime = runtime },
+            Actions = [action with { Command = action.Command with { Runtime = runtime } }]
+        };
+
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            fixture.Service.OutcomeAsync(fixture.Result(RuleActionExecutionOutcome.Dispatched), default));
+
+        fixture.Api.Verify(item => item.UpdateActionOutcome(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<string>(),
+            It.IsAny<UpdateRuleActionOutcomeDto>(), It.IsAny<CancellationToken>()), Times.Never);
+        fixture.Audit.VerifyNoOtherCalls();
+    }
+
+    [Theory]
+    [InlineData(RuleActionExecutionOutcome.Failed)]
+    [InlineData(RuleActionExecutionOutcome.Stale)]
+    [InlineData(RuleActionExecutionOutcome.OutcomeUnknown)]
+    public async Task UnsuccessfulPluginKickReceiptIsNotConvertedToSuccess(RuleActionExecutionOutcome outcome)
+    {
+        var fixture = new Fixture();
+        var action = fixture.Execution.Actions[0];
+        fixture.Execution = fixture.Execution with
+        {
+            Actions = [action with { ActionTypeId = "player.kick", AdminActionId = null }]
+        };
+
+        await fixture.Service.OutcomeAsync(fixture.Result(outcome), default);
+
+        Assert.Equal(outcome, Assert.Single(fixture.Execution.Actions).Outcome);
+        fixture.Audit.VerifyNoOtherCalls();
+    }
+
     [Fact]
     public async Task CachedDispatchedReceiptKeepsOriginalTimeAndCannotDispatchOrAdvanceAgain()
     {
@@ -165,7 +321,16 @@ public sealed class RulesTriggerServiceTests
         var action = fixture.Execution.Actions[0];
         fixture.Execution = fixture.Execution with
         {
-            Actions = [action with { ClaimedAtUtc = now.AddMinutes(-3) }],
+            Actions =
+            [
+                action with
+                {
+                    ActionTypeId = "message.public",
+                    AdminActionId = null,
+                    ClaimedAtUtc = now.AddMinutes(-3),
+                    Command = action.Command with { Effect = new() { Type = RuleNativeEffectType.PublicMessage } }
+                }
+            ],
             ActionIndex = 4
         };
         var cached = fixture.Result(RuleActionExecutionOutcome.Dispatched) with

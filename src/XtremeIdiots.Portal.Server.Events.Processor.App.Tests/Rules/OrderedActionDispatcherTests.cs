@@ -52,6 +52,30 @@ public sealed class OrderedActionDispatcherTests
     }
 
     [Fact]
+    public async Task AcknowledgedKick_AllowsDependentAndIndependentActionsWithoutRepeatingKick()
+    {
+        var effects = new List<string>();
+        var store = new Store();
+        var executionId = Guid.NewGuid();
+        var actions = new[]
+        {
+            Action("drop", effects, outcome: ActionExecutionOutcome.Dispatched),
+            Action("dependent", effects, ["drop"]),
+            Action("independent", effects)
+        };
+        var dispatcher = Create(store);
+
+        var pending = await dispatcher.DispatchAsync(executionId, actions, false, default);
+        await store.RecordAsync(executionId, "drop", new(ActionExecutionOutcome.Applied), default);
+        var resumed = await dispatcher.DispatchAsync(executionId, actions, false, default);
+        await dispatcher.DispatchAsync(executionId, actions, false, default);
+
+        Assert.True(pending.AwaitingOutcome);
+        Assert.False(resumed.AwaitingOutcome);
+        Assert.Equal(["drop", "dependent", "independent"], effects);
+    }
+
+    [Fact]
     public async Task ExecutorException_IsNotRetriedAndIndependentActionsContinue()
     {
         var effects = new List<string>();

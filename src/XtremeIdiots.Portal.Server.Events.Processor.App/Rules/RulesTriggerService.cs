@@ -121,11 +121,24 @@ internal sealed class RulesTriggerService(
             action.Command.ConnectionGeneration != execution.Trigger.ConnectionGeneration ||
             action.Command.SlotId != execution.Trigger.SlotId || action.Command.PlayerGuid != execution.Trigger.PlayerGuid ||
             !SameRuntimeIdentity(action.Command.Runtime, execution.Trigger.Runtime) ||
-            action.Command.Runtime.Id != "cod4x-plugin" || action.Mode != RuleExecutionMode.Enforce ||
+            action.Command.Runtime is not { Id: "cod4x-plugin", IdentityModel: RuleRuntimeIdentityModel.PluginRuntimeGeneration } ||
+            action.Mode != RuleExecutionMode.Enforce ||
             action.Command.Effect.Type is not (RuleNativeEffectType.DropPlayer or RuleNativeEffectType.PublicMessage or RuleNativeEffectType.PrivateMessage) ||
             receivedAtUtc < action.ClaimedAtUtc.AddSeconds(-30) || result.OccurredAtUtc < action.ClaimedAtUtc.AddSeconds(-30))
         {
             throw new ArgumentException("The native outcome does not match the claimed plugin command.", nameof(result));
+        }
+
+        var kickDispatchReceipt = result.Outcome == RuleActionExecutionOutcome.Dispatched &&
+            action.Command.Effect.Type == RuleNativeEffectType.DropPlayer &&
+            action.ActionTypeId is "player.kick" or "moderation.kick-with-record" or "moderation.ban" or "moderation.temporary-ban";
+        if (kickDispatchReceipt)
+        {
+            result = result with
+            {
+                Outcome = RuleActionExecutionOutcome.Applied,
+                Detail = "Native kick API invoked."
+            };
         }
 
         var applied = result.Outcome == RuleActionExecutionOutcome.Applied;
@@ -144,7 +157,9 @@ internal sealed class RulesTriggerService(
             recorded = result with
             {
                 Outcome = RuleActionExecutionOutcome.OutcomeUnknown,
-                Detail = "Native drop confirmed; the durable ban record exists but ongoing ban-cache enforcement is not confirmed."
+                Detail = kickDispatchReceipt
+                    ? "Native kick API invoked; the durable ban record exists but ongoing ban-cache enforcement is not confirmed."
+                    : "Native drop confirmed; the durable ban record exists but ongoing ban-cache enforcement is not confirmed."
             };
         }
 
