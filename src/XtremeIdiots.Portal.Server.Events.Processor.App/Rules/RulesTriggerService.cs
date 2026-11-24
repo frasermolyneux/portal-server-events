@@ -233,8 +233,23 @@ internal sealed class RulesTriggerService(
     private async Task RecordNativeReceiptAsync(
         RuleActionExecutionDto action, RuleActionResult result, CancellationToken ct)
     {
-        var effect = action.Command.Effect.Type.ToString();
-        var outcome = result.Outcome.ToString();
+        var effect = action.Command.Effect.Type switch
+        {
+            RuleNativeEffectType.DropPlayer => "DropPlayer",
+            RuleNativeEffectType.PublicMessage => "PublicMessage",
+            RuleNativeEffectType.PrivateMessage => "PrivateMessage",
+            _ => throw new InvalidOperationException("The validated native effect is not supported.")
+        };
+        var outcome = result.Outcome switch
+        {
+            RuleActionExecutionOutcome.Applied => "Applied",
+            RuleActionExecutionOutcome.Dispatched => "Dispatched",
+            RuleActionExecutionOutcome.Failed => "Failed",
+            RuleActionExecutionOutcome.Stale => "Stale",
+            RuleActionExecutionOutcome.SkippedUnsupported => "SkippedUnsupported",
+            RuleActionExecutionOutcome.OutcomeUnknown => "OutcomeUnknown",
+            _ => throw new InvalidOperationException("The validated native outcome is not supported.")
+        };
         var eventOutcome = result.Outcome == RuleActionExecutionOutcome.SkippedUnsupported ? "Unsupported" : outcome;
         var eventType = $"NativeAction.{effect}.Plugin.{eventOutcome}";
         var hash = SHA256.HashData(Encoding.UTF8.GetBytes($"RulesNativeAction|{result.LogicalEffectId}|{eventType}"));

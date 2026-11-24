@@ -126,7 +126,11 @@ RCON events use `Rcon.Dispatched` and similarly do not establish application.
 Event writes use a stable key per logical effect and event type; a failed write is
 logged and never causes an action to be resent. The key is the .NET GUID made
 from the first 16 bytes of SHA-256 over UTF-8
-`RulesNativeAction|{LogicalEffectId}|{EventType}`. Event type names use
+`RulesNativeAction|{LogicalEffectId}|{EventType}`. The .NET GUID constructor
+interprets the first 4, next 2 and next 2 bytes as little-endian fields; the
+remaining 8 bytes retain their order. For `effect` and
+`NativeAction.DropPlayer.Plugin.Applied`, the key is
+`0befef6f-1115-39c5-4d7a-cc1e297417f1`. Event type names use
 `Unsupported` for `SkippedUnsupported` receipts, whose payload retains the full
 outcome. Repository deduplication lasts only as long as the event is retained.
 
