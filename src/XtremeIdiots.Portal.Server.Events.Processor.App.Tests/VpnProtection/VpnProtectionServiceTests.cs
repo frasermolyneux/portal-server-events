@@ -8,6 +8,7 @@ using Moq;
 using MX.Api.Abstractions;
 using MX.GeoLocation.Abstractions.Models.V1_1;
 using MX.Observability.ApplicationInsights.Auditing;
+using MX.Observability.ApplicationInsights.Auditing.Models;
 
 using XtremeIdiots.Portal.Repository.Abstractions.Constants.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Interfaces.V1;
@@ -32,6 +33,7 @@ public sealed class VpnProtectionServiceTests
     private readonly Mock<IAdminActionsApi> adminActionsApi = new();
     private readonly Mock<IGameServersEventsApi> gameServerEventsApi = new();
     private readonly Mock<IAdminActionTopics> topics = new();
+    private readonly Mock<IAuditLogger> auditLogger = new();
 
     public VpnProtectionServiceTests()
     {
@@ -62,6 +64,50 @@ public sealed class VpnProtectionServiceTests
         topics.Verify(x => x.CreateTopicForAdminAction(AdminActionType.Ban, GameType.CallOfDuty4, PlayerId, "TestPlayer", It.IsAny<DateTime>(), It.IsAny<string>(), BotAdminId, It.IsAny<CancellationToken>()), Times.Once);
         adminActionsApi.Verify(x => x.UpdateAdminAction(It.Is<EditAdminActionDto>(dto => dto.ForumTopicId == 1234), It.IsAny<CancellationToken>()), Times.Once);
         rconEnforcer.Verify(x => x.EnforceAsync(It.IsAny<VpnProtectionContext>(), VpnProtectionAction.Ban, It.Is<string>(reason => reason.Contains("[PORTAL-AUTOMATION] VPN:vpn", StringComparison.Ordinal)), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task ProcessAsync_NestedMatch_PersistsEvidenceAndAuditsTheCreatedAction()
+    {
+        settingsProvider.Setup(x => x.GetEffectiveSettingsAsync(ServerId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new EffectiveVpnProtectionSettings
+            {
+                Enabled = true,
+                Rules =
+                [
+                    new EffectiveVpnProtectionRule
+                    {
+                        Id = "nested",
+                        Enabled = true,
+                        Condition = new VpnProtectionCondition
+                        {
+                            GroupOperator = RuleConditionGroupOperator.And,
+                            Conditions =
+                            [
+                                new() { Signal = VpnProtectionSignal.ProxyCheckIsVpn, Operator = RuleComparisonOperator.Equal, ExpectedValue = "true" },
+                                new() { Signal = VpnProtectionSignal.ProxyCheckRiskScore, Operator = RuleComparisonOperator.GreaterThan, ExpectedValue = "75" }
+                            ]
+                        },
+                        Action = VpnProtectionAction.Kick,
+                        ReasonTemplate = VpnProtectionSettingsConstants.DefaultReasonTemplate,
+                        OrderIndex = 0
+                    }
+                ]
+            });
+        var intelligence = Newtonsoft.Json.JsonConvert.DeserializeObject<IpIntelligenceDto>(
+            /*lang=json,strict*/ """{"proxyCheck":{"isVpn":true,"riskScore":90}}""")!;
+
+        var result = await CreateSut(new VpnProtectionEvaluator()).ProcessAsync(Context(), intelligence);
+
+        Assert.True(result.AdminActionCreated);
+        adminActionsApi.Verify(x => x.EnsureAutomatedAction(
+            It.Is<EnsureAutomatedActionDto>(dto => dto.AutomationRuleId == "nested" &&
+                dto.Text.Contains("ProxyCheckIsVpn=True", StringComparison.Ordinal) &&
+                dto.Text.Contains("ProxyCheckRiskScore=90", StringComparison.Ordinal)),
+            It.IsAny<CancellationToken>()), Times.Once);
+        rconEnforcer.Verify(x => x.EnforceAsync(It.IsAny<VpnProtectionContext>(), VpnProtectionAction.Kick,
+            It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Once);
+        auditLogger.Verify(x => x.LogAudit(It.Is<AuditEvent>(audit => audit.EventName == "VpnProtectionAdminActionCreated")), Times.Once);
     }
 
     [Fact]
@@ -149,10 +195,10 @@ public sealed class VpnProtectionServiceTests
         rconEnforcer.Verify(x => x.EnforceAsync(It.IsAny<VpnProtectionContext>(), It.IsAny<VpnProtectionAction>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
-    private VpnProtectionService CreateSut()
+    private VpnProtectionService CreateSut(IVpnProtectionEvaluator? actualEvaluator = null)
     {
         IConfiguration configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?> { ["ContentSafety:BotAdminId"] = BotAdminId }).Build();
-        return new VpnProtectionService(settingsProvider.Object, evaluator.Object, rconEnforcer.Object, repositoryApiClient.Object, topics.Object, configuration, new Mock<IAuditLogger>().Object, new Mock<ILogger<VpnProtectionService>>().Object);
+        return new VpnProtectionService(settingsProvider.Object, actualEvaluator ?? evaluator.Object, rconEnforcer.Object, repositoryApiClient.Object, topics.Object, configuration, auditLogger.Object, new Mock<ILogger<VpnProtectionService>>().Object);
     }
 
     private static VpnProtectionContext Context() => new()

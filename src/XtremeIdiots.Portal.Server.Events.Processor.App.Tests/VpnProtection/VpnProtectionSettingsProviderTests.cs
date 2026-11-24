@@ -56,14 +56,16 @@ public sealed class VpnProtectionSettingsProviderTests
     {
         SetupGlobalConfiguration(/*lang=json,strict*/ """
             {
-                "schemaVersion": 1,
+                "schemaVersion": 2,
                 "enabled": false,
                 "rules": [
                     {
                         "id": "vpn",
-                        "signal": "ProxyCheckIsVpn",
-                        "operator": "Equal",
-                        "expectedValue": "true",
+                        "condition": {
+                            "signal": "ProxyCheckIsVpn",
+                            "operator": "Equal",
+                            "expectedValue": "true"
+                        },
                         "action": "Observation"
                     }
                 ],
@@ -72,7 +74,7 @@ public sealed class VpnProtectionSettingsProviderTests
             """);
         SetupServerConfiguration(/*lang=json,strict*/ """
             {
-                "schemaVersion": 1,
+                "schemaVersion": 2,
                 "enabled": true,
                 "ruleOverrides": [
                     { "id": "vpn", "action": "Kick" }
@@ -87,9 +89,54 @@ public sealed class VpnProtectionSettingsProviderTests
         Assert.False(result.ValidationFailed);
         var rule = Assert.Single(result.Rules);
         Assert.Equal(VpnProtectionAction.Kick, rule.Action);
+        Assert.Equal(VpnProtectionSignal.ProxyCheckIsVpn, rule.Condition.Signal);
         Assert.Equal(2, result.ExcludedPlayerTags.Count);
         Assert.Contains("Global Exempt", result.ExcludedPlayerTags);
         Assert.Contains("Server Exempt", result.ExcludedPlayerTags);
+    }
+
+    [Fact]
+    public async Task GetEffectiveSettingsAsync_ServerOverride_ReplacesEntireCondition()
+    {
+        SetupGlobalConfiguration(/*lang=json,strict*/ """
+            {
+                "schemaVersion": 2,
+                "enabled": true,
+                "rules": [{
+                    "id": "vpn",
+                    "condition": {"signal":"ProxyCheckIsVpn","operator":"Equal","expectedValue":"true"},
+                    "action": "Kick"
+                }]
+            }
+            """);
+        SetupServerConfiguration(/*lang=json,strict*/ """
+            {
+                "schemaVersion": 2,
+                "ruleOverrides": [{
+                    "id": "vpn",
+                    "condition": {"signal":"ProxyCheckRiskScore","operator":"GreaterThan","expectedValue":"75"}
+                }]
+            }
+            """);
+
+        var result = await CreateSut().GetEffectiveSettingsAsync(ServerId);
+
+        Assert.False(result.ValidationFailed);
+        var rule = Assert.Single(result.Rules);
+        Assert.Equal(VpnProtectionSignal.ProxyCheckRiskScore, rule.Condition.Signal);
+        Assert.Equal("75", rule.Condition.ExpectedValue);
+        Assert.Equal(VpnProtectionAction.Kick, rule.Action);
+    }
+
+    [Fact]
+    public async Task GetEffectiveSettingsAsync_LegacySchema_DisablesEnforcement()
+    {
+        SetupGlobalConfiguration(/*lang=json,strict*/ """{"schemaVersion":1,"enabled":true,"rules":[]}""");
+
+        var result = await CreateSut().GetEffectiveSettingsAsync(ServerId);
+
+        Assert.False(result.Enabled);
+        Assert.True(result.ValidationFailed);
     }
 
     [Fact]
@@ -122,7 +169,7 @@ public sealed class VpnProtectionSettingsProviderTests
     {
         SetupGlobalConfiguration(/*lang=json,strict*/ """
             {
-                "schemaVersion": 1,
+                "schemaVersion": 2,
                 "enabled": true,
                 "rules": [],
                 "excludedPlayerTags": []

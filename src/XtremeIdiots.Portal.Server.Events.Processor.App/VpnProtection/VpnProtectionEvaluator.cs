@@ -2,6 +2,8 @@ using System.Globalization;
 
 using MX.GeoLocation.Abstractions.Models.V1_1;
 
+using XtremeIdiots.Portal.Server.Events.Processor.App.Rules;
+
 namespace XtremeIdiots.Portal.Server.Events.Processor.App.VpnProtection;
 
 public sealed class VpnProtectionEvaluator : IVpnProtectionEvaluator
@@ -70,28 +72,43 @@ public sealed class VpnProtectionEvaluator : IVpnProtectionEvaluator
         EffectiveVpnProtectionRule rule,
         IpIntelligenceDto intelligence)
     {
-        var isMatch = EvaluateSignal(rule.Signal, rule.Operator, rule.ExpectedValue, intelligence, out var actualValue);
-        if (isMatch != true)
+        var result = RuleMatcher.EvaluateWithEvidence(
+            rule.Condition,
+            static node => (node.GroupOperator, node.Conditions),
+            node =>
+            {
+                if (node.Signal is not { } signal || node.Operator is not { } op || node.ExpectedValue is null)
+                {
+                    return new RuleMatch<VpnProtectionSignalEvidence>(null, []);
+                }
+
+                var match = EvaluateSignal(signal, op, node.ExpectedValue, intelligence, out var actual);
+                return new RuleMatch<VpnProtectionSignalEvidence>(
+                    match, match == true ? [new(signal, actual, node.ExpectedValue)] : []);
+            });
+        if (result.Value != true || result.Evidence.Count == 0)
         {
             return null;
         }
 
+        var first = result.Evidence[0];
         return new VpnProtectionRuleMatch
         {
             RuleId = rule.Id,
-            Signal = rule.Signal,
-            ActualValue = actualValue,
-            ExpectedValue = rule.ExpectedValue,
+            Signal = first.Signal,
+            ActualValue = first.ActualValue,
+            ExpectedValue = first.ExpectedValue,
+            Evidence = result.Evidence,
             Action = rule.Action,
             PostObservationToForums = rule.PostObservationToForums,
-            Reason = RenderReason(rule, actualValue),
+            Reason = RenderReason(rule, result.Evidence),
             OrderIndex = rule.OrderIndex
         };
     }
 
     internal static bool? EvaluateSignal(
         VpnProtectionSignal signal,
-        VpnProtectionComparisonOperator comparisonOperator,
+        RuleComparisonOperator comparisonOperator,
         string expectedValue,
         IpIntelligenceDto? intelligence,
         out string actualValue)
@@ -259,7 +276,7 @@ public sealed class VpnProtectionEvaluator : IVpnProtectionEvaluator
     private static bool CompareBoolean(
         string actualValue,
         string expectedValue,
-        VpnProtectionComparisonOperator comparisonOperator)
+        RuleComparisonOperator comparisonOperator)
     {
         if (!bool.TryParse(actualValue, out var actual) || !bool.TryParse(expectedValue, out var expected))
         {
@@ -268,8 +285,8 @@ public sealed class VpnProtectionEvaluator : IVpnProtectionEvaluator
 
         return comparisonOperator switch
         {
-            VpnProtectionComparisonOperator.Equal => actual == expected,
-            VpnProtectionComparisonOperator.NotEqual => actual != expected,
+            RuleComparisonOperator.Equal => actual == expected,
+            RuleComparisonOperator.NotEqual => actual != expected,
             _ => false
         };
     }
@@ -277,7 +294,7 @@ public sealed class VpnProtectionEvaluator : IVpnProtectionEvaluator
     private static bool CompareNumeric(
         string actualValue,
         string expectedValue,
-        VpnProtectionComparisonOperator comparisonOperator)
+        RuleComparisonOperator comparisonOperator)
     {
         if (!int.TryParse(actualValue, NumberStyles.Integer, CultureInfo.InvariantCulture, out var actual) ||
             !int.TryParse(expectedValue, NumberStyles.Integer, CultureInfo.InvariantCulture, out var expected))
@@ -287,12 +304,12 @@ public sealed class VpnProtectionEvaluator : IVpnProtectionEvaluator
 
         return comparisonOperator switch
         {
-            VpnProtectionComparisonOperator.Equal => actual == expected,
-            VpnProtectionComparisonOperator.NotEqual => actual != expected,
-            VpnProtectionComparisonOperator.GreaterThan => actual > expected,
-            VpnProtectionComparisonOperator.GreaterThanOrEqual => actual >= expected,
-            VpnProtectionComparisonOperator.LessThan => actual < expected,
-            VpnProtectionComparisonOperator.LessThanOrEqual => actual <= expected,
+            RuleComparisonOperator.Equal => actual == expected,
+            RuleComparisonOperator.NotEqual => actual != expected,
+            RuleComparisonOperator.GreaterThan => actual > expected,
+            RuleComparisonOperator.GreaterThanOrEqual => actual >= expected,
+            RuleComparisonOperator.LessThan => actual < expected,
+            RuleComparisonOperator.LessThanOrEqual => actual <= expected,
             _ => false
         };
     }
@@ -300,24 +317,24 @@ public sealed class VpnProtectionEvaluator : IVpnProtectionEvaluator
     private static bool CompareString(
         string actualValue,
         string expectedValue,
-        VpnProtectionComparisonOperator comparisonOperator)
+        RuleComparisonOperator comparisonOperator)
     {
         return comparisonOperator switch
         {
-            VpnProtectionComparisonOperator.Equal => string.Equals(actualValue, expectedValue, StringComparison.OrdinalIgnoreCase),
-            VpnProtectionComparisonOperator.NotEqual => !string.Equals(actualValue, expectedValue, StringComparison.OrdinalIgnoreCase),
-            VpnProtectionComparisonOperator.Contains => actualValue.Contains(expectedValue, StringComparison.OrdinalIgnoreCase),
+            RuleComparisonOperator.Equal => string.Equals(actualValue, expectedValue, StringComparison.OrdinalIgnoreCase),
+            RuleComparisonOperator.NotEqual => !string.Equals(actualValue, expectedValue, StringComparison.OrdinalIgnoreCase),
+            RuleComparisonOperator.Contains => actualValue.Contains(expectedValue, StringComparison.OrdinalIgnoreCase),
             _ => false
         };
     }
 
-    private static string RenderReason(EffectiveVpnProtectionRule rule, string actualValue)
+    private static string RenderReason(EffectiveVpnProtectionRule rule, IReadOnlyList<VpnProtectionSignalEvidence> evidence)
     {
         return rule.ReasonTemplate
             .Replace("{ruleId}", rule.Id, StringComparison.OrdinalIgnoreCase)
-            .Replace("{signal}", rule.Signal.ToString(), StringComparison.OrdinalIgnoreCase)
-            .Replace("{actualValue}", actualValue, StringComparison.OrdinalIgnoreCase)
-            .Replace("{expectedValue}", rule.ExpectedValue, StringComparison.OrdinalIgnoreCase);
+            .Replace("{signal}", string.Join(", ", evidence.Select(static item => item.Signal)), StringComparison.OrdinalIgnoreCase)
+            .Replace("{actualValue}", string.Join(", ", evidence.Select(static item => item.ActualValue)), StringComparison.OrdinalIgnoreCase)
+            .Replace("{expectedValue}", string.Join(", ", evidence.Select(static item => item.ExpectedValue)), StringComparison.OrdinalIgnoreCase);
     }
 
     private static int GetActionSeverity(VpnProtectionAction action) => action switch

@@ -202,7 +202,10 @@ public sealed class VpnProtectionService(
         var evidence = string.Join(
             "; ",
             decision.MatchedRules.Select(static match =>
-                $"{match.RuleId}: {match.Signal}={match.ActualValue} (expected {match.ExpectedValue})"));
+                $"{match.RuleId}: {string.Join(", ", (match.Evidence.Count > 0
+                    ? match.Evidence
+                    : [new VpnProtectionSignalEvidence(match.Signal, match.ActualValue, match.ExpectedValue)])
+                    .Select(static evidence => $"{evidence.Signal}={evidence.ActualValue} (expected {evidence.ExpectedValue})"))}"));
         return $"{decision.Reason}\n\nMatched rules: {evidence}";
     }
 

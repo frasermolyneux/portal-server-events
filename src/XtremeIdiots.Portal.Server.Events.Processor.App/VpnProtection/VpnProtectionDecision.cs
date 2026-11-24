@@ -35,6 +35,8 @@ public sealed record VpnProtectionRuleMatch
 
     public required string ExpectedValue { get; init; }
 
+    public IReadOnlyList<VpnProtectionSignalEvidence> Evidence { get; init; } = [];
+
     public required VpnProtectionAction Action { get; init; }
 
     public bool PostObservationToForums { get; init; } = true;
@@ -43,3 +45,8 @@ public sealed record VpnProtectionRuleMatch
 
     public required int OrderIndex { get; init; }
 }
+
+public sealed record VpnProtectionSignalEvidence(
+    VpnProtectionSignal Signal,
+    string ActualValue,
+    string ExpectedValue);
