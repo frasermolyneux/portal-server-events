@@ -85,6 +85,8 @@ read-only `Execute(Mode=DryRun)` eligibility path before claiming native work.
 This verifies the actual game adapter, configuration, text and live roster;
 neither an `RconEnabled` setting nor an invented capability is sufficient.
 The integration checks GUID/slot again immediately before sending once.
+Agent-owned RCON kicks use the slot-based command; the configured reason is retained
+for auditing but is not displayed on screen.
 Eligibility is not an atomic guarantee against later configuration/roster changes.
 This preserves observed identity
 checks, not an atomic native-generation guarantee across a same-GUID reconnect.
@@ -116,6 +118,21 @@ Claimed/ambiguous native effects are never blindly resent. RCON UDP dispatch is
 not confirmed application; a native drop is not proof of continuing Ban/TempBan
 cache enforcement. Unknown forum outcomes require manual recovery rather than
 posting a duplicate topic. Queue duplicate detection is not required for safety.
+
+Validated plugin receipts produce best-effort `NativeAction.{effect}.Plugin.{outcome}`
+server events. A kick `Applied` event means the native drop API was invoked, not
+that a ban remains enforced. Message `Dispatched` events do not establish delivery.
+RCON events use `Rcon.Dispatched` and similarly do not establish application.
+Event writes use a stable key per logical effect and event type; a failed write is
+logged and never causes an action to be resent. The key is the .NET GUID made
+from the first 16 bytes of SHA-256 over UTF-8
+`RulesNativeAction|{LogicalEffectId}|{EventType}`. The .NET GUID constructor
+interprets the first 4, next 2 and next 2 bytes as little-endian fields; the
+remaining 8 bytes retain their order. For `effect` and
+`NativeAction.DropPlayer.Plugin.Applied`, the key is
+`0befef6f-1115-39c5-4d7a-cc1e297417f1`. Event type names use
+`Unsupported` for `SkippedUnsupported` receipts, whose payload retains the full
+outcome. Repository deduplication lasts only as long as the event is retained.
 
 Moderation records are created and linked atomically through the correlated
 rule-action endpoint, not the retired strongest-action writer. Observation is

@@ -1,17 +1,20 @@
 using System.Net;
 using System.Text.Json;
 
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 using Moq;
 
 using MX.Api.Abstractions;
+using MX.Api.Client;
 using MX.GeoLocation.Api.Client.V1;
 using MX.Observability.ApplicationInsights.Auditing;
 using MX.Observability.ApplicationInsights.Auditing.Models;
 
 using XtremeIdiots.Portal.Repository.Abstractions.Constants.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Interfaces.V1;
+using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.GameServers;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.RulesEngine;
 using XtremeIdiots.Portal.Repository.Api.Client.V1;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Rules;
@@ -88,6 +91,8 @@ public sealed class RulesTriggerServiceTests
 
         fixture.Api.Verify(item => item.UpdateActionOutcome(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<string>(),
             It.IsAny<UpdateRuleActionOutcomeDto>(), It.IsAny<CancellationToken>()), Times.Never);
+        fixture.EventApi.Verify(item => item.CreateGameServerEvent(It.IsAny<CreateGameServerEventDto>(),
+            It.IsAny<CancellationToken>()), Times.Never);
         fixture.Audit.VerifyNoOtherCalls();
     }
 
@@ -205,6 +210,142 @@ public sealed class RulesTriggerServiceTests
     }
 
     [Theory]
+    [InlineData("player.kick", false)]
+    [InlineData("moderation.ban", true)]
+    public async Task KickReceiptsWriteIdempotentNativeEventWithoutClaimingBanEnforcement(string actionType, bool hasRecord)
+    {
+        var fixture = new Fixture();
+        var action = fixture.Execution.Actions[0];
+        fixture.Execution = fixture.Execution with
+        {
+            Actions = [action with { ActionTypeId = actionType, AdminActionId = hasRecord ? action.AdminActionId : null }]
+        };
+        var receipt = fixture.Result(RuleActionExecutionOutcome.Dispatched);
+
+        await fixture.Service.OutcomeAsync(receipt, default);
+        await fixture.Service.OutcomeAsync(receipt, default);
+
+        Assert.Equal(2, fixture.Events.Count);
+        var first = fixture.Events[0];
+        Assert.Equal("NativeAction.DropPlayer.Plugin.Applied", first.EventType);
+        Assert.Equal(Guid.Parse("0befef6f-1115-39c5-4d7a-cc1e297417f1"), first.IdempotencyKey);
+        Assert.Equal(first.IdempotencyKey, fixture.Events[1].IdempotencyKey);
+        Assert.Equal(first.EventData, fixture.Events[1].EventData);
+        using var data = JsonDocument.Parse(first.EventData);
+        Assert.Equal("Plugin", data.RootElement.GetProperty("source").GetString());
+        Assert.Equal("Applied", data.RootElement.GetProperty("outcome").GetString());
+        Assert.Equal(actionType, data.RootElement.GetProperty("actionType").GetString());
+        Assert.Equal(hasRecord ? RuleActionExecutionOutcome.OutcomeUnknown : RuleActionExecutionOutcome.Applied,
+            Assert.Single(fixture.Execution.Actions).Outcome);
+    }
+
+    [Theory]
+    [InlineData(RuleNativeEffectType.PublicMessage, "message.public")]
+    [InlineData(RuleNativeEffectType.PrivateMessage, "message.private")]
+    public async Task MessageReceiptRecordsDispatchWithoutClaimingDelivery(RuleNativeEffectType effect, string actionType)
+    {
+        var fixture = new Fixture();
+        var action = fixture.Execution.Actions[0];
+        fixture.Execution = fixture.Execution with
+        {
+            Actions = [action with
+            {
+                ActionTypeId = actionType,
+                AdminActionId = null,
+                Command = action.Command with { Effect = new() { Type = effect, Message = "Hello" } }
+            }]
+        };
+        var receipt = fixture.Result(RuleActionExecutionOutcome.Dispatched);
+
+        await fixture.Service.OutcomeAsync(receipt, default);
+        await fixture.Service.OutcomeAsync(receipt, default);
+
+        Assert.Equal($"NativeAction.{effect}.Plugin.Dispatched", fixture.Events[0].EventType);
+        Assert.Equal(fixture.Events[0].IdempotencyKey, fixture.Events[1].IdempotencyKey);
+        Assert.Equal(RuleActionExecutionOutcome.Dispatched, Assert.Single(fixture.Execution.Actions).Outcome);
+        using var data = JsonDocument.Parse(fixture.Events[0].EventData);
+        Assert.Equal("Dispatched", data.RootElement.GetProperty("outcome").GetString());
+        Assert.Equal("Hello", data.RootElement.GetProperty("message").GetString());
+    }
+
+    [Fact]
+    public async Task EventWriteFailureDoesNotRetryOrUndoNativeAction()
+    {
+        var fixture = new Fixture();
+        fixture.EventApi.Setup(item => item.CreateGameServerEvent(It.IsAny<CreateGameServerEventDto>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new HttpRequestException("Event store unavailable"));
+        var receipt = fixture.Result(RuleActionExecutionOutcome.Dispatched);
+
+        await fixture.Service.OutcomeAsync(receipt, default);
+
+        Assert.Equal(RuleActionExecutionOutcome.OutcomeUnknown, Assert.Single(fixture.Execution.Actions).Outcome);
+        Assert.Equal(RuleActionExecutionOutcome.Applied, Assert.Single(fixture.Execution.Actions).NativeEvidence!.Outcome);
+        fixture.Api.Verify(item => item.UpdateActionOutcome(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<string>(),
+            It.IsAny<UpdateRuleActionOutcomeDto>(), It.IsAny<CancellationToken>()), Times.Once);
+        Assert.Contains(fixture.Logger.Entries, item => item.Level == LogLevel.Warning &&
+            item.Message.Contains("Failed to record native plugin receipt") && item.Exception is HttpRequestException);
+    }
+
+    [Fact]
+    public async Task ConflictingEventIsReportedWithoutRetryingNativeAction()
+    {
+        var fixture = new Fixture();
+        fixture.EventApi.Setup(item => item.CreateGameServerEvent(It.IsAny<CreateGameServerEventDto>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new ApiHttpRequestException("Conflict", HttpStatusCode.Conflict, null));
+        var receipt = fixture.Result(RuleActionExecutionOutcome.Dispatched);
+
+        await fixture.Service.OutcomeAsync(receipt, default);
+
+        Assert.Equal(RuleActionExecutionOutcome.Applied, Assert.Single(fixture.Execution.Actions).NativeEvidence!.Outcome);
+        fixture.EventApi.Verify(item => item.CreateGameServerEvent(It.IsAny<CreateGameServerEventDto>(),
+            It.IsAny<CancellationToken>()), Times.Once);
+        Assert.Contains(fixture.Logger.Entries, item => item.Level == LogLevel.Error &&
+            item.Message.Contains("conflicts with existing event") && item.Exception is ApiHttpRequestException);
+    }
+
+    [Fact]
+    public async Task FailedPluginReceiptIsRecordedWithoutClaimingSuccessfulEffect()
+    {
+        var fixture = new Fixture();
+        var receipt = fixture.Result(RuleActionExecutionOutcome.Failed);
+
+        await fixture.Service.OutcomeAsync(receipt, default);
+
+        var entry = Assert.Single(fixture.Events);
+        Assert.Equal("NativeAction.DropPlayer.Plugin.Failed", entry.EventType);
+        using var data = JsonDocument.Parse(entry.EventData);
+        Assert.Equal("Failed", data.RootElement.GetProperty("outcome").GetString());
+        Assert.Equal(RuleActionExecutionOutcome.Failed, Assert.Single(fixture.Execution.Actions).Outcome);
+    }
+
+    [Theory]
+    [InlineData(RuleActionExecutionOutcome.SkippedUnsupported, "Unsupported")]
+    [InlineData(RuleActionExecutionOutcome.OutcomeUnknown, "OutcomeUnknown")]
+    public async Task LongestMessageOutcomeNamesFitServerEventContract(
+        RuleActionExecutionOutcome outcome, string suffix)
+    {
+        var fixture = new Fixture();
+        var action = fixture.Execution.Actions[0];
+        fixture.Execution = fixture.Execution with
+        {
+            Actions = [action with
+            {
+                ActionTypeId = "message.private",
+                AdminActionId = null,
+                Command = action.Command with { Effect = new() { Type = RuleNativeEffectType.PrivateMessage } }
+            }]
+        };
+
+        await fixture.Service.OutcomeAsync(fixture.Result(outcome), default);
+
+        var entry = Assert.Single(fixture.Events);
+        Assert.Equal($"NativeAction.PrivateMessage.Plugin.{suffix}", entry.EventType);
+        Assert.True(entry.EventType.Length <= 50);
+        using var data = JsonDocument.Parse(entry.EventData);
+        Assert.Equal(outcome.ToString(), data.RootElement.GetProperty("outcome").GetString());
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task LatePluginKickDispatchReceiptImprovesEvidenceWithoutResuming(bool compositeBan)
@@ -243,6 +384,9 @@ public sealed class RulesTriggerServiceTests
         Assert.Equal(RuleFeatureExecutionState.Stopped, fixture.Execution.State);
         Assert.Equal(2, fixture.Execution.RuleIndex);
         Assert.Equal(5, fixture.Execution.ActionIndex);
+        Assert.Equal(2, fixture.Events.Count);
+        Assert.Equal(fixture.Events[0].IdempotencyKey, fixture.Events[1].IdempotencyKey);
+        Assert.Equal(fixture.Events[0].EventData, fixture.Events[1].EventData);
         if (compositeBan)
         {
             Assert.Equal(RuleActionExecutionOutcome.Applied, updated.NativeEvidence!.Outcome);
@@ -646,10 +790,22 @@ public sealed class RulesTriggerServiceTests
 
     private static ApiResult<T> Ok<T>(T value) => new(HttpStatusCode.OK, new ApiResponse<T>(value));
 
+    private sealed class TestLogger : ILogger<RulesTriggerService>
+    {
+        public List<(LogLevel Level, string Message, Exception? Exception)> Entries { get; } = [];
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => NullLogger.Instance.BeginScope(state);
+        public bool IsEnabled(LogLevel logLevel) => true;
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter) => Entries.Add((logLevel, formatter(state, exception), exception));
+    }
+
     private sealed class Fixture
     {
         public Mock<IRuleExecutionsApi> Api { get; } = new();
         public Mock<IAuditLogger> Audit { get; } = new();
+        public TestLogger Logger { get; } = new();
+        public Mock<IGameServersEventsApi> EventApi { get; } = new();
+        public List<CreateGameServerEventDto> Events { get; } = [];
         public RulesTriggerService Service { get; }
         public RuleFeatureExecutionDto Execution { get; set; }
 
@@ -727,6 +883,12 @@ public sealed class RulesTriggerServiceTests
             var versioned = new Mock<IVersionedRuleExecutionsApi>();
             versioned.Setup(item => item.V1).Returns(Api.Object);
             repository.Setup(item => item.RuleExecutions).Returns(versioned.Object);
+            var eventVersions = new Mock<IVersionedGameServersEventsApi>();
+            eventVersions.Setup(item => item.V1).Returns(EventApi.Object);
+            repository.Setup(item => item.GameServersEvents).Returns(eventVersions.Object);
+            EventApi.Setup(item => item.CreateGameServerEvent(It.IsAny<CreateGameServerEventDto>(), It.IsAny<CancellationToken>()))
+                .Callback<CreateGameServerEventDto, CancellationToken>((item, _) => Events.Add(item))
+                .ReturnsAsync(new ApiResult(HttpStatusCode.Created));
             Api.Setup(item => item.GetExecution(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
                 .Returns(() => Task.FromResult(Ok(Execution)));
             Api.Setup(item => item.CreateFactSnapshot(It.IsAny<Guid>(), It.IsAny<RuleFactSnapshotRequestDto>(), It.IsAny<CancellationToken>()))
@@ -765,7 +927,7 @@ public sealed class RulesTriggerServiceTests
             Audit.Setup(item => item.LogAudit(It.IsAny<AuditEvent>())).Callback(() => Assert.True(persisted));
             Service = new(repository.Object, Mock.Of<IGeoLocationApiClient>(),
                 new RegisteredFeatureHost(features, NullLogger<RegisteredFeatureHost>.Instance),
-                NullLogger<RulesTriggerService>.Instance, Audit.Object);
+                Logger, Audit.Object);
         }
 
         public RulePollRequest PollRequest() => new()

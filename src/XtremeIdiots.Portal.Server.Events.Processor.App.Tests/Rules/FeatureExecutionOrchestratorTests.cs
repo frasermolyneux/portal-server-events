@@ -74,6 +74,22 @@ public sealed class FeatureExecutionOrchestratorTests
         Assert.Equal(2, storage.Execution!.Actions.Select(action => action.LogicalEffectId).Distinct().Count());
     }
 
+    [Theory]
+    [InlineData("player.kick")]
+    [InlineData("moderation.kick-with-record")]
+    public async Task AgentDropCommandRetainsConfiguredReasonForAudit(string actionType)
+    {
+        var storage = new Storage();
+        var rule = Rule("kick", 0);
+        rule.Actions[0].TypeId = actionType;
+        var original = Invocation();
+        var invocation = original with { Trigger = original.Trigger with { Runtime = new() { Id = "server-agent" } } };
+
+        await Create(storage, new Executor()).ProcessAsync(invocation, Snapshot(rule), default);
+
+        Assert.Equal("Rule matched.", Assert.Single(storage.Execution!.Actions).Command.Effect.Reason);
+    }
+
     [Fact]
     public async Task LateIpSupplementsActivationHistoryWithoutReplacingFrozenGuidHistory()
     {

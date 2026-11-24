@@ -37,7 +37,7 @@
     <PackageReference Include="XtremeIdiots.Portal.RulesEngine.V1" Version="4.2.144" />
     <PackageReference Include="XtremeIdiots.Portal.Integrations.Servers.Abstractions.V1" Version="4.1.88" />
     <PackageReference Include="XtremeIdiots.Portal.Integrations.Servers.Api.Client.V1" Version="4.1.88" />
-    <PackageReference Include="XtremeIdiots.Portal.Repository.Api.Client.V1" Version="4.2.144" />
+    <PackageReference Include="XtremeIdiots.Portal.Repository.Api.Client.V1" Version="4.2.146" />
   </ItemGroup>
 
   <ItemGroup>

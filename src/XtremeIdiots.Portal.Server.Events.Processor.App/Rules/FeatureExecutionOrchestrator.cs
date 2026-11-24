@@ -317,7 +317,7 @@ internal sealed class RepositoryRuleActionStore(
                     _ => RuleNativeEffectType.Unknown
                 },
                 Message = message,
-                Reason = currentTrigger.Runtime?.Id == "server-agent" && action.TypeId != "player.kick" ? null : reason
+                Reason = reason
             }
         };
     }

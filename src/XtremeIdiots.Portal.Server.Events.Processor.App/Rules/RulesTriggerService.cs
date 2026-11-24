@@ -1,13 +1,18 @@
+using System.Net;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 
 using Microsoft.Extensions.Logging;
 
+using MX.Api.Client;
 using MX.GeoLocation.Abstractions.Models.V1_1;
 using MX.GeoLocation.Api.Client.V1;
 using MX.Observability.ApplicationInsights.Auditing;
 using MX.Observability.ApplicationInsights.Auditing.Models;
 
 using XtremeIdiots.Portal.Repository.Abstractions.Constants.V1;
+using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.GameServers;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.RulesEngine;
 using XtremeIdiots.Portal.Repository.Api.Client.V1;
 using XtremeIdiots.Portal.Server.Events.Abstractions.V1.Events;
@@ -167,6 +172,7 @@ internal sealed class RulesTriggerService(
             action.Outcome == RuleActionExecutionOutcome.Dispatched &&
             action.ResultJson is not null && StoredAggregate(action) == result)
         {
+            await RecordNativeReceiptAsync(action, result, ct).ConfigureAwait(false);
             return PendingResponse(execution);
         }
 
@@ -178,6 +184,7 @@ internal sealed class RulesTriggerService(
             {
                 throw new ArgumentException("The claimed action already has a different terminal outcome.", nameof(result));
             }
+            await RecordNativeReceiptAsync(action, result, ct).ConfigureAwait(false);
             return PendingResponse(execution);
         }
         else
@@ -215,11 +222,77 @@ internal sealed class RulesTriggerService(
             }
         }
 
+        await RecordNativeReceiptAsync(action, result, ct).ConfigureAwait(false);
         if (lateConfirmation)
         {
             return PendingResponse(execution);
         }
         return await ResumeAsync(execution, ct).ConfigureAwait(false);
+    }
+
+    private async Task RecordNativeReceiptAsync(
+        RuleActionExecutionDto action, RuleActionResult result, CancellationToken ct)
+    {
+        var effect = action.Command.Effect.Type switch
+        {
+            RuleNativeEffectType.DropPlayer => "DropPlayer",
+            RuleNativeEffectType.PublicMessage => "PublicMessage",
+            RuleNativeEffectType.PrivateMessage => "PrivateMessage",
+            _ => throw new InvalidOperationException("The validated native effect is not supported.")
+        };
+        var outcome = result.Outcome switch
+        {
+            RuleActionExecutionOutcome.Applied => "Applied",
+            RuleActionExecutionOutcome.Dispatched => "Dispatched",
+            RuleActionExecutionOutcome.Failed => "Failed",
+            RuleActionExecutionOutcome.Stale => "Stale",
+            RuleActionExecutionOutcome.SkippedUnsupported => "SkippedUnsupported",
+            RuleActionExecutionOutcome.OutcomeUnknown => "OutcomeUnknown",
+            _ => throw new InvalidOperationException("The validated native outcome is not supported.")
+        };
+        var eventOutcome = result.Outcome == RuleActionExecutionOutcome.SkippedUnsupported ? "Unsupported" : outcome;
+        var eventType = $"NativeAction.{effect}.Plugin.{eventOutcome}";
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes($"RulesNativeAction|{result.LogicalEffectId}|{eventType}"));
+        var eventData = JsonSerializer.Serialize(new
+        {
+            result.ExecutionId,
+            result.LogicalEffectId,
+            result.ActionId,
+            ActionType = action.ActionTypeId,
+            Effect = effect,
+            Source = "Plugin",
+            Outcome = outcome,
+            result.OccurredAtUtc,
+            result.Detail,
+            action.AdminActionId,
+            action.Command.PlayerGuid,
+            action.Command.SlotId,
+            action.Command.Effect.Reason,
+            action.Command.Effect.Message
+        }, JsonOptions.Default);
+
+        try
+        {
+            var response = await repository.GameServersEvents.V1.CreateGameServerEvent(
+                new CreateGameServerEventDto(result.GameServerId, eventType, eventData)
+                {
+                    IdempotencyKey = new Guid(hash.AsSpan(0, 16))
+                }, ct).ConfigureAwait(false);
+            if (!response.IsSuccess)
+            {
+                logger.LogWarning("Failed to record native plugin receipt for effect {LogicalEffectId}: {StatusCode}",
+                    result.LogicalEffectId, response.StatusCode);
+            }
+        }
+        catch (ApiHttpRequestException ex) when (ex.StatusCode == HttpStatusCode.Conflict)
+        {
+            logger.LogError(ex, "Native plugin receipt event conflicts with existing event for effect {LogicalEffectId}",
+                result.LogicalEffectId);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Failed to record native plugin receipt for effect {LogicalEffectId}", result.LogicalEffectId);
+        }
     }
 
     private static RuleActionResult StoredAggregate(RuleActionExecutionDto action) =>
