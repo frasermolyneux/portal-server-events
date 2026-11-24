@@ -1,4 +1,10 @@
+using System.Text.Json;
+
+using XtremeIdiots.Portal.Repository.Abstractions.Constants.V1;
+using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.RulesEngine;
+using XtremeIdiots.Portal.RulesEngine.V1;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Rules;
+using XtremeIdiots.Portal.Settings.Contracts.V1.Contracts.RulesEngine;
 
 namespace XtremeIdiots.Portal.Server.Events.Processor.App.Tests.Rules;
 
@@ -66,5 +72,34 @@ public sealed class PlayerRuleConditionsTests
         Assert.Null(PlayerRuleConditions.ProfileAge(null, "LessThan", "01:00:00", Now));
         Assert.Null(PlayerRuleConditions.ProfileAge(Now.AddSeconds(1), "LessThan", "01:00:00", Now));
         Assert.Null(PlayerRuleConditions.ProfileAge(Now.AddHours(-1), "Equal", "01:00:00", Now));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void ProfileSourceAvailabilityControlsWhetherItsTimestampCanBeUsed(bool available)
+    {
+        var condition = new RuleConditionNode
+        {
+            ConditionId = "player.profile-age",
+            Parameters = new Dictionary<string, JsonElement>
+            {
+                ["operator"] = JsonSerializer.SerializeToElement("LessThan"),
+                ["duration"] = JsonSerializer.SerializeToElement("2.00:00:00")
+            }
+        };
+        var resolver = new SharedRuleConditionResolver(new RuleFactSnapshotDto
+        {
+            ProfileFirstSeenAtUtc = Now.AddDays(-1),
+            ProfileHistoryAvailable = available
+        }, null, null, new HashSet<string> { condition.ConditionId });
+        var capabilities = RulesEngineCatalogueV1.Current.Conditions.Single(
+            item => item.ConditionId == condition.ConditionId).RuntimeCapabilities.ToHashSet(StringComparer.Ordinal);
+        var context = new RuleEvaluationContext(Guid.NewGuid(), (int)GameType.CallOfDuty4x, Guid.NewGuid(),
+            "vpn-protection", null, Now, capabilities);
+
+        var result = resolver.Resolve(condition, context);
+
+        Assert.Equal(available ? RuleTruthValue.True : RuleTruthValue.Unknown, result.Value);
     }
 }

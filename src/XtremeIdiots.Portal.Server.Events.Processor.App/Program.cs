@@ -129,22 +129,7 @@ var host = new HostBuilder()
         services.AddSingleton<WelcomeMessageTemplateRenderer>();
         services.AddTransient<IWelcomeMessageOrchestrator, WelcomeMessageOrchestrator>();
 
-        services.AddTransient<ConfiguredFeatureRulesProvider>();
-        services.AddTransient<VpnFeatureRulesProvider>();
-        services.AddTransient<SiegeFeatureRulesProvider>();
-        services.AddTransient<FeatureExecutionOrchestrator>();
-        services.AddTransient<IUniversalRuleActionExecutor, UniversalRuleActionExecutor>();
-        services.AddTransient<IRegisteredRuleFeature>(provider => new RegisteredRuleFeature(
-            provider.GetRequiredService<VpnFeatureRulesProvider>(), provider.GetRequiredService<FeatureExecutionOrchestrator>()));
-        services.AddTransient<IRegisteredRuleFeature>(provider => new RegisteredRuleFeature(
-            provider.GetRequiredService<SiegeFeatureRulesProvider>(), provider.GetRequiredService<FeatureExecutionOrchestrator>()));
-        services.AddTransient<RegisteredFeatureHost>();
-        services.AddTransient<RulesTriggerService>();
-        services.AddTransient<IRulesTriggerService>(provider => provider.GetRequiredService<RulesTriggerService>());
-        services.AddTransient<IRulesPluginTransport>(provider => provider.GetRequiredService<RulesTriggerService>());
-        services.AddTransient<IRulesExecutionResumer>(provider => provider.GetRequiredService<RulesTriggerService>());
-        services.AddSingleton<IRuleActionContinuationPublisher, RuleActionContinuationPublisher>();
-        services.AddSingleton<IRuleExecutionContinuationPublisher, RuleExecutionContinuationPublisher>();
+        services.AddUniversalRules();
         services.AddTransient<IVpnDetectedTagService, VpnDetectedTagService>();
 
         // Protected name enforcement

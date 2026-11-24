@@ -16,7 +16,7 @@ internal sealed record RuleActionContinuation(
     Guid GameServerId,
     GameType GameType,
     Guid PlayerId,
-    string Username,
+    string? Username,
     AdminActionType ActionType,
     DateTime Created,
     string Text,

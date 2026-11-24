@@ -104,6 +104,35 @@ public sealed class FeatureExecutionOrchestratorTests
     }
 
     [Fact]
+    public async Task SessionExtensionUpdatesUnclaimedDecisionWindowWithoutChangingFrozenRules()
+    {
+        var storage = new Storage();
+        var executor = new Executor();
+        var engine = Create(storage, executor);
+        var invocation = Invocation();
+        var snapshot = Snapshot(Rule("needs-ip", 0, "player.first-seen-ip")) with
+        {
+            FeatureId = RulesEngineCatalogueV1.SiegeModeFeature,
+            SiegeSessionId = Guid.NewGuid(),
+            ExpiresAtUtc = DateTimeOffset.UtcNow.AddHours(1)
+        };
+        await engine.ProcessAsync(invocation, snapshot, default);
+        var progress = JsonSerializer.Deserialize<RuleExecutionProgress>(
+            storage.Execution!.DecisionSnapshotJson!, RulesSerialization.Options)!;
+        progress.ExpiresAtUtc = DateTimeOffset.UtcNow.AddSeconds(-1);
+        storage.Execution = storage.Execution with
+        {
+            DecisionSnapshotJson = JsonSerializer.Serialize(progress, RulesSerialization.Options)
+        };
+
+        await engine.ProcessAsync(invocation with { Facts = invocation.Facts with { IpHistoryAvailable = true } },
+            snapshot with { ExpiresAtUtc = DateTimeOffset.UtcNow.AddHours(2) }, default);
+
+        Assert.Equal(["needs-ip"], executor.Effects);
+        Assert.Equal(snapshot.RulesJson, storage.Execution.FrozenRulesJson);
+    }
+
+    [Fact]
     public async Task LatestObservationRemainsFrozenWhenAnOlderTriggerRetries()
     {
         var storage = new Storage();
@@ -146,6 +175,78 @@ public sealed class FeatureExecutionOrchestratorTests
     }
 
     [Fact]
+    public async Task ObservationRecordIdentityIsIncludedInCorrelatedAggregateCompletion()
+    {
+        var storage = new Storage();
+        var executor = new Executor { AdminActionId = Guid.NewGuid() };
+
+        await Create(storage, executor).ProcessAsync(Invocation(), Snapshot(Rule("observation", 0)), default);
+
+        var action = Assert.Single(storage.Execution!.Actions);
+        Assert.Equal(executor.AdminActionId, action.AdminActionId);
+        Assert.Equal(RuleActionExecutionOutcome.Applied, action.Outcome);
+    }
+
+    [Fact]
+    public async Task LateIpContextIsRetainedWhileOriginalNativeClaimRemainsPending()
+    {
+        var storage = new Storage();
+        var executor = new Executor { ReturnNativeCommand = true };
+        var engine = Create(storage, executor);
+        var seed = Invocation();
+        var original = new RuleInvocation(seed.Trigger with
+        {
+            ObservationId = Guid.NewGuid(),
+            TriggerOccurrenceId = Guid.NewGuid(),
+            ConnectionGeneration = 1,
+            Runtime = new()
+            {
+                Id = "cod4x-plugin",
+                Version = "1.0",
+                IdentityModel = RuleRuntimeIdentityModel.PluginRuntimeGeneration,
+                InstanceId = Guid.NewGuid(),
+                StartedAtUtc = DateTimeOffset.UtcNow.AddHours(-1),
+                Capabilities = [RulesEngineCatalogueV1.Cod4xPublicChatCapability]
+            }
+        }, seed.Facts, null);
+        var rule = Rule("native", 0);
+        rule.Actions[0] = new()
+        {
+            Id = "action",
+            TypeId = "message.public",
+            Parameters = new() { ["message"] = JsonSerializer.SerializeToElement("Hello") }
+        };
+        var snapshot = Snapshot(rule);
+        await engine.ProcessAsync(original, snapshot, default);
+        var claimed = Assert.Single(storage.Execution!.Actions).Command;
+        var ruleIndex = storage.Execution.RuleIndex;
+        var actionIndex = storage.Execution.ActionIndex;
+        var enrichedTrigger = original.Trigger with
+        {
+            TriggerId = "player.ip-resolved",
+            ObservationId = Guid.NewGuid(),
+            TriggerOccurrenceId = Guid.NewGuid(),
+            OccurredAtUtc = original.Trigger.OccurredAtUtc.AddMilliseconds(10),
+            PlayerIpAddress = "203.0.113.1"
+        };
+        var enriched = new RuleInvocation(enrichedTrigger, original.Facts, null);
+
+        await engine.ProcessAsync(enriched, snapshot, default);
+        await engine.ProcessAsync(original, snapshot, default);
+
+        var progress = JsonSerializer.Deserialize<RuleExecutionProgress>(
+            storage.Execution.DecisionSnapshotJson!, RulesSerialization.Options)!;
+        Assert.Equal(enrichedTrigger.TriggerOccurrenceId, progress.ContextTrigger!.TriggerOccurrenceId);
+        Assert.Equal(enrichedTrigger.PlayerIpAddress, progress.ContextTrigger.PlayerIpAddress);
+        Assert.Equal(claimed, Assert.Single(storage.Execution.Actions).Command);
+        Assert.Equal(ruleIndex, storage.Execution.RuleIndex);
+        Assert.Equal(actionIndex, storage.Execution.ActionIndex);
+        Assert.Equal(RuleFeatureExecutionState.AwaitingActionOutcome, storage.Execution.State);
+        Assert.Single(executor.Effects);
+        Assert.Empty(enriched.Commands);
+    }
+
+    [Fact]
     public async Task NativeCommandIsReturnedOnceOnlyAfterDurableDispatch()
     {
         var storage = new Storage();
@@ -172,7 +273,8 @@ public sealed class FeatureExecutionOrchestratorTests
         var executor = new Executor { Deferred = true };
         var continuation = new Continuations();
         var engine = Create(storage, executor, continuation);
-        var invocation = Invocation();
+        var original = Invocation();
+        var invocation = original with { Trigger = original.Trigger with { Runtime = new() { Id = "server-agent" } } };
         var rules = Snapshot(Rule("waiting", 0));
 
         await engine.ProcessAsync(invocation, rules, default);
@@ -186,6 +288,22 @@ public sealed class FeatureExecutionOrchestratorTests
 
         Assert.Equal(["waiting"], executor.Effects);
         Assert.Equal(RuleFeatureExecutionState.Stopped, storage.Execution.State);
+    }
+
+    [Fact]
+    public async Task PluginContextDeferralRemainsOnPollTransportWithoutAgentQueueResume()
+    {
+        var storage = new Storage();
+        var executor = new Executor { Deferred = true };
+        var continuations = new Continuations();
+        var original = Invocation();
+        var invocation = original with { Trigger = original.Trigger with { Runtime = new() { Id = "cod4x-plugin" } } };
+
+        await Create(storage, executor, continuations).ProcessAsync(invocation, Snapshot(Rule("waiting", 0)), default);
+
+        Assert.Empty(storage.Execution!.Actions);
+        Assert.Empty(continuations.Scheduled);
+        Assert.Equal(storage.Execution.ExecutionId, Assert.Single(invocation.PendingExecutionIds));
     }
 
     [Fact]
@@ -285,10 +403,12 @@ public sealed class FeatureExecutionOrchestratorTests
         public List<string> Effects { get; } = [];
         public string? Unsupported { get; init; }
         public bool ReturnNativeCommand { get; init; }
+        public Guid? AdminActionId { get; init; }
         public bool Deferred { get; set; }
         public Task<string?> UnsupportedReasonAsync(RuleActionDefinition action, RuleInvocation invocation, CancellationToken ct) =>
             Task.FromResult(Unsupported);
-        public Task<ActionAvailability> AvailabilityAsync(RuleActionCommand command, DateTimeOffset waitUntilUtc, CancellationToken ct) =>
+        public Task<ActionAvailability> AvailabilityAsync(
+            RuleActionDefinition action, RuleActionCommand command, RuleInvocation invocation, DateTimeOffset waitUntilUtc, CancellationToken ct) =>
             Task.FromResult(new ActionAvailability(Deferred));
         public Task<ActionExecutionResult> ExecuteAsync(
             RuleActionDefinition action, RuleActionCommand command, RuleInvocation invocation, CancellationToken ct)
@@ -296,14 +416,14 @@ public sealed class FeatureExecutionOrchestratorTests
             Effects.Add(command.Correlation.RuleId);
             return Task.FromResult(ReturnNativeCommand
                 ? new ActionExecutionResult(ActionExecutionOutcome.Dispatched, NativeCommand: command)
-                : new ActionExecutionResult(ActionExecutionOutcome.Applied));
+                : new ActionExecutionResult(ActionExecutionOutcome.Applied, AdminActionId: AdminActionId));
         }
     }
 
     private sealed class Storage
     {
         public Mock<IRepositoryApiClient> Repository { get; } = new();
-        public RuleFeatureExecutionDto? Execution { get; private set; }
+        public RuleFeatureExecutionDto? Execution { get; set; }
         public bool FailOutcomes { get; set; }
 
         public Storage()
@@ -334,6 +454,12 @@ public sealed class FeatureExecutionOrchestratorTests
                 .Returns((Guid _, Guid _, UpdateRuleFeatureExecutionProgressDto request, CancellationToken _) =>
                 {
                     Assert.Equal(Execution!.Version, request.ExpectedVersion);
+                    if (Execution.Actions.Any(action => action.Outcome is RuleActionExecutionOutcome.Claimed or RuleActionExecutionOutcome.Dispatched))
+                    {
+                        Assert.Equal(Execution.RuleIndex, request.RuleIndex);
+                        Assert.Equal(Execution.ActionIndex, request.ActionIndex);
+                        Assert.Equal(Execution.State, request.State);
+                    }
                     Execution = Execution with
                     {
                         Version = Execution.Version + 1,
@@ -349,6 +475,11 @@ public sealed class FeatureExecutionOrchestratorTests
                 .Returns((Guid _, Guid _, ClaimRuleActionDto request, CancellationToken _) =>
                 {
                     Assert.Equal(Execution!.Version, request.ExpectedVersion);
+                    using var frozen = JsonDocument.Parse(Execution.FrozenRulesJson);
+                    var frozenRule = frozen.RootElement.GetProperty("rules")[request.RuleIndex];
+                    Assert.Equal(request.Command.Correlation.RuleId, frozenRule.GetProperty("id").GetString());
+                    var frozenAction = frozenRule.GetProperty("actions")[request.ActionIndex];
+                    Assert.Equal(request.Command.ActionId, frozenAction.GetProperty("id").GetString());
                     var action = new RuleActionExecutionDto
                     {
                         ExecutionId = Execution.ExecutionId,
@@ -357,6 +488,8 @@ public sealed class FeatureExecutionOrchestratorTests
                         Correlation = request.Command.Correlation,
                         Command = request.Command,
                         Mode = request.Command.Mode,
+                        ActionTypeId = frozenAction.GetProperty("typeId").GetString()!,
+                        ParametersJson = frozenAction.GetProperty("parameters").GetRawText(),
                         Outcome = RuleActionExecutionOutcome.Claimed,
                         ClaimedAtUtc = DateTimeOffset.UtcNow
                     };
@@ -380,6 +513,7 @@ public sealed class FeatureExecutionOrchestratorTests
                     Assert.Equal(Execution!.Version, request.ExpectedVersion);
                     var action = Execution.Actions.Single(item => item.LogicalEffectId == request.Result.LogicalEffectId) with
                     {
+                        AdminActionId = request.AdminActionId,
                         Outcome = request.Result.Outcome,
                         Detail = request.Result.Detail
                     };

@@ -1,3 +1,6 @@
+using System.Text;
+using System.Text.Json;
+
 using Microsoft.Extensions.Logging;
 
 using XtremeIdiots.Portal.Integrations.Servers.Api.Client.V1;
@@ -44,6 +47,13 @@ internal sealed class UniversalRuleActionExecutor(
         }
         if (runtime.Id == "cod4x-plugin" && runtime.IdentityModel == RuleRuntimeIdentityModel.PluginRuntimeGeneration)
         {
+            var textParameter = action.TypeId is "message.public" or "message.private" ? "message" : "reason";
+            if (action.Parameters.TryGetValue(textParameter, out var value) && value.ValueKind == JsonValueKind.String &&
+                value.GetString() is { } text &&
+                (Encoding.UTF8.GetByteCount(text) > 256 || text.Any(character => character < 32 || character == 127)))
+            {
+                return Task.FromResult<string?>($"The native plugin cannot deliver this {textParameter}: its limit is 256 UTF-8 bytes with no control characters.");
+            }
             var capability = action.TypeId switch
             {
                 "message.public" => RulesEngineCatalogueV1.Cod4xPublicChatCapability,
@@ -69,7 +79,57 @@ internal sealed class UniversalRuleActionExecutor(
         return Task.FromResult<string?>("Producer identity does not select an implemented executor.");
     }
 
-    public async Task<ActionAvailability> AvailabilityAsync(RuleActionCommand command, DateTimeOffset waitUntilUtc, CancellationToken ct)
+    public async Task<ActionAvailability> AvailabilityAsync(
+        RuleActionDefinition action, RuleActionCommand command, RuleInvocation invocation, DateTimeOffset waitUntilUtc, CancellationToken ct)
+    {
+        if (command.Mode == RuleExecutionMode.Enforce &&
+            RulesEngineCatalogueV1.Current.Actions.Single(item => item.ActionTypeId == action.TypeId).ProducesModerationRecord)
+        {
+            ct.ThrowIfCancellationRequested();
+            var player = await repository.Players.V1.HeadPlayerByGameType(
+                invocation.Trigger.GameType, command.PlayerGuid).WaitAsync(ct).ConfigureAwait(false);
+            if (player.IsNotFound)
+            {
+                return clock.GetUtcNow() < waitUntilUtc
+                    ? new(Deferred: true)
+                    : new(Unavailable: new(ActionExecutionOutcome.Stale, "The player profile did not become available before the context deadline."));
+            }
+            if (!player.IsSuccess)
+            {
+                throw new InvalidOperationException($"Unable to verify moderation player readiness: {player.StatusCode}.");
+            }
+        }
+        var availability = await NativeAvailabilityAsync(command, waitUntilUtc, ct).ConfigureAwait(false);
+        if (availability.Deferred || availability.Unavailable is not null ||
+            command.Effect.Type == RuleNativeEffectType.Unknown ||
+            command.Runtime.IdentityModel == RuleRuntimeIdentityModel.PluginRuntimeGeneration)
+        {
+            return availability;
+        }
+
+        var probe = command with { Mode = RuleExecutionMode.DryRun };
+        var response = await servers.RulesNativeAction.V1.Execute(command.GameServerId, probe, ct).ConfigureAwait(false);
+        var result = FeatureExecutionOrchestrator.Require(response, "verify native RCON eligibility without dispatch");
+        if (!Matches(probe, result))
+        {
+            throw new InvalidOperationException("Native eligibility returned mismatched command correlation.");
+        }
+        if (command.ExpiresAtUtc <= clock.GetUtcNow())
+        {
+            return new(Unavailable: new(ActionExecutionOutcome.Stale, "The native eligibility decision expired before claim."));
+        }
+        return result.Outcome switch
+        {
+            RuleActionExecutionOutcome.WouldExecute => new(),
+            RuleActionExecutionOutcome.Stale => new(Unavailable: new(ActionExecutionOutcome.Stale, result.Detail)),
+            RuleActionExecutionOutcome.SkippedUnsupported => new(Unavailable: new(ActionExecutionOutcome.SkippedUnsupported, result.Detail)),
+            RuleActionExecutionOutcome.Failed => new(Unavailable: new(ActionExecutionOutcome.Failed, result.Detail)),
+            _ => throw new InvalidOperationException($"Native eligibility returned unexpected outcome '{result.Outcome}'.")
+        };
+    }
+
+    private async Task<ActionAvailability> NativeAvailabilityAsync(
+        RuleActionCommand command, DateTimeOffset waitUntilUtc, CancellationToken ct)
     {
         if (command.Effect.Type == RuleNativeEffectType.Unknown ||
             command.Runtime.IdentityModel == RuleRuntimeIdentityModel.PluginRuntimeGeneration)
@@ -111,9 +171,10 @@ internal sealed class UniversalRuleActionExecutor(
             return new(ActionExecutionOutcome.Stale, "Action decision expired before execution.");
         }
         var definition = RulesEngineCatalogueV1.Current.Actions.Single(item => item.ActionTypeId == action.TypeId);
+        Guid? adminActionId = null;
         if (definition.ProducesModerationRecord)
         {
-            var adminActionId = await records.PersistAsync(action, command, invocation, ct).ConfigureAwait(false);
+            adminActionId = await records.PersistAsync(action, command, invocation, ct).ConfigureAwait(false);
             if (adminActionId == Guid.Empty)
             {
                 throw new InvalidOperationException("The moderation record has no durable admin action identity.");
@@ -121,26 +182,26 @@ internal sealed class UniversalRuleActionExecutor(
         }
         if (action.TypeId == "moderation.observation")
         {
-            return new(ActionExecutionOutcome.Applied, "Moderation observation persisted.");
+            return Complete(ActionExecutionOutcome.Applied, "Moderation observation persisted.");
         }
         if (command.ExpiresAtUtc <= clock.GetUtcNow())
         {
-            return new(ActionExecutionOutcome.Stale, "The moderation record was persisted, but the native command expired before dispatch.");
+            return Complete(ActionExecutionOutcome.Stale, "The moderation record was persisted, but the native command expired before dispatch.");
         }
 
         if (command.Runtime.IdentityModel == RuleRuntimeIdentityModel.PluginRuntimeGeneration)
         {
-            return new(ActionExecutionOutcome.Dispatched, "Awaiting the correlated native plugin result.", command);
+            return Complete(ActionExecutionOutcome.Dispatched, "Awaiting the correlated native plugin result.", command);
         }
 
-        var availability = await AvailabilityAsync(command, clock.GetUtcNow(), ct).ConfigureAwait(false);
+        var availability = await NativeAvailabilityAsync(command, clock.GetUtcNow(), ct).ConfigureAwait(false);
         if (availability.Unavailable is { } unavailable)
         {
-            return unavailable;
+            return unavailable with { AdminActionId = adminActionId };
         }
         if (availability.Deferred)
         {
-            return new(ActionExecutionOutcome.Stale, "Current observed connection ownership is unavailable.");
+            return Complete(ActionExecutionOutcome.Stale, "Current observed connection ownership is unavailable.");
         }
 
         // The agent binding is observed identity; the integration rechecks GUID/slot, not native generation.
@@ -149,27 +210,33 @@ internal sealed class UniversalRuleActionExecutor(
         {
             logger.LogError("Native RCON dispatch has no confirmed result for effect {LogicalEffectId}: {StatusCode}",
                 command.LogicalEffectId, response.StatusCode);
-            return new(ActionExecutionOutcome.OutcomeUnknown, "Native request failed after it may have been dispatched; it will not be retried.");
+            return Complete(ActionExecutionOutcome.OutcomeUnknown, "Native request failed after it may have been dispatched; it will not be retried.");
         }
-        if (result.GameServerId != command.GameServerId || result.ExecutionId != command.ExecutionId ||
-            result.LogicalEffectId != command.LogicalEffectId || result.Correlation != command.Correlation ||
-            result.ActionId != command.ActionId)
+        if (!Matches(command, result))
         {
             logger.LogError("Native integration returned mismatched correlation for effect {LogicalEffectId}", command.LogicalEffectId);
-            return new(ActionExecutionOutcome.OutcomeUnknown, "Integration returned a mismatched native result.");
+            return Complete(ActionExecutionOutcome.OutcomeUnknown, "Integration returned a mismatched native result.");
         }
         if (result.Outcome is RuleActionExecutionOutcome.Dispatched or RuleActionExecutionOutcome.Applied)
         {
             invocation.SuppressWelcome |= command.Effect.Type == RuleNativeEffectType.DropPlayer;
-            return new(ActionExecutionOutcome.OutcomeUnknown,
+            return Complete(ActionExecutionOutcome.OutcomeUnknown,
                 "RCON send was dispatched once; UDP cannot confirm application or continuing ban enforcement.");
         }
         return result.Outcome switch
         {
-            RuleActionExecutionOutcome.Stale => new(ActionExecutionOutcome.Stale, result.Detail),
-            RuleActionExecutionOutcome.SkippedUnsupported => new(ActionExecutionOutcome.SkippedUnsupported, result.Detail),
-            RuleActionExecutionOutcome.Failed => new(ActionExecutionOutcome.Failed, result.Detail),
-            _ => new(ActionExecutionOutcome.OutcomeUnknown, result.Detail ?? "Integration did not confirm a terminal native outcome.")
+            RuleActionExecutionOutcome.Stale => Complete(ActionExecutionOutcome.Stale, result.Detail),
+            RuleActionExecutionOutcome.SkippedUnsupported => Complete(ActionExecutionOutcome.SkippedUnsupported, result.Detail),
+            RuleActionExecutionOutcome.Failed => Complete(ActionExecutionOutcome.Failed, result.Detail),
+            _ => Complete(ActionExecutionOutcome.OutcomeUnknown, result.Detail ?? "Integration did not confirm a terminal native outcome.")
         };
+
+        ActionExecutionResult Complete(ActionExecutionOutcome outcome, string? detail, RuleActionCommand? nativeCommand = null) =>
+            new(outcome, detail, nativeCommand, adminActionId);
     }
+
+    private static bool Matches(RuleActionCommand command, RuleActionResult result) =>
+        result.GameServerId == command.GameServerId && result.ExecutionId == command.ExecutionId &&
+        result.LogicalEffectId == command.LogicalEffectId && result.Correlation == command.Correlation &&
+        result.ActionId == command.ActionId;
 }

@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text.Json;
 
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -27,13 +28,18 @@ public sealed class UniversalRuleActionExecutorTests
             .ReturnsAsync(new ApiResult<RuleConnectionBindingDto>(HttpStatusCode.NotFound))
             .ReturnsAsync(Ok(fixture.Binding));
 
-        var waiting = await fixture.Executor.AvailabilityAsync(fixture.Command, DateTimeOffset.UtcNow.AddMinutes(2), default);
-        var ready = await fixture.Executor.AvailabilityAsync(fixture.Command, DateTimeOffset.UtcNow.AddMinutes(2), default);
+        var waiting = await fixture.AvailabilityAsync(DateTimeOffset.UtcNow.AddMinutes(2));
+        var ready = await fixture.AvailabilityAsync(DateTimeOffset.UtcNow.AddMinutes(2));
 
         Assert.True(waiting.Deferred);
         Assert.False(ready.Deferred);
         Assert.Null(ready.Unavailable);
-        fixture.Servers.VerifyNoOtherCalls();
+        fixture.Servers.Verify(item => item.RulesNativeAction.V1.Execute(It.IsAny<Guid>(),
+            It.Is<RuleActionCommand>(command => command.Mode == RuleExecutionMode.DryRun),
+            It.IsAny<CancellationToken>()), Times.Once);
+        fixture.Servers.Verify(item => item.RulesNativeAction.V1.Execute(It.IsAny<Guid>(),
+            It.Is<RuleActionCommand>(command => command.Mode == RuleExecutionMode.Enforce),
+            It.IsAny<CancellationToken>()), Times.Never);
         Assert.Equal(0, fixture.Records.Calls);
     }
 
@@ -48,7 +54,7 @@ public sealed class UniversalRuleActionExecutorTests
             : fixture.Binding with { ConnectionId = Guid.NewGuid() };
         fixture.Setup(binding);
 
-        var result = await fixture.Executor.AvailabilityAsync(fixture.Command, DateTimeOffset.UtcNow.AddMinutes(2), default);
+        var result = await fixture.AvailabilityAsync(DateTimeOffset.UtcNow.AddMinutes(2));
 
         Assert.False(result.Deferred);
         Assert.Equal(ActionExecutionOutcome.Stale, result.Unavailable?.Outcome);
@@ -64,7 +70,7 @@ public sealed class UniversalRuleActionExecutorTests
             ExpiresAtUtc = DateTimeOffset.UtcNow.AddMinutes(2)
         });
 
-        var result = await fixture.Executor.AvailabilityAsync(fixture.Command, DateTimeOffset.UtcNow.AddMinutes(2), default);
+        var result = await fixture.AvailabilityAsync(DateTimeOffset.UtcNow.AddMinutes(2));
 
         Assert.Equal(ActionExecutionOutcome.Stale, result.Unavailable?.Outcome);
     }
@@ -77,7 +83,7 @@ public sealed class UniversalRuleActionExecutorTests
                 It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new ApiResult<RuleConnectionBindingDto>(HttpStatusCode.NotFound));
 
-        var result = await fixture.Executor.AvailabilityAsync(fixture.Command, DateTimeOffset.UtcNow.AddSeconds(-1), default);
+        var result = await fixture.AvailabilityAsync(DateTimeOffset.UtcNow.AddSeconds(-1));
 
         Assert.False(result.Deferred);
         Assert.Equal(ActionExecutionOutcome.Stale, result.Unavailable?.Outcome);
@@ -123,6 +129,165 @@ public sealed class UniversalRuleActionExecutorTests
             new RuleActionDefinition { Id = "kick", TypeId = "player.kick" }, invocation, default);
 
         Assert.Contains("display reason", reason);
+    }
+
+    [Theory]
+    [InlineData(RuleActionExecutionOutcome.SkippedUnsupported)]
+    [InlineData(RuleActionExecutionOutcome.Stale)]
+    public async Task AgentChecksRealNativeEligibilityBeforeClaimOrModerationRecord(
+        RuleActionExecutionOutcome nativeOutcome)
+    {
+        var fixture = new Fixture();
+        fixture.Setup(fixture.Binding);
+        fixture.SetupEligibility(nativeOutcome);
+        fixture.Players.Setup(item => item.HeadPlayerByGameType(It.IsAny<GameType>(), It.IsAny<string>()))
+            .ReturnsAsync(new ApiResult(HttpStatusCode.OK));
+
+        var result = await fixture.Executor.AvailabilityAsync(
+            new() { Id = "ban", TypeId = "moderation.ban" },
+            fixture.Command with { Effect = new() { Type = RuleNativeEffectType.DropPlayer } },
+            new(new() { GameType = GameType.CallOfDuty4 }, new(), null),
+            DateTimeOffset.UtcNow.AddMinutes(2), default);
+
+        Assert.Equal(nativeOutcome.ToString(), result.Unavailable?.Outcome.ToString());
+        Assert.Equal(0, fixture.Records.Calls);
+        fixture.Servers.Verify(item => item.RulesNativeAction.V1.Execute(It.IsAny<Guid>(),
+            It.Is<RuleActionCommand>(command => command.Mode == RuleExecutionMode.DryRun),
+            It.IsAny<CancellationToken>()), Times.Once);
+        fixture.Servers.Verify(item => item.RulesNativeAction.V1.Execute(It.IsAny<Guid>(),
+            It.Is<RuleActionCommand>(command => command.Mode == RuleExecutionMode.Enforce),
+            It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task DryRunUsesReadOnlyNativeEligibilityWithoutRequiringAModerationPlayer()
+    {
+        var fixture = new Fixture();
+        fixture.Setup(fixture.Binding);
+
+        var result = await fixture.Executor.AvailabilityAsync(
+            new() { Id = "ban", TypeId = "moderation.ban" },
+            fixture.Command with { Mode = RuleExecutionMode.DryRun },
+            new(new() { GameType = GameType.CallOfDuty4 }, new(), null),
+            DateTimeOffset.UtcNow.AddMinutes(2), default);
+
+        Assert.Null(result.Unavailable);
+        Assert.False(result.Deferred);
+        Assert.Equal(0, fixture.Records.Calls);
+        fixture.Players.VerifyNoOtherCalls();
+        fixture.Servers.Verify(item => item.RulesNativeAction.V1.Execute(It.IsAny<Guid>(),
+            It.Is<RuleActionCommand>(command => command.Mode == RuleExecutionMode.DryRun),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task AmbiguousEligibilityCannotAuthorizeAnEnforcementAttempt()
+    {
+        var fixture = new Fixture();
+        fixture.Setup(fixture.Binding);
+        fixture.SetupEligibility(RuleActionExecutionOutcome.Dispatched);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            fixture.AvailabilityAsync(DateTimeOffset.UtcNow.AddMinutes(2)));
+
+        Assert.Equal(0, fixture.Records.Calls);
+        fixture.Servers.Verify(item => item.RulesNativeAction.V1.Execute(It.IsAny<Guid>(),
+            It.Is<RuleActionCommand>(command => command.Mode == RuleExecutionMode.Enforce),
+            It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Theory]
+    [InlineData(128, false, false)]
+    [InlineData(129, false, true)]
+    [InlineData(1, true, true)]
+    public async Task PluginModerationReasonRespectsNativeUtf8AndControlCharacterLimits(
+        int characters, bool controlCharacter, bool unsupported)
+    {
+        var fixture = new Fixture();
+        var text = controlCharacter ? "reason\ntext" : new string('\u00e9', characters);
+        var action = new RuleActionDefinition
+        {
+            Id = "ban",
+            TypeId = "moderation.ban",
+            Parameters = new Dictionary<string, JsonElement> { ["reason"] = JsonSerializer.SerializeToElement(text) }
+        };
+        var invocation = new RuleInvocation(new()
+        {
+            GameType = GameType.CallOfDuty4x,
+            ConnectionGeneration = 1,
+            Runtime = fixture.Command.Runtime with
+            {
+                Id = "cod4x-plugin",
+                IdentityModel = RuleRuntimeIdentityModel.PluginRuntimeGeneration,
+                Capabilities = [RulesEngineCatalogueV1.Cod4xPlayerDropCapability]
+            }
+        }, new(), null);
+
+        var reason = await fixture.Executor.UnsupportedReasonAsync(action, invocation, default);
+
+        Assert.Equal(unsupported, reason is not null);
+        Assert.Equal(0, fixture.Records.Calls);
+        fixture.Servers.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task NewPlayerModerationWaitsBeforeClaimWithoutChangingFrozenFacts()
+    {
+        var fixture = new Fixture();
+        fixture.Players.SetupSequence(item => item.HeadPlayerByGameType(
+                GameType.CallOfDuty4x, "player"))
+            .ReturnsAsync(new ApiResult(HttpStatusCode.NotFound))
+            .ReturnsAsync(new ApiResult(HttpStatusCode.OK));
+        var action = new RuleActionDefinition { Id = "observation", TypeId = "moderation.observation" };
+        var command = fixture.Command with { Effect = new() };
+        var invocation = new RuleInvocation(new() { GameType = GameType.CallOfDuty4x }, new(), null);
+        var deadline = DateTimeOffset.UtcNow.AddMinutes(2);
+
+        var waiting = await fixture.Executor.AvailabilityAsync(action, command, invocation, deadline, default);
+        var ready = await fixture.Executor.AvailabilityAsync(action, command, invocation, deadline, default);
+
+        Assert.True(waiting.Deferred);
+        Assert.False(ready.Deferred);
+        Assert.Null(ready.Unavailable);
+        Assert.Equal(0, fixture.Records.Calls);
+        fixture.Servers.VerifyNoOtherCalls();
+        fixture.Bindings.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task MissingModerationPlayerExpiresWithoutCreatingARecord()
+    {
+        var fixture = new Fixture();
+        fixture.Players.Setup(item => item.HeadPlayerByGameType(
+                It.IsAny<GameType>(), It.IsAny<string>()))
+            .ReturnsAsync(new ApiResult(HttpStatusCode.NotFound));
+
+        var result = await fixture.Executor.AvailabilityAsync(
+            new() { Id = "observation", TypeId = "moderation.observation" }, fixture.Command,
+            new(new() { GameType = GameType.CallOfDuty4x }, new(), null),
+            DateTimeOffset.UtcNow.AddSeconds(-1), default);
+
+        Assert.Equal(ActionExecutionOutcome.Stale, result.Unavailable?.Outcome);
+        Assert.Equal(0, fixture.Records.Calls);
+        fixture.Servers.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task ObservationCompletesWithLinkedRecordAndNoNativeDispatch()
+    {
+        var fixture = new Fixture();
+
+        var result = await fixture.Executor.ExecuteAsync(
+            new() { Id = "observation", TypeId = "moderation.observation" },
+            fixture.Command with { Effect = new() },
+            new(new(), new(), null), default);
+
+        Assert.Equal(ActionExecutionOutcome.Applied, result.Outcome);
+        Assert.Equal(fixture.Records.Id, result.AdminActionId);
+        Assert.Null(result.NativeCommand);
+        Assert.Equal(1, fixture.Records.Calls);
+        fixture.Servers.VerifyNoOtherCalls();
+        fixture.Bindings.VerifyNoOtherCalls();
     }
 
     [Fact]
@@ -173,6 +338,7 @@ public sealed class UniversalRuleActionExecutorTests
 
     private sealed class Records : IRuleModerationRecordWriter
     {
+        public Guid Id { get; } = Guid.NewGuid();
         public int Calls { get; private set; }
         public Action? OnPersist { get; set; }
         public Task<Guid> PersistAsync(
@@ -180,13 +346,14 @@ public sealed class UniversalRuleActionExecutorTests
         {
             Calls++;
             OnPersist?.Invoke();
-            return Task.FromResult(Guid.NewGuid());
+            return Task.FromResult(Id);
         }
     }
 
     private sealed class Fixture
     {
         public Mock<IRuleConnectionBindingsApi> Bindings { get; } = new();
+        public Mock<IPlayersApi> Players { get; } = new();
         public Mock<IServersApiClient> Servers { get; } = new();
         public Records Records { get; } = new();
         public UniversalRuleActionExecutor Executor { get; }
@@ -218,6 +385,9 @@ public sealed class UniversalRuleActionExecutorTests
             var versioned = new Mock<IVersionedRuleConnectionBindingsApi>();
             versioned.Setup(item => item.V1).Returns(Bindings.Object);
             repository.Setup(item => item.RuleConnectionBindings).Returns(versioned.Object);
+            var players = new Mock<IVersionedPlayersApi>();
+            players.Setup(item => item.V1).Returns(Players.Object);
+            repository.Setup(item => item.Players).Returns(players.Object);
             var observed = DateTimeOffset.UtcNow;
             Binding = new()
             {
@@ -230,12 +400,31 @@ public sealed class UniversalRuleActionExecutorTests
                 ObservedAtUtc = observed,
                 ExpiresAtUtc = observed.AddMinutes(2)
             };
+            SetupEligibility(RuleActionExecutionOutcome.WouldExecute);
             Executor = new(repository.Object, Servers.Object, Records, NullLogger<UniversalRuleActionExecutor>.Instance, clock);
         }
+
+        public void SetupEligibility(RuleActionExecutionOutcome outcome) =>
+            Servers.Setup(item => item.RulesNativeAction.V1.Execute(It.IsAny<Guid>(),
+                    It.Is<RuleActionCommand>(command => command.Mode == RuleExecutionMode.DryRun), It.IsAny<CancellationToken>()))
+                .Returns((Guid _, RuleActionCommand command, CancellationToken _) => Task.FromResult(Ok(new RuleActionResult
+                {
+                    GameServerId = command.GameServerId,
+                    ExecutionId = command.ExecutionId,
+                    LogicalEffectId = command.LogicalEffectId,
+                    ActionId = command.ActionId,
+                    Correlation = command.Correlation,
+                    Outcome = outcome,
+                    OccurredAtUtc = DateTimeOffset.UtcNow
+                })));
 
         public void Setup(RuleConnectionBindingDto binding) =>
             Bindings.Setup(item => item.GetCurrentBinding(It.IsAny<Guid>(), It.IsAny<int>(),
                     It.IsAny<string>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(Ok(binding));
+
+        public Task<ActionAvailability> AvailabilityAsync(DateTimeOffset deadline) => Executor.AvailabilityAsync(
+            new() { Id = "message", TypeId = "message.public" }, Command,
+            new(new() { GameType = GameType.CallOfDuty4 }, new(), null), deadline, default);
     }
 }

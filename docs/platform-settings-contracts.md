@@ -39,7 +39,8 @@ snapshots prevent current player/IP/tag writes from changing the answer on retry
 An unresolved IP can supplement previously unavailable context without replaying
 completed actions. Continuations retain that proven observation's trigger
 correlation and IP context; an older retry cannot replace it or substitute a
-different connection/runtime.
+different connection/runtime. New context arriving during an older pending
+native claim is saved without changing that command, state or cursor.
 
 Siege requires its active, unexpired session, frozen universal rules, timestamped
 activation history and session mode. Baseline membership is not a timestamp.
@@ -50,7 +51,13 @@ replaced by the engine cutover.
 ### Execution transports and recovery
 
 The plugin posts bare shared DTOs to `POST /rules/evaluate`, `/rules/outcomes` and
-`/rules/poll`. Responses contain `protocolVersion`, `commands` and `executionIds`.
+`/rules/poll`. Responses contain `protocolVersion`, `commands`, `executionIds` and
+`retryTrigger` (default `false`). Only evaluate can request a trigger retry when
+one feature fails before starting a durable execution; healthy commands and
+execution IDs remain consumable immediately. The plugin retries the exact
+original observation on its existing five-second backoff for at most 120 seconds,
+without renewing its lifetime or replacing its connection/IP snapshot.
+Outcome/poll responses do not cancel a pending original-trigger retry.
 Poll is plugin-only: it requires the original native runtime, connection UUID,
 nonzero generation, GUID and slot. The agent has no rules interpreter and does
 not poll this protocol.
@@ -58,15 +65,22 @@ not poll this protocol.
 Plugin-owned effects are returned only to the generation-checking plugin; they
 never fall back to RCON. Agent-owned effects use the explicit
 `AgentObservedConnection` model with nullable native generation: server-events
-checks the current authoritative observed binding, then the integration checks
-GUID/slot immediately before sending once. This preserves observed identity
+checks the current authoritative observed binding and calls the integration's
+read-only `Execute(Mode=DryRun)` eligibility path before claiming native work.
+This verifies the actual game adapter, configuration, text and live roster;
+neither an `RconEnabled` setting nor an invented capability is sufficient.
+The integration checks GUID/slot again immediately before sending once.
+Eligibility is not an atomic guarantee against later configuration/roster changes.
+This preserves observed identity
 checks, not an atomic native-generation guarantee across a same-GUID reconnect.
 
 Bindings expire at `observedAtUtc + 2 minutes`, never receive time, with at most
 30 seconds of future skew. Unknown/absent status rows are not disconnects.
-Disconnects retire only an exact identity/runtime match. Native work awaiting an
-initial binding is deferred without claiming or dispatching the effect; the
-existing `rule-action-continuations` queue resumes the original feature execution.
+Disconnects retire only an exact identity/runtime match. Native work awaiting an initial binding, or record-producing work awaiting a
+new player's profile, is deferred without claiming or dispatching the effect.
+The existing `rule-action-continuations` queue resumes agent-owned executions;
+plugin-owned executions remain on plugin polling. Context waits are bounded to
+two minutes and do not replace the frozen pre-observation facts.
 That queue also handles optional forum publication after the moderation record
 is durable, keeping forum network calls off the plugin HTTP request.
 
@@ -77,6 +91,22 @@ Claimed/ambiguous native effects are never blindly resent. RCON UDP dispatch is
 not confirmed application; a native drop is not proof of continuing Ban/TempBan
 cache enforcement. Unknown forum outcomes require manual recovery rather than
 posting a duplicate topic. Queue duplicate detection is not required for safety.
+
+Moderation records are created and linked atomically through the correlated
+rule-action endpoint, not the retired strongest-action writer. Observation is
+complete once its record exists; other moderation actions still require native
+dispatch. Optional forum publication uses the durable record identity and
+resolves a missing player name in the worker before taking its publication claim.
+
+Current plugin results are `Dispatched`, not proof of `Applied`. Correlated
+receipts retain their truthful source timestamp, including cached redelivery.
+Source timestamps use the existing 30-second clock-skew allowance against claim,
+command expiry and receipt time; subsecond precision does not establish clock
+synchronization. Identical cached dispatch receipts do not advance or resume
+again. Verified late native evidence may improve stored evidence after expiry
+without rewinding a completed/stopped cursor or dispatching another action.
+Ban/TempBan native drop evidence stays separate from the aggregate unknown
+continuing-enforcement outcome and retains its linked AdminAction ID.
 
 ## Troubleshooting Runbook
 

@@ -21,7 +21,12 @@ internal sealed record FeatureRulesSnapshot(
     DateTimeOffset? ExpiresAtUtc = null,
     ActivationIdentifierHistory? Baseline = null)
 {
-    public string RulesJson => JsonSerializer.Serialize(Rules.OrderBy(rule => rule.Order), RulesSerialization.Options);
+    public string RulesJson => JsonSerializer.Serialize(new FeatureRuleSetDocument
+    {
+        FeatureId = FeatureId,
+        Enabled = true,
+        Rules = Rules.OrderBy(rule => rule.Order).ToList()
+    }, RulesSerialization.Options);
     public string Revision => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(RulesJson)));
 }
 

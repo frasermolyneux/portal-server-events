@@ -16,6 +16,7 @@ using Newtonsoft.Json;
 using XtremeIdiots.Portal.Repository.Abstractions.Constants.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Interfaces.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.AdminActions;
+using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.Players;
 using XtremeIdiots.Portal.Repository.Api.Client.V1;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Functions;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Rules;
@@ -123,6 +124,57 @@ public sealed class RuleActionContinuationProcessorTests
     }
 
     [Fact]
+    public async Task MissingUsernameIsResolvedBeforeTakingPublicationClaim()
+    {
+        var players = new Mock<IPlayersApi>();
+        var versionedPlayers = new Mock<IVersionedPlayersApi>();
+        versionedPlayers.Setup(item => item.V1).Returns(players.Object);
+        repository.Setup(item => item.Players).Returns(versionedPlayers.Object);
+        var loaded = false;
+        var player = JsonConvert.DeserializeObject<PlayerDto>(JsonConvert.SerializeObject(new
+        {
+            continuation.PlayerId,
+            Username = "resolved-player"
+        }))!;
+        players.Setup(item => item.GetPlayer(continuation.PlayerId, PlayerEntityOptions.None))
+            .Callback(() => loaded = true)
+            .ReturnsAsync(new ApiResult<PlayerDto>(HttpStatusCode.OK, new ApiResponse<PlayerDto>(player)));
+        var claimId = Guid.NewGuid();
+        actions.Setup(item => item.ClaimForumTopicPublication(continuation.AdminActionId, It.IsAny<CancellationToken>()))
+            .Callback(() => Assert.True(loaded))
+            .ReturnsAsync(Claim(new { ClaimId = claimId, RequiresManualRecovery = false }));
+        topics.Setup(item => item.CreateTopicForAdminAction(continuation.ActionType, continuation.GameType,
+            continuation.PlayerId, "resolved-player", continuation.Created, continuation.Text, continuation.AdminId,
+            It.IsAny<CancellationToken>())).ReturnsAsync(123);
+        actions.Setup(item => item.CompleteForumTopicPublication(continuation.AdminActionId,
+                It.IsAny<CompleteForumTopicPublicationDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(SuccessResult());
+
+        await processor.ProcessRuleActionContinuation(CreateMessage(continuation with { Username = null }), context.Object);
+
+        VerifyPost(Times.Once());
+        audit.Verify(item => item.LogAudit(It.IsAny<AuditEvent>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task FailedUsernameLookupCannotConsumePublicationClaim()
+    {
+        var players = new Mock<IPlayersApi>();
+        var versionedPlayers = new Mock<IVersionedPlayersApi>();
+        versionedPlayers.Setup(item => item.V1).Returns(players.Object);
+        repository.Setup(item => item.Players).Returns(versionedPlayers.Object);
+        players.Setup(item => item.GetPlayer(continuation.PlayerId, PlayerEntityOptions.None))
+            .ReturnsAsync(new ApiResult<PlayerDto>(HttpStatusCode.ServiceUnavailable));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => processor.ProcessRuleActionContinuation(
+            CreateMessage(continuation with { Username = null }), context.Object));
+
+        actions.Verify(item => item.ClaimForumTopicPublication(It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+        VerifyNoPost();
+        audit.VerifyNoOtherCalls();
+    }
+
+    [Fact]
     public async Task PublisherUsesStableMessageIdAndCamelCase()
     {
         var client = new Mock<ServiceBusClient>();
@@ -152,7 +204,7 @@ public sealed class RuleActionContinuationProcessorTests
 
     private void SetupTopic()
         => topics.Setup(x => x.CreateTopicForAdminAction(continuation.ActionType, continuation.GameType,
-            continuation.PlayerId, continuation.Username, continuation.Created, continuation.Text, continuation.AdminId,
+            continuation.PlayerId, continuation.Username!, continuation.Created, continuation.Text, continuation.AdminId,
             It.IsAny<CancellationToken>())).ReturnsAsync(123);
 
     private void VerifyNoPost() => VerifyPost(Times.Never());

@@ -40,7 +40,8 @@ internal sealed class SharedRuleConditionResolver(
             "player.first-seen-guid" => EvaluateIdentifier(parameters, operation, true, context.OccurredAtUtc),
             "player.first-seen-ip" => EvaluateIdentifier(parameters, operation, false, context.OccurredAtUtc),
             "player.profile-age" => PlayerRuleConditions.ProfileAge(
-                facts.ProfileFirstSeenAtUtc, operation ?? "", String(parameters, "duration"), context.OccurredAtUtc),
+                facts.ProfileHistoryAvailable ? facts.ProfileFirstSeenAtUtc : null,
+                operation ?? "", String(parameters, "duration"), context.OccurredAtUtc),
             "vpn.intelligence" => IpIntelligenceRuleSignals.Evaluate(
                 intelligence, String(parameters, "signal"), operation, String(parameters, "expectedValue")),
             _ => null

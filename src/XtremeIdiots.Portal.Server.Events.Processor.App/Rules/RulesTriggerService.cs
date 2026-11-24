@@ -14,6 +14,8 @@ using XtremeIdiots.Portal.Server.Events.Abstractions.V1.Events;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Functions;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Services;
 
+using RuleRuntimeDescriptor = XtremeIdiots.Portal.Repository.Abstractions.Models.V1.RulesEngine.RuleRuntimeDescriptor;
+
 namespace XtremeIdiots.Portal.Server.Events.Processor.App.Rules;
 
 internal sealed class RulesTriggerService(
@@ -59,7 +61,7 @@ internal sealed class RulesTriggerService(
         var prepared = await PrepareCoreAsync(trigger, ct).ConfigureAwait(false);
         var invocation = await CreateInvocationAsync(prepared, ct).ConfigureAwait(false);
         var results = await host.ProcessAsync(invocation, ct).ConfigureAwait(false);
-        return Response(invocation, results);
+        return Response(invocation, results, retryUnstartedFeatures: true);
     }
 
     public async Task<RuleEvaluationResponse> PollAsync(RulePollRequest request, CancellationToken ct)
@@ -95,9 +97,10 @@ internal sealed class RulesTriggerService(
 
     public async Task<RuleEvaluationResponse> OutcomeAsync(RuleActionResult result, CancellationToken ct)
     {
+        var receivedAtUtc = DateTimeOffset.UtcNow;
         if (result.ProtocolVersion != 1 || result.GameServerId == Guid.Empty || result.ExecutionId == Guid.Empty ||
             string.IsNullOrWhiteSpace(result.ActionId) || string.IsNullOrWhiteSpace(result.LogicalEffectId) ||
-            result.OccurredAtUtc == default || result.OccurredAtUtc > DateTimeOffset.UtcNow.AddSeconds(30) ||
+            result.OccurredAtUtc == default || result.OccurredAtUtc > receivedAtUtc.AddSeconds(30) ||
             result.Outcome is not (RuleActionExecutionOutcome.Applied or RuleActionExecutionOutcome.Dispatched or
                 RuleActionExecutionOutcome.Failed or RuleActionExecutionOutcome.Stale or
                 RuleActionExecutionOutcome.SkippedUnsupported or RuleActionExecutionOutcome.OutcomeUnknown))
@@ -108,16 +111,35 @@ internal sealed class RulesTriggerService(
         var execution = FeatureExecutionOrchestrator.Require(await repository.RuleExecutions.V1.GetExecution(
             result.GameServerId, result.ExecutionId, ct).ConfigureAwait(false), "load rules outcome");
         var action = execution.Actions.SingleOrDefault(item => item.LogicalEffectId == result.LogicalEffectId);
-        if (action is null || action.Correlation != result.Correlation || action.Correlation.ActionId != result.ActionId ||
+        if (execution.GameServerId != result.GameServerId || execution.ExecutionId != result.ExecutionId ||
+            action is null || action.GameServerId != result.GameServerId || action.ExecutionId != result.ExecutionId ||
+            action.Correlation != result.Correlation || action.Correlation.ActionId != result.ActionId ||
+            action.Command.ExecutionId != result.ExecutionId || action.Command.GameServerId != result.GameServerId ||
+            action.Command.ActionId != result.ActionId || action.Command.LogicalEffectId != result.LogicalEffectId ||
+            action.Command.Correlation != result.Correlation || action.Command.ConnectionId != execution.ConnectionId ||
+            action.Correlation.ConnectionId != execution.ConnectionId ||
+            action.Command.ConnectionGeneration != execution.Trigger.ConnectionGeneration ||
+            action.Command.SlotId != execution.Trigger.SlotId || action.Command.PlayerGuid != execution.Trigger.PlayerGuid ||
+            !SameRuntimeIdentity(action.Command.Runtime, execution.Trigger.Runtime) ||
             action.Command.Runtime.Id != "cod4x-plugin" || action.Mode != RuleExecutionMode.Enforce ||
-            result.OccurredAtUtc < action.ClaimedAtUtc.AddSeconds(-30))
+            action.Command.Effect.Type is not (RuleNativeEffectType.DropPlayer or RuleNativeEffectType.PublicMessage or RuleNativeEffectType.PrivateMessage) ||
+            receivedAtUtc < action.ClaimedAtUtc.AddSeconds(-30) || result.OccurredAtUtc < action.ClaimedAtUtc.AddSeconds(-30))
         {
             throw new ArgumentException("The native outcome does not match the claimed plugin command.", nameof(result));
         }
 
+        var applied = result.Outcome == RuleActionExecutionOutcome.Applied;
+        if (applied && result.OccurredAtUtc > action.Command.ExpiresAtUtc.AddSeconds(30))
+        {
+            throw new ArgumentException("Applied native evidence falls outside the claimed command window and clock-skew allowance.", nameof(result));
+        }
+        var compositeBan = action.ActionTypeId is "moderation.ban" or "moderation.temporary-ban";
+        if (applied && (compositeBan || action.ActionTypeId == "moderation.kick-with-record") && action.AdminActionId is null)
+        {
+            throw new ArgumentException("The native effect has no linked durable moderation record.", nameof(result));
+        }
         var recorded = result;
-        if (result.Outcome == RuleActionExecutionOutcome.Applied &&
-            action.ActionTypeId is "moderation.ban" or "moderation.temporary-ban")
+        if (applied && compositeBan)
         {
             recorded = result with
             {
@@ -126,24 +148,36 @@ internal sealed class RulesTriggerService(
             };
         }
 
-        var lateConfirmation = action.Outcome == RuleActionExecutionOutcome.OutcomeUnknown &&
-            recorded.Outcome == RuleActionExecutionOutcome.Applied &&
-            DateTimeOffset.UtcNow > action.Command.ExpiresAtUtc &&
-            result.OccurredAtUtc >= action.ClaimedAtUtc && result.OccurredAtUtc <= action.Command.ExpiresAtUtc;
+        if (result.Outcome == RuleActionExecutionOutcome.Dispatched &&
+            action.Outcome == RuleActionExecutionOutcome.Dispatched &&
+            action.ResultJson is not null && StoredAggregate(action) == result)
+        {
+            return PendingResponse(execution);
+        }
+
+        var lateConfirmation = action.Outcome == RuleActionExecutionOutcome.OutcomeUnknown && applied &&
+            DateTimeOffset.UtcNow > action.Command.ExpiresAtUtc && (!compositeBan || action.NativeEvidence is null);
         if (action.Outcome is not (RuleActionExecutionOutcome.Claimed or RuleActionExecutionOutcome.Dispatched) && !lateConfirmation)
         {
-            if (action.Outcome != recorded.Outcome)
+            if (applied && compositeBan ? action.NativeEvidence != result : StoredAggregate(action) != recorded)
             {
                 throw new ArgumentException("The claimed action already has a different terminal outcome.", nameof(result));
             }
+            return PendingResponse(execution);
         }
         else
         {
+            if (lateConfirmation && compositeBan)
+            {
+                recorded = StoredAggregate(action);
+            }
             var updated = FeatureExecutionOrchestrator.Require(await repository.RuleExecutions.V1.UpdateActionOutcome(
                 result.GameServerId, result.ExecutionId, result.ActionId, new UpdateRuleActionOutcomeDto
                 {
                     ExpectedVersion = execution.Version,
                     Result = recorded,
+                    AdminActionId = action.AdminActionId,
+                    NativeEvidence = applied && compositeBan ? result : null,
                     NextRuleIndex = execution.RuleIndex,
                     NextActionIndex = lateConfirmation || result.Outcome == RuleActionExecutionOutcome.Dispatched
                         ? execution.ActionIndex : execution.ActionIndex + 1,
@@ -168,13 +202,27 @@ internal sealed class RulesTriggerService(
 
         if (lateConfirmation)
         {
-            return new()
-            {
-                ExecutionIds = execution.State == RuleFeatureExecutionState.AwaitingActionOutcome ? [execution.ExecutionId] : []
-            };
+            return PendingResponse(execution);
         }
         return await ResumeAsync(execution, ct).ConfigureAwait(false);
     }
+
+    private static RuleActionResult StoredAggregate(RuleActionExecutionDto action) =>
+        action.ResultJson is { } json
+            ? JsonSerializer.Deserialize<RuleActionResult>(json, RulesSerialization.Options)
+                ?? throw new InvalidOperationException("The persisted aggregate result is missing.")
+            : throw new InvalidOperationException("The persisted aggregate result is missing.");
+
+    private static bool SameRuntimeIdentity(RuleRuntimeDescriptor? runtime, RuleRuntimeDescriptor? producer) =>
+        runtime is not null && producer is not null &&
+        runtime.Id == producer.Id && runtime.Version == producer.Version &&
+        runtime.ProtocolVersion == producer.ProtocolVersion && runtime.IdentityModel == producer.IdentityModel &&
+        runtime.InstanceId == producer.InstanceId && runtime.StartedAtUtc == producer.StartedAtUtc;
+
+    private static RuleEvaluationResponse PendingResponse(RuleFeatureExecutionDto execution) => new()
+    {
+        ExecutionIds = execution.State == RuleFeatureExecutionState.AwaitingActionOutcome ? [execution.ExecutionId] : []
+    };
 
     public async Task ResumeAsync(Guid serverId, Guid executionId, CancellationToken ct)
     {
@@ -224,10 +272,7 @@ internal sealed class RulesTriggerService(
             context.ConnectionId != original.ConnectionId || context.ConnectionGeneration != original.ConnectionGeneration ||
             context.GameType != original.GameType || context.SlotId != original.SlotId ||
             context.PlayerGuid != original.PlayerGuid || context.OccurredAtUtc < original.OccurredAtUtc ||
-            context.Runtime is not { } runtime || original.Runtime is not { } producer ||
-            runtime.Id != producer.Id || runtime.Version != producer.Version ||
-            runtime.ProtocolVersion != producer.ProtocolVersion || runtime.IdentityModel != producer.IdentityModel ||
-            runtime.InstanceId != producer.InstanceId || runtime.StartedAtUtc != producer.StartedAtUtc)
+            !SameRuntimeIdentity(context.Runtime, original.Runtime))
         {
             throw new InvalidOperationException("Persisted rules context does not match the execution connection.");
         }
@@ -367,10 +412,11 @@ internal sealed class RulesTriggerService(
     }
 
     private static RuleEvaluationResponse Response(
-        RuleInvocation invocation, IEnumerable<FeatureProcessingResult> results) =>
+        RuleInvocation invocation, IReadOnlyList<FeatureProcessingResult> results, bool retryUnstartedFeatures = false) =>
         new()
         {
             Commands = invocation.Commands.ToArray(),
+            RetryTrigger = retryUnstartedFeatures && results.Any(item => item.Failure is not null && item.ExecutionId is null),
             ExecutionIds = invocation.PendingExecutionIds
                 .Concat(results.Where(item => item.Failure is not null && item.ExecutionId.HasValue)
                     .Select(item => item.ExecutionId!.Value))

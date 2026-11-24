@@ -8,6 +8,7 @@ using Microsoft.Extensions.Logging;
 using MX.Observability.ApplicationInsights.Auditing;
 using MX.Observability.ApplicationInsights.Auditing.Models;
 
+using XtremeIdiots.Portal.Repository.Abstractions.Constants.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.AdminActions;
 using XtremeIdiots.Portal.Repository.Api.Client.V1;
 using XtremeIdiots.Portal.Server.Events.Abstractions.V1;
@@ -50,11 +51,23 @@ public sealed class RuleActionContinuationProcessor(
             string.IsNullOrWhiteSpace(continuation.ActionId) ||
             continuation.ExecutionId == Guid.Empty || continuation.AdminActionId == Guid.Empty ||
             continuation.GameServerId == Guid.Empty || continuation.PlayerId == Guid.Empty ||
-            string.IsNullOrWhiteSpace(continuation.Username) || string.IsNullOrWhiteSpace(continuation.Text) ||
+            string.IsNullOrWhiteSpace(continuation.Text) ||
             continuation.Created == default || !Enum.IsDefined(continuation.GameType) ||
             !Enum.IsDefined(continuation.ActionType))
         {
             throw new InvalidOperationException("Rule action continuation is missing required publication data.");
+        }
+
+        var username = continuation.Username;
+        if (string.IsNullOrWhiteSpace(username))
+        {
+            var player = FeatureExecutionOrchestrator.Require(await repositoryApiClient.Players.V1.GetPlayer(
+                continuation.PlayerId, PlayerEntityOptions.None).WaitAsync(ct).ConfigureAwait(false), "load forum publication player");
+            if (player.PlayerId != continuation.PlayerId || string.IsNullOrWhiteSpace(player.Username))
+            {
+                throw new InvalidOperationException("Forum publication player identity is unavailable.");
+            }
+            username = player.Username;
         }
 
         var claimResult = await repositoryApiClient.AdminActions.V1
@@ -82,7 +95,7 @@ public sealed class RuleActionContinuationProcessor(
         try
         {
             forumTopicId = await adminActionTopics.CreateTopicForAdminAction(
-                continuation.ActionType, continuation.GameType, continuation.PlayerId, continuation.Username,
+                continuation.ActionType, continuation.GameType, continuation.PlayerId, username,
                 continuation.Created, continuation.Text, continuation.AdminId, ct).ConfigureAwait(false);
         }
         catch (Exception ex)

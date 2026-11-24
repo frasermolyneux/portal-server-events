@@ -77,6 +77,35 @@ public sealed class RulesTriggerServiceTests
         fixture.Audit.VerifyNoOtherCalls();
     }
 
+    [Theory]
+    [InlineData("runtime")]
+    [InlineData("generation")]
+    [InlineData("connection")]
+    [InlineData("command")]
+    public async Task ClockSkewAllowanceCannotBypassPersistedCommandIdentity(string mismatch)
+    {
+        var fixture = new Fixture();
+        var action = fixture.Execution.Actions[0];
+        var command = mismatch switch
+        {
+            "runtime" => action.Command with { Runtime = action.Command.Runtime with { InstanceId = Guid.NewGuid() } },
+            "generation" => action.Command with { ConnectionGeneration = action.Command.ConnectionGeneration + 1 },
+            "connection" => action.Command with { ConnectionId = Guid.NewGuid() },
+            _ => action.Command with { ExecutionId = Guid.NewGuid() }
+        };
+        var result = fixture.Result(RuleActionExecutionOutcome.Applied) with
+        {
+            OccurredAtUtc = action.ClaimedAtUtc.AddSeconds(-5)
+        };
+        fixture.Execution = fixture.Execution with { Actions = [action with { Command = command }] };
+
+        await Assert.ThrowsAsync<ArgumentException>(() => fixture.Service.OutcomeAsync(result, default));
+
+        fixture.Api.Verify(item => item.UpdateActionOutcome(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<string>(),
+            It.IsAny<UpdateRuleActionOutcomeDto>(), It.IsAny<CancellationToken>()), Times.Never);
+        fixture.Audit.VerifyNoOtherCalls();
+    }
+
     [Fact]
     public async Task ConfirmedDropDoesNotClaimContinuingBanEnforcementAndDuplicateDoesNotReaudit()
     {
@@ -94,6 +123,79 @@ public sealed class RulesTriggerServiceTests
             It.IsAny<UpdateRuleActionOutcomeDto>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
+    [Theory]
+    [InlineData(-5)]
+    [InlineData(5)]
+    public async Task CorrelatedNativeEvidenceAllowsExistingClockSkewWithoutChangingSourceTime(int skewSeconds)
+    {
+        var fixture = new Fixture();
+        var result = fixture.Result(RuleActionExecutionOutcome.Applied) with
+        {
+            OccurredAtUtc = fixture.Execution.Actions[0].ClaimedAtUtc.AddSeconds(skewSeconds)
+        };
+
+        await fixture.Service.OutcomeAsync(result, default);
+        await fixture.Service.OutcomeAsync(result, default);
+
+        Assert.Equal(result, Assert.Single(fixture.Execution.Actions).NativeEvidence);
+        fixture.Api.Verify(item => item.UpdateActionOutcome(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<string>(),
+            It.IsAny<UpdateRuleActionOutcomeDto>(), It.IsAny<CancellationToken>()), Times.Once);
+        fixture.Audit.Verify(item => item.LogAudit(It.IsAny<AuditEvent>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task CachedDispatchedReceiptKeepsOriginalTimeAndCannotDispatchOrAdvanceAgain()
+    {
+        var fixture = new Fixture();
+        var now = DateTimeOffset.UtcNow;
+        var action = fixture.Execution.Actions[0];
+        fixture.Execution = fixture.Execution with
+        {
+            Actions = [action with { ClaimedAtUtc = now.AddMinutes(-3) }],
+            ActionIndex = 4
+        };
+        var cached = fixture.Result(RuleActionExecutionOutcome.Dispatched) with
+        {
+            OccurredAtUtc = now.AddMinutes(-3).AddSeconds(-5)
+        };
+
+        await fixture.Service.OutcomeAsync(cached, default);
+        var version = fixture.Execution.Version;
+        var replay = await fixture.Service.OutcomeAsync(cached, default);
+
+        Assert.Equal(4, fixture.Execution.ActionIndex);
+        Assert.Equal(version, fixture.Execution.Version);
+        Assert.Empty(replay.Commands);
+        Assert.Equal(cached, JsonSerializer.Deserialize<RuleActionResult>(
+            Assert.Single(fixture.Execution.Actions).ResultJson!, RulesSerialization.Options));
+        fixture.Api.Verify(item => item.UpdateActionOutcome(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<string>(),
+            It.IsAny<UpdateRuleActionOutcomeDto>(), It.IsAny<CancellationToken>()), Times.Once);
+        fixture.Api.Verify(item => item.CreateFactSnapshot(
+            It.IsAny<Guid>(), It.IsAny<RuleFactSnapshotRequestDto>(), It.IsAny<CancellationToken>()), Times.Once);
+        fixture.Audit.VerifyNoOtherCalls();
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task NativeEvidenceOutsideExistingSkewBoundsIsRejectedWithoutWrites(bool beforeClaim)
+    {
+        var fixture = new Fixture();
+        var action = fixture.Execution.Actions[0];
+        var result = fixture.Result(RuleActionExecutionOutcome.Applied) with
+        {
+            OccurredAtUtc = beforeClaim
+                ? action.ClaimedAtUtc.AddSeconds(-31)
+                : DateTimeOffset.UtcNow.AddSeconds(31)
+        };
+
+        await Assert.ThrowsAsync<ArgumentException>(() => fixture.Service.OutcomeAsync(result, default));
+
+        fixture.Api.Verify(item => item.UpdateActionOutcome(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<string>(),
+            It.IsAny<UpdateRuleActionOutcomeDto>(), It.IsAny<CancellationToken>()), Times.Never);
+        fixture.Audit.VerifyNoOtherCalls();
+    }
+
     [Fact]
     public async Task FailedNativeEffectNeverEmitsAppliedAudit()
     {
@@ -105,14 +207,19 @@ public sealed class RulesTriggerServiceTests
         fixture.Audit.VerifyNoOtherCalls();
     }
 
-    [Fact]
-    public async Task VerifiedLateNativeEvidenceDoesNotRewindOrResumeTheExecution()
+    [Theory]
+    [InlineData(-65, false)]
+    [InlineData(-20, false)]
+    [InlineData(-5, false)]
+    [InlineData(-20, true)]
+    public async Task VerifiedLateNativeEvidenceDoesNotRewindOrResumeTheExecution(int sourceOffsetSeconds, bool linkedRecord)
     {
         var fixture = new Fixture();
         var action = fixture.Execution.Actions[0];
         action = action with
         {
-            ActionTypeId = "player.kick",
+            ActionTypeId = linkedRecord ? "moderation.kick-with-record" : "player.kick",
+            AdminActionId = linkedRecord ? action.AdminActionId : null,
             Outcome = RuleActionExecutionOutcome.OutcomeUnknown,
             ClaimedAtUtc = DateTimeOffset.UtcNow.AddMinutes(-1),
             Command = action.Command with { ExpiresAtUtc = DateTimeOffset.UtcNow.AddSeconds(-10) }
@@ -126,7 +233,7 @@ public sealed class RulesTriggerServiceTests
         };
         var result = fixture.Result(RuleActionExecutionOutcome.Applied) with
         {
-            OccurredAtUtc = DateTimeOffset.UtcNow.AddSeconds(-20)
+            OccurredAtUtc = DateTimeOffset.UtcNow.AddSeconds(sourceOffsetSeconds)
         };
 
         await fixture.Service.OutcomeAsync(result, default);
@@ -166,6 +273,90 @@ public sealed class RulesTriggerServiceTests
         Assert.Contains(healthyId, response.ExecutionIds);
         fixture.Api.Verify(item => item.GetExecution(
             It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task PartialStartRetriesMissingFeatureWithoutDroppingHealthyCommands()
+    {
+        var fail = true;
+        var effects = new HashSet<string>();
+        var missingId = Guid.NewGuid();
+        var healthyId = Guid.NewGuid();
+        var missing = new Feature("vpn-protection", invocation =>
+        {
+            if (fail)
+            {
+                throw new InvalidOperationException("Provider unavailable before Start.");
+            }
+            if (effects.Add("vpn"))
+            {
+                invocation.Commands.Add(new() { ExecutionId = missingId });
+            }
+            return missingId;
+        });
+        var healthy = new Feature("siege-mode", invocation =>
+        {
+            if (effects.Add("siege"))
+            {
+                invocation.Commands.Add(new() { ExecutionId = healthyId });
+            }
+            return healthyId;
+        });
+        var fixture = new Fixture(missing, healthy);
+        var trigger = fixture.Execution.Trigger;
+
+        var first = await fixture.Service.EvaluateAsync(trigger, default);
+        fail = false;
+        var recovered = await fixture.Service.EvaluateAsync(trigger, default);
+        var duplicate = await fixture.Service.EvaluateAsync(trigger, default);
+
+        Assert.True(first.RetryTrigger);
+        Assert.Equal(healthyId, Assert.Single(first.Commands).ExecutionId);
+        Assert.False(recovered.RetryTrigger);
+        Assert.Equal(missingId, Assert.Single(recovered.Commands).ExecutionId);
+        Assert.Empty(duplicate.Commands);
+        Assert.Equal(2, effects.Count);
+    }
+
+    [Fact]
+    public async Task LateBanDropEvidencePreservesAggregateAndDoesNotResumeSkippedDependents()
+    {
+        var fixture = new Fixture();
+        var action = fixture.Execution.Actions[0];
+        var occurredAt = DateTimeOffset.UtcNow.AddSeconds(-20);
+        var aggregate = fixture.Result(RuleActionExecutionOutcome.OutcomeUnknown) with
+        {
+            Detail = "Expired without a result."
+        };
+        fixture.Execution = fixture.Execution with
+        {
+            State = RuleFeatureExecutionState.Stopped,
+            RuleIndex = 2,
+            ActionIndex = 5,
+            Actions =
+            [
+                action with
+                {
+                    Outcome = RuleActionExecutionOutcome.OutcomeUnknown,
+                    ClaimedAtUtc = DateTimeOffset.UtcNow.AddMinutes(-1),
+                    Command = action.Command with { ExpiresAtUtc = DateTimeOffset.UtcNow.AddSeconds(-10) },
+                    ResultJson = JsonSerializer.Serialize(aggregate, RulesSerialization.Options)
+                }
+            ]
+        };
+        var evidence = fixture.Result(RuleActionExecutionOutcome.Applied) with { OccurredAtUtc = occurredAt };
+
+        await fixture.Service.OutcomeAsync(evidence, default);
+        await fixture.Service.OutcomeAsync(evidence, default);
+
+        action = Assert.Single(fixture.Execution.Actions);
+        Assert.Equal(RuleActionExecutionOutcome.OutcomeUnknown, action.Outcome);
+        Assert.Equal(evidence, action.NativeEvidence);
+        Assert.Equal(RuleFeatureExecutionState.Stopped, fixture.Execution.State);
+        Assert.Equal(5, fixture.Execution.ActionIndex);
+        fixture.Api.Verify(item => item.CreateFactSnapshot(
+            It.IsAny<Guid>(), It.IsAny<RuleFactSnapshotRequestDto>(), It.IsAny<CancellationToken>()), Times.Never);
+        fixture.Audit.Verify(item => item.LogAudit(It.IsAny<AuditEvent>()), Times.Once);
     }
 
     [Fact]
@@ -310,6 +501,10 @@ public sealed class RulesTriggerServiceTests
             {
                 ExecutionId = Guid.NewGuid(),
                 GameServerId = trigger.GameServerId,
+                ConnectionId = trigger.ConnectionId,
+                ConnectionGeneration = trigger.ConnectionGeneration,
+                SlotId = trigger.SlotId!.Value,
+                PlayerGuid = trigger.PlayerGuid,
                 Runtime = trigger.Runtime,
                 Correlation = new()
                 {
@@ -342,6 +537,7 @@ public sealed class RulesTriggerServiceTests
                         Correlation = command.Correlation,
                         LogicalEffectId = command.LogicalEffectId,
                         ActionTypeId = "moderation.temporary-ban",
+                        AdminActionId = Guid.NewGuid(),
                         Mode = RuleExecutionMode.Enforce,
                         Outcome = RuleActionExecutionOutcome.Dispatched,
                         ClaimedAtUtc = DateTimeOffset.UtcNow.AddSeconds(-1)
@@ -369,7 +565,14 @@ public sealed class RulesTriggerServiceTests
                     It.IsAny<UpdateRuleActionOutcomeDto>(), It.IsAny<CancellationToken>()))
                 .Returns((Guid _, Guid _, string _, UpdateRuleActionOutcomeDto request, CancellationToken _) =>
                 {
-                    var action = Execution.Actions[0] with { Outcome = request.Result.Outcome, Detail = request.Result.Detail };
+                    var action = Execution.Actions[0] with
+                    {
+                        Outcome = request.Result.Outcome,
+                        Detail = request.Result.Detail,
+                        AdminActionId = request.AdminActionId ?? Execution.Actions[0].AdminActionId,
+                        NativeEvidence = request.NativeEvidence ?? Execution.Actions[0].NativeEvidence,
+                        ResultJson = JsonSerializer.Serialize(request.Result, RulesSerialization.Options)
+                    };
                     Execution = Execution with
                     {
                         Version = Execution.Version + 1,

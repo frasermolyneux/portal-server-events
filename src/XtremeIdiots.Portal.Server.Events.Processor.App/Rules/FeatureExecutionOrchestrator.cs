@@ -18,7 +18,8 @@ namespace XtremeIdiots.Portal.Server.Events.Processor.App.Rules;
 internal interface IUniversalRuleActionExecutor
 {
     Task<string?> UnsupportedReasonAsync(RuleActionDefinition action, RuleInvocation invocation, CancellationToken ct);
-    Task<ActionAvailability> AvailabilityAsync(RuleActionCommand command, DateTimeOffset waitUntilUtc, CancellationToken ct);
+    Task<ActionAvailability> AvailabilityAsync(
+        RuleActionDefinition action, RuleActionCommand command, RuleInvocation invocation, DateTimeOffset waitUntilUtc, CancellationToken ct);
     Task<ActionExecutionResult> ExecuteAsync(
         RuleActionDefinition action, RuleActionCommand command, RuleInvocation invocation, CancellationToken ct);
 }
@@ -31,7 +32,7 @@ internal sealed class RuleExecutionProgress
     public RuleExecutionMode Mode { get; set; }
     public DateTimeOffset? ExpiresAtUtc { get; set; }
     public ActivationIdentifierHistory? Baseline { get; set; }
-    public DateTimeOffset? BindingWaitUntilUtc { get; set; }
+    public DateTimeOffset? ContextWaitUntilUtc { get; set; }
     public DateTimeOffset ContextObservedAtUtc { get; set; }
     public RuleTriggerEnvelope? ContextTrigger { get; set; }
 }
@@ -78,18 +79,14 @@ internal sealed class FeatureExecutionOrchestrator(
             return execution.ExecutionId;
         }
 
-        var rules = JsonSerializer.Deserialize<RuleDefinition[]>(execution.FrozenRulesJson, RulesSerialization.Options)
+        var frozen = JsonSerializer.Deserialize<FeatureRuleSetDocument>(execution.FrozenRulesJson, RulesSerialization.Options)
             ?? throw new InvalidOperationException("Frozen rules are missing.");
-        var validation = new RuleSetValidator().Validate(new FeatureRuleSetDocument
-        {
-            FeatureId = execution.FeatureId,
-            Enabled = true,
-            Rules = rules.ToList()
-        }, RuleSetValidationOptions.ForFeature(execution.FeatureId));
-        if (!validation.IsValid)
+        var validation = new RuleSetValidator().Validate(frozen, RuleSetValidationOptions.ForFeature(execution.FeatureId));
+        if (!validation.IsValid || frozen.FeatureId != execution.FeatureId || frozen.Enabled != true)
         {
             throw new InvalidOperationException("Frozen rules are invalid: " + string.Join("; ", validation.Errors));
         }
+        var rules = frozen.Rules.ToArray();
 
         var progress = execution.DecisionSnapshotJson is null
             ? new RuleExecutionProgress { Mode = configured.Mode, ExpiresAtUtc = configured.ExpiresAtUtc, Baseline = configured.Baseline }
@@ -101,6 +98,10 @@ internal sealed class FeatureExecutionOrchestrator(
                 frozenBaseline.Guid.Available ? frozenBaseline.Guid : supplementalBaseline.Guid,
                 frozenBaseline.Ip.Available ? frozenBaseline.Ip : supplementalBaseline.Ip);
         }
+        if (execution.SiegeSessionId is not null && execution.SiegeSessionId == configured.SiegeSessionId)
+        {
+            progress.ExpiresAtUtc = configured.ExpiresAtUtc;
+        }
         if (progress.ContextTrigger is null || trigger.OccurredAtUtc > progress.ContextObservedAtUtc ||
             trigger.OccurredAtUtc == progress.ContextObservedAtUtc &&
             progress.ContextTrigger.PlayerIpAddress is null && trigger.PlayerIpAddress is not null)
@@ -111,7 +112,7 @@ internal sealed class FeatureExecutionOrchestrator(
         var feature = RulesEngineCatalogueV1.Current.Features.Single(item => item.FeatureId == execution.FeatureId);
         var context = new RuleEvaluationContext(trigger.GameServerId, (int)trigger.GameType, trigger.ConnectionId,
             execution.FeatureId, execution.SiegeSessionId, progress.ContextObservedAtUtc,
-            (trigger.Runtime?.Capabilities ?? []).ToHashSet(StringComparer.Ordinal));
+            (progress.ContextTrigger.Runtime?.Capabilities ?? []).ToHashSet(StringComparer.Ordinal));
         for (var ruleIndex = 0; ruleIndex < rules.Length; ruleIndex++)
         {
             var rule = rules[ruleIndex];
@@ -150,7 +151,7 @@ internal sealed class FeatureExecutionOrchestrator(
                     RuleFeatureExecutionState.Evaluating, ct).ConfigureAwait(false);
             }
 
-            var store = new RepositoryRuleActionStore(repository, execution, rule, ruleIndex, progress, invocation.Trigger);
+            var store = new RepositoryRuleActionStore(repository, execution, rule, ruleIndex, progress, progress.ContextTrigger);
             var planned = new List<PlannedRuleAction>(rule.Actions.Count);
             foreach (var action in rule.Actions)
             {
@@ -166,13 +167,13 @@ internal sealed class FeatureExecutionOrchestrator(
                     return executor.ExecuteAsync(action, command, invocation, token);
                 }, token =>
                 {
-                    if (progress.Mode == RuleExecutionMode.DryRun || unsupported is not null ||
+                    if (unsupported is not null ||
                         store.Execution.Actions.Any(item => item.Correlation.RuleId == rule.Id && item.Correlation.ActionId == action.Id))
                     {
                         return Task.FromResult(new ActionAvailability());
                     }
-                    progress.BindingWaitUntilUtc ??= DateTimeOffset.UtcNow.AddMinutes(2);
-                    return executor.AvailabilityAsync(store.Command(action), progress.BindingWaitUntilUtc.Value, token);
+                    progress.ContextWaitUntilUtc ??= DateTimeOffset.UtcNow.AddMinutes(2);
+                    return executor.AvailabilityAsync(action, store.Command(action), invocation, progress.ContextWaitUntilUtc.Value, token);
                 }));
             }
 
@@ -183,7 +184,10 @@ internal sealed class FeatureExecutionOrchestrator(
             {
                 execution = await SaveProgressAsync(execution, progress, ruleIndex, execution.ActionIndex,
                     RuleFeatureExecutionState.Evaluating, ct).ConfigureAwait(false);
-                await continuations.ScheduleAsync(execution.GameServerId, execution.ExecutionId, ct).ConfigureAwait(false);
+                if (invocation.Trigger.Runtime?.Id == "server-agent")
+                {
+                    await continuations.ScheduleAsync(execution.GameServerId, execution.ExecutionId, ct).ConfigureAwait(false);
+                }
                 invocation.PendingExecutionIds.Add(execution.ExecutionId);
                 return execution.ExecutionId;
             }
@@ -197,6 +201,11 @@ internal sealed class FeatureExecutionOrchestrator(
             }
             if (dispatched.AwaitingOutcome)
             {
+                if (execution.DecisionSnapshotJson != JsonSerializer.Serialize(progress, RulesSerialization.Options))
+                {
+                    execution = await SaveProgressAsync(execution, progress, execution.RuleIndex, execution.ActionIndex,
+                        execution.State, ct).ConfigureAwait(false);
+                }
                 invocation.PendingExecutionIds.Add(execution.ExecutionId);
                 return execution.ExecutionId;
             }
@@ -268,7 +277,7 @@ internal sealed class RepositoryRuleActionStore(
             Execution.SiegeSessionId,
             RuleId = rule.Id,
             ActionId = action.Id
-        }, RulesSerialization.Options))));
+        }, RulesSerialization.Options)))).ToLowerInvariant();
         var message = String(action, "message");
         var reason = String(action, "reason");
         return new RuleActionCommand
@@ -351,6 +360,7 @@ internal sealed class RepositoryRuleActionStore(
             Execution.GameServerId, executionId, actionId, new UpdateRuleActionOutcomeDto
             {
                 ExpectedVersion = Execution.Version,
+                AdminActionId = result.AdminActionId,
                 Result = new RuleActionResult
                 {
                     ExecutionId = executionId,

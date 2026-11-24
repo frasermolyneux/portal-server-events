@@ -18,7 +18,8 @@ internal enum ActionExecutionOutcome
 internal sealed record ActionExecutionResult(
     ActionExecutionOutcome Outcome,
     string? Detail = null,
-    Repository.Abstractions.Models.V1.RulesEngine.RuleActionCommand? NativeCommand = null)
+    Repository.Abstractions.Models.V1.RulesEngine.RuleActionCommand? NativeCommand = null,
+    Guid? AdminActionId = null)
 {
     public bool IsPending => Outcome is ActionExecutionOutcome.Claimed or ActionExecutionOutcome.Dispatched;
     public bool SatisfiesDependency => Outcome is ActionExecutionOutcome.Applied or ActionExecutionOutcome.WouldExecute;
