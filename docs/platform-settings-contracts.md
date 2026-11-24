@@ -62,6 +62,15 @@ Poll is plugin-only: it requires the original native runtime, connection UUID,
 nonzero generation, GUID and slot. The agent has no rules interpreter and does
 not poll this protocol.
 
+Plugin-marked queue mirrors do not start a second rules evaluation. Agent and
+plugin connection UUIDs are otherwise independent: CoD4x source ownership relies
+on the agent's effective `IsCod4xPluginSourceEnabled` configuration flag. When
+enabled, the agent suppresses log-derived, status, server-connected and IP-resolved
+events; configuration changes restart the agent. Loading the plugin alone does
+not enable suppression or share identities. Coordinate that configuration with
+plugin emission during rollout to avoid parallel producer streams and independent
+logical executions.
+
 Plugin-owned effects are returned only to the generation-checking plugin; they
 never fall back to RCON. Agent-owned effects use the explicit
 `AgentObservedConnection` model with nullable native generation: server-events
