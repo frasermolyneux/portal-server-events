@@ -11,6 +11,15 @@ queue-name constants used by both sides of the pipeline:
 Keeping these contracts in a single versioned package ensures the publisher and
 consumer agree on message shapes and queue names.
 
+Connection and IP-resolution events can carry `observationId`, an unsigned
+`connectionGeneration`, `runtime` (ID, actual version, protocol version and
+capabilities), and `rulesEvaluatedByPlugin`. These optional fields describe the
+producer's observed connection; they must not invent continuity after a restart
+or hotload. Keep the same observation ID for retries of one logical observation.
+The connection ID, rather than a transport message ID, identifies a connection
+across its connect and later IP-resolution observations. Runtime capabilities
+describe actual installed executors, not configured or assumed support.
+
 ## Contents
 
 - `Queues` — string constants for every Service Bus queue name (e.g. `player-connected`, `chat-message`, `ban-applied`).
