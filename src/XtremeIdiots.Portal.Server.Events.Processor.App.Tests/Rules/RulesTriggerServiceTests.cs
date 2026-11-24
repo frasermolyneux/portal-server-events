@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text.Json;
 
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -210,10 +211,65 @@ public sealed class RulesTriggerServiceTests
         fixture.Audit.VerifyNoOtherCalls();
     }
 
+    [Fact]
+    public async Task OutcomeContinuationRetainsLateIpObservationForFollowingCommands()
+    {
+        RuleTriggerEnvelope? resumed = null;
+        var fixture = new Fixture(new Feature("vpn-protection", invocation =>
+        {
+            resumed = invocation.Trigger;
+            return Guid.NewGuid();
+        }));
+        var enriched = fixture.Execution.Trigger with
+        {
+            TriggerId = "player.ip-resolved",
+            ObservationId = Guid.NewGuid(),
+            TriggerOccurrenceId = Guid.NewGuid(),
+            OccurredAtUtc = fixture.Execution.Trigger.OccurredAtUtc.AddMilliseconds(10),
+            PlayerIpAddress = "8.8.8.8"
+        };
+        fixture.Execution = fixture.Execution with
+        {
+            DecisionSnapshotJson = JsonSerializer.Serialize(new RuleExecutionProgress
+            {
+                ContextTrigger = enriched,
+                ContextObservedAtUtc = enriched.OccurredAtUtc
+            }, RulesSerialization.Options)
+        };
+
+        await fixture.Service.OutcomeAsync(fixture.Result(RuleActionExecutionOutcome.Failed), default);
+
+        Assert.NotNull(resumed);
+        Assert.Equal(enriched.TriggerId, resumed.TriggerId);
+        Assert.Equal(enriched.TriggerOccurrenceId, resumed.TriggerOccurrenceId);
+        Assert.Equal(enriched.ObservationId, resumed.ObservationId);
+        Assert.Equal(enriched.PlayerIpAddress, resumed.PlayerIpAddress);
+        Assert.Equal(enriched.ConnectionId, resumed.ConnectionId);
+    }
+
+    [Fact]
+    public async Task PersistedContextCannotSubstituteAnotherConnectionDuringResume()
+    {
+        var fixture = new Fixture();
+        fixture.Execution = fixture.Execution with
+        {
+            DecisionSnapshotJson = JsonSerializer.Serialize(new RuleExecutionProgress
+            {
+                ContextTrigger = fixture.Execution.Trigger with { ConnectionId = Guid.NewGuid() }
+            }, RulesSerialization.Options)
+        };
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            fixture.Service.PollAsync(fixture.PollRequest(), default));
+
+        fixture.Api.Verify(item => item.CreateFactSnapshot(
+            It.IsAny<Guid>(), It.IsAny<RuleFactSnapshotRequestDto>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
     private sealed class Feature(string featureId, Func<RuleInvocation, Guid?> process) : IRegisteredRuleFeature
     {
         public string FeatureId => featureId;
-        public IReadOnlySet<string> TriggerIds { get; } = new HashSet<string> { "player.connected" };
+        public IReadOnlySet<string> TriggerIds { get; } = new HashSet<string> { "player.connected", "player.ip-resolved" };
         public Task<Guid?> ProcessAsync(RuleInvocation invocation, CancellationToken ct) =>
             Task.FromResult(process(invocation));
     }
@@ -305,6 +361,7 @@ public sealed class RulesTriggerServiceTests
                     GameServerId = serverId,
                     ConnectionId = request.ConnectionId,
                     PlayerGuid = request.PlayerGuid,
+                    PlayerIpAddress = request.PlayerIpAddress,
                     GameType = request.GameType
                 })));
             var persisted = false;

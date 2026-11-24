@@ -33,6 +33,7 @@ internal sealed class RuleExecutionProgress
     public ActivationIdentifierHistory? Baseline { get; set; }
     public DateTimeOffset? BindingWaitUntilUtc { get; set; }
     public DateTimeOffset ContextObservedAtUtc { get; set; }
+    public RuleTriggerEnvelope? ContextTrigger { get; set; }
 }
 
 internal sealed class RegisteredRuleFeature(
@@ -100,9 +101,12 @@ internal sealed class FeatureExecutionOrchestrator(
                 frozenBaseline.Guid.Available ? frozenBaseline.Guid : supplementalBaseline.Guid,
                 frozenBaseline.Ip.Available ? frozenBaseline.Ip : supplementalBaseline.Ip);
         }
-        if (trigger.OccurredAtUtc > progress.ContextObservedAtUtc)
+        if (progress.ContextTrigger is null || trigger.OccurredAtUtc > progress.ContextObservedAtUtc ||
+            trigger.OccurredAtUtc == progress.ContextObservedAtUtc &&
+            progress.ContextTrigger.PlayerIpAddress is null && trigger.PlayerIpAddress is not null)
         {
             progress.ContextObservedAtUtc = trigger.OccurredAtUtc;
+            progress.ContextTrigger = trigger;
         }
         var feature = RulesEngineCatalogueV1.Current.Features.Single(item => item.FeatureId == execution.FeatureId);
         var context = new RuleEvaluationContext(trigger.GameServerId, (int)trigger.GameType, trigger.ConnectionId,

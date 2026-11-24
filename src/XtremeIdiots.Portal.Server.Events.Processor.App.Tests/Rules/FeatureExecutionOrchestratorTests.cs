@@ -104,6 +104,35 @@ public sealed class FeatureExecutionOrchestratorTests
     }
 
     [Fact]
+    public async Task LatestObservationRemainsFrozenWhenAnOlderTriggerRetries()
+    {
+        var storage = new Storage();
+        var executor = new Executor();
+        var engine = Create(storage, executor);
+        var original = Invocation();
+        var enriched = new RuleInvocation(original.Trigger with
+        {
+            TriggerId = "player.ip-resolved",
+            ObservationId = Guid.NewGuid(),
+            TriggerOccurrenceId = Guid.NewGuid(),
+            PlayerIpAddress = "8.8.8.8",
+            OccurredAtUtc = original.Trigger.OccurredAtUtc.AddSeconds(1)
+        }, original.Facts, null);
+        var rules = Snapshot(Rule("unavailable-ip", 0, "player.first-seen-ip"));
+
+        await engine.ProcessAsync(original, rules, default);
+        await engine.ProcessAsync(enriched, rules, default);
+        await engine.ProcessAsync(original, rules, default);
+
+        var progress = JsonSerializer.Deserialize<RuleExecutionProgress>(
+            storage.Execution!.DecisionSnapshotJson!, RulesSerialization.Options)!;
+        Assert.Equal(enriched.Trigger.ObservationId, progress.ContextTrigger!.ObservationId);
+        Assert.Equal(enriched.Trigger.TriggerOccurrenceId, progress.ContextTrigger.TriggerOccurrenceId);
+        Assert.Equal(enriched.Trigger.OccurredAtUtc, progress.ContextObservedAtUtc);
+        Assert.Empty(executor.Effects);
+    }
+
+    [Fact]
     public async Task DryRunPersistsWouldExecuteWithoutCallingAnyExecutor()
     {
         var storage = new Storage();

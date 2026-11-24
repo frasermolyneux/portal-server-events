@@ -37,7 +37,9 @@ Tag conditions compare tag IDs using any/all/none semantics. GUID first-seen
 history is game-specific; IP history spans games. Immutable pre-observation fact
 snapshots prevent current player/IP/tag writes from changing the answer on retry.
 An unresolved IP can supplement previously unavailable context without replaying
-completed actions.
+completed actions. Continuations retain that proven observation's trigger
+correlation and IP context; an older retry cannot replace it or substitute a
+different connection/runtime.
 
 Siege requires its active, unexpired session, frozen universal rules, timestamped
 activation history and session mode. Baseline membership is not a timestamp.

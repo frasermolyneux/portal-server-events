@@ -1,3 +1,5 @@
+using System.Text.Json;
+
 using Microsoft.Extensions.Logging;
 
 using MX.GeoLocation.Abstractions.Models.V1_1;
@@ -193,7 +195,7 @@ internal sealed class RulesTriggerService(
         {
             return new();
         }
-        var prepared = await PrepareCoreAsync(execution.Trigger, ct).ConfigureAwait(false);
+        var prepared = await PrepareCoreAsync(ResumeTrigger(execution), ct).ConfigureAwait(false);
         var invocation = await CreateInvocationAsync(prepared, ct).ConfigureAwait(false);
         invocation.ExecutionIds[execution.FeatureId] = execution.ExecutionId;
         var results = await host.ProcessAsync(invocation, ct, execution.FeatureId).ConfigureAwait(false);
@@ -207,6 +209,29 @@ internal sealed class RulesTriggerService(
             return await StopInactiveAsync(execution, ct).ConfigureAwait(false);
         }
         return Response(invocation, results);
+    }
+
+    private static RuleTriggerEnvelope ResumeTrigger(RuleFeatureExecutionDto execution)
+    {
+        var progress = execution.DecisionSnapshotJson is null ? null :
+            JsonSerializer.Deserialize<RuleExecutionProgress>(execution.DecisionSnapshotJson, RulesSerialization.Options);
+        if (progress?.ContextTrigger is not { } context)
+        {
+            return execution.Trigger;
+        }
+        var original = execution.Trigger;
+        if (!IsValid(context) || context.GameServerId != original.GameServerId ||
+            context.ConnectionId != original.ConnectionId || context.ConnectionGeneration != original.ConnectionGeneration ||
+            context.GameType != original.GameType || context.SlotId != original.SlotId ||
+            context.PlayerGuid != original.PlayerGuid || context.OccurredAtUtc < original.OccurredAtUtc ||
+            context.Runtime is not { } runtime || original.Runtime is not { } producer ||
+            runtime.Id != producer.Id || runtime.Version != producer.Version ||
+            runtime.ProtocolVersion != producer.ProtocolVersion || runtime.IdentityModel != producer.IdentityModel ||
+            runtime.InstanceId != producer.InstanceId || runtime.StartedAtUtc != producer.StartedAtUtc)
+        {
+            throw new InvalidOperationException("Persisted rules context does not match the execution connection.");
+        }
+        return context;
     }
 
     private async Task<RuleEvaluationResponse> StopInactiveAsync(RuleFeatureExecutionDto execution, CancellationToken ct)
