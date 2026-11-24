@@ -20,6 +20,13 @@ The connection ID, rather than a transport message ID, identifies a connection
 across its connect and later IP-resolution observations. Runtime capabilities
 describe actual installed executors, not configured or assumed support.
 
+Plugin status snapshots can also carry `snapshotId`, `sequence`,
+`observedAtUtc`, and a runtime instance ID/start time. Player rows carry their
+proven connection identity and `Connected` or `Unknown` state. Missing rows and
+unknown continuity are not disconnects. Explicit disconnect observations carry
+the exact connection ID/generation and runtime snapshot metadata; a delayed
+observation must never disconnect a newer occupant of the slot.
+
 ## Contents
 
 - `Queues` — string constants for every Service Bus queue name (e.g. `player-connected`, `chat-message`, `ban-applied`).
