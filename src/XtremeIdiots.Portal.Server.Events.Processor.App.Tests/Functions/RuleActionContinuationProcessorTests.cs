@@ -125,9 +125,13 @@ public sealed class RuleActionContinuationProcessorTests
         actions.Verify(x => x.ClaimForumTopicPublication(It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
-    [Fact]
-    public async Task SuccessLinksBeforeAuditing()
+    [Theory]
+    [InlineData(RuleActionExecutionOutcome.Claimed)]
+    [InlineData(RuleActionExecutionOutcome.OutcomeUnknown)]
+    public async Task LinkedRecordPublishesEvenAfterAmbiguousExecutionAndLinksBeforeAuditing(
+        RuleActionExecutionOutcome outcome)
     {
+        execution = execution with { Actions = [execution.Actions.Single() with { Outcome = outcome }] };
         var claimId = Guid.NewGuid();
         SetupClaim(new { ClaimId = claimId, RequiresManualRecovery = false });
         SetupTopic();
