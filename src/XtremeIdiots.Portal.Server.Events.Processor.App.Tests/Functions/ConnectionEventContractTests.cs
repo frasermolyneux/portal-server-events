@@ -18,7 +18,7 @@ public class ConnectionEventContractTests
              "runtime":{"id":"cod4x-plugin","version":"0.3.0","protocolVersion":1,"capabilities":[],
                "instanceId":"44444444-4444-4444-4444-444444444444","startedAtUtc":"2026-11-23T23:00:00Z"}
             """;
-        const string player = """
+        const string player = /*lang=json,strict*/ """
             {"playerGuid":"abc","username":"player","ipAddress":"8.8.8.8","slotId":2,
              "connectedAtUtc":"2026-11-23T23:59:00Z","state":"Connected",
              "connectionId":"22222222-2222-2222-2222-222222222222","connectionGeneration":42}
