@@ -18,6 +18,7 @@ using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.Players;
 using XtremeIdiots.Portal.Server.Events.Abstractions.V1;
 using XtremeIdiots.Portal.Server.Events.Abstractions.V1.Events;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Commands;
+using XtremeIdiots.Portal.Server.Events.Processor.App.Rules;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Services;
 using XtremeIdiots.Portal.Server.Events.Processor.App.VpnProtection;
 
@@ -27,13 +28,12 @@ public class PlayerConnectedProcessor(
     ILogger<PlayerConnectedProcessor> logger,
     IRepositoryApiClient repositoryApiClient,
     IGeoLocationApiClient geoLocationApiClient,
-    IVpnProtectionService vpnProtectionService,
+    IRulesTriggerService rulesTriggerService,
     IVpnDetectedTagService vpnDetectedTagService,
     IProtectedNameService protectedNameService,
     IWelcomeMessageOrchestrator welcomeMessageOrchestrator,
     IMemoryCache memoryCache,
-    IAuditLogger auditLogger,
-    ISiegeModeService? siegeModeService = null)
+    IAuditLogger auditLogger)
 {
     private static readonly TimeSpan StaleThreshold = TimeSpan.FromMinutes(30);
     private static readonly TimeSpan PlayerCacheExpiration = TimeSpan.FromMinutes(15);
@@ -94,6 +94,8 @@ public class PlayerConnectedProcessor(
             ["ServerId"] = playerEvent.ServerId,
             ["PlayerGuid"] = playerEvent.PlayerGuid
         });
+
+        var prepared = await rulesTriggerService.PrepareAsync(playerEvent, context.CancellationToken).ConfigureAwait(false);
 
         // Check if player exists
         var playerExistsResponse = await repositoryApiClient.Players.V1
@@ -157,21 +159,10 @@ public class PlayerConnectedProcessor(
 
                 var enrichment = await EnrichWithGeoLocation(playerEvent, context.CancellationToken).ConfigureAwait(false);
                 await vpnDetectedTagService.AddIfDetectedAsync(newPlayerContext.PlayerId, enrichment.Intelligence, context.CancellationToken).ConfigureAwait(false);
-                var vpnProtectionResult = await ProcessVpnProtection(
-                    playerEvent,
-                    gameType,
-                    newPlayerContext,
-                    enrichment.Intelligence,
+                var rulesResult = await rulesTriggerService.ProcessAsync(
+                    prepared, enrichment.Intelligence,
                     context.CancellationToken).ConfigureAwait(false);
-                var newPlayerSiegeResult = await ProcessSiegeProtection(
-                    playerEvent,
-                    gameType,
-                    newPlayerContext,
-                    enrichment.Intelligence,
-                    vpnProtectionResult,
-                    message.MessageId,
-                    context.CancellationToken).ConfigureAwait(false);
-                if (!IsDestructiveMatch(vpnProtectionResult) && !newPlayerSiegeResult.WasEnforced)
+                if (!rulesResult.SuppressWelcome)
                 {
                     await TryProcessWelcomeMessage(playerEvent, gameType, newPlayerContext.Tags, enrichment.Country, context.CancellationToken).ConfigureAwait(false);
                 }
@@ -228,21 +219,10 @@ public class PlayerConnectedProcessor(
         // GeoIP enrichment (best-effort, never blocks player processing)
         var enriched = await EnrichWithGeoLocation(playerEvent, context.CancellationToken).ConfigureAwait(false);
         await vpnDetectedTagService.AddIfDetectedAsync(playerContext.PlayerId, enriched.Intelligence, context.CancellationToken).ConfigureAwait(false);
-        var vpnResult = await ProcessVpnProtection(
-            playerEvent,
-            gameType,
-            playerContext,
-            enriched.Intelligence,
+        var rulesSummary = await rulesTriggerService.ProcessAsync(
+            prepared, enriched.Intelligence,
             context.CancellationToken).ConfigureAwait(false);
-        var siegeResult = await ProcessSiegeProtection(
-            playerEvent,
-            gameType,
-            playerContext,
-            enriched.Intelligence,
-            vpnResult,
-            message.MessageId,
-            context.CancellationToken).ConfigureAwait(false);
-        if (!IsDestructiveMatch(vpnResult) && !siegeResult.WasEnforced)
+        if (!rulesSummary.SuppressWelcome)
         {
             await TryProcessWelcomeMessage(playerEvent, gameType, playerContext.Tags, enriched.Country, context.CancellationToken).ConfigureAwait(false);
         }
@@ -371,78 +351,6 @@ public class PlayerConnectedProcessor(
             await Task.Delay(TimeSpan.FromSeconds(1), ct).ConfigureAwait(false);
             throw;
         }
-    }
-
-    private async Task<VpnProtectionProcessingResult> ProcessVpnProtection(
-        PlayerConnectedEvent playerEvent,
-        GameType gameType,
-        PlayerContext playerContext,
-        IpIntelligenceDto? intelligence,
-        CancellationToken ct)
-    {
-        if (playerEvent.ProtectionEvaluatedByPlugin == true || intelligence is null || playerContext.PlayerId == Guid.Empty)
-        {
-            return new VpnProtectionProcessingResult();
-        }
-
-        return await vpnProtectionService.ProcessAsync(
-            new VpnProtectionContext
-            {
-                ServerId = playerEvent.ServerId,
-                GameType = gameType,
-                PlayerId = playerContext.PlayerId,
-                PlayerGuid = playerEvent.PlayerGuid,
-                Username = playerEvent.Username,
-                PlayerTags = playerContext.Tags,
-                SlotId = playerEvent.SlotId
-            },
-            intelligence,
-            ct).ConfigureAwait(false);
-    }
-
-    private static bool IsDestructiveMatch(VpnProtectionProcessingResult result) =>
-        result.Decision.IsMatch && result.Decision.Action is VpnProtectionAction.Kick or VpnProtectionAction.Ban;
-
-    private async Task<SiegeModeProcessingResult> ProcessSiegeProtection(
-        PlayerConnectedEvent playerEvent,
-        GameType gameType,
-        PlayerContext playerContext,
-        IpIntelligenceDto? intelligence,
-        VpnProtectionProcessingResult vpnResult,
-        string messageId,
-        CancellationToken ct)
-    {
-        if (siegeModeService is null || playerEvent.ProtectionEvaluatedByPlugin == true)
-        {
-            return SiegeModeProcessingResult.NoMatch;
-        }
-
-        return await siegeModeService.EvaluateAsync(
-            new SiegeModeEvaluationContext
-            {
-                ServerId = playerEvent.ServerId,
-                GameType = gameType,
-                PlayerGuid = playerEvent.PlayerGuid,
-                Username = playerEvent.Username,
-                SlotId = playerEvent.SlotId,
-                ConnectionId = playerEvent.ConnectionId,
-                IpAddress = playerEvent.IpAddress,
-                EventGeneratedUtc = playerEvent.EventGeneratedUtc,
-                PlayerTags = playerContext.PlayerId == Guid.Empty ? null : playerContext.Tags,
-                Intelligence = intelligence,
-                IsPluginPath = false,
-                SuppressEnforcement = IsDestructiveMatch(vpnResult),
-                ObservationPlayerId = playerContext.PlayerId,
-                IpObservation = IpAddressGuard.IsPersistable(playerEvent.IpAddress)
-                    ? new RecordPlayerIpObservationDto
-                    {
-                        MessageId = messageId,
-                        IpAddress = playerEvent.IpAddress,
-                        ObservedAtUtc = new DateTimeOffset(DateTime.SpecifyKind(playerEvent.EventGeneratedUtc, DateTimeKind.Utc))
-                    }
-                    : null
-            },
-            ct).ConfigureAwait(false);
     }
 
     private async Task<PlayerContext> GetPlayerContext(GameType gameType, string guid)

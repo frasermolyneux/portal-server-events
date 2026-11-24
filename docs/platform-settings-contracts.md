@@ -17,19 +17,64 @@ This document defines how `portal-server-events` consumes platform settings afte
 
 ## VPN Protection and Siege rules
 
-VPN Protection schema version 2 uses nested condition trees; version 1 flat rules
-are rejected and disable VPN enforcement until the configuration is replaced.
-Server overrides can inherit the global condition or replace its entire tree.
-Effective settings are cached for up to three minutes (invalid settings for 30
-seconds). Coordinate the contract and configuration cutover across consumers;
-verify effective VPN settings are disabled after the cache interval before
-replacing existing overrides.
+Both features consume the universal schema version 1 rule documents from
+`XtremeIdiots.Portal.Settings.Contracts.V1`. Global enablement, server enablement
+overrides and inherited/local rules are merged by the shared contract merger.
+Effective valid settings are cached for up to three minutes; malformed documents
+fail explicitly. Old VPN/Siege rule formats are not interpreted or converted.
+Keep both features disabled through the coordinated reset and dependency rollout.
 
-Siege evaluates the settings captured when its session was activated, retaining
-the existing snapshot JSON shape. Both features use three-valued AND/OR: an
-unknown result does not match. VPN reason placeholders for a matching compound
-rule contain the corresponding values of contributing true leaves, in depth-first
-order, separated by commas.
+The registered feature catalogue owns trigger subscriptions and permitted
+conditions/actions. Rules run in configured order; each matching rule's actions
+run in order, followed by its `StopProcessingRules` or `ContinueToNextRule`.
+A stop affects only that feature, even if every action is unsupported. Unsupported
+actions are skipped individually; failed prerequisites skip dependent actions,
+not unrelated ones. There is no strongest-action selection.
+
+Conditions use three-valued AND/OR: False dominates AND, True dominates OR, and
+only True acts. Missing capabilities, histories or intelligence remain Unknown.
+Tag conditions compare tag IDs using any/all/none semantics. GUID first-seen
+history is game-specific; IP history spans games. Immutable pre-observation fact
+snapshots prevent current player/IP/tag writes from changing the answer on retry.
+An unresolved IP can supplement previously unavailable context without replaying
+completed actions.
+
+Siege requires its active, unexpired session, frozen universal rules, timestamped
+activation history and session mode. Baseline membership is not a timestamp.
+Dry-run persists `WouldExecute` decisions without moderation records, messages,
+forum publication or native enforcement. Existing AdminActions and bans are not
+replaced by the engine cutover.
+
+### Execution transports and recovery
+
+The plugin posts bare shared DTOs to `POST /rules/evaluate`, `/rules/outcomes` and
+`/rules/poll`. Responses contain `protocolVersion`, `commands` and `executionIds`.
+Poll is plugin-only: it requires the original native runtime, connection UUID,
+nonzero generation, GUID and slot. The agent has no rules interpreter and does
+not poll this protocol.
+
+Plugin-owned effects are returned only to the generation-checking plugin; they
+never fall back to RCON. Agent-owned effects use the explicit
+`AgentObservedConnection` model with nullable native generation: server-events
+checks the current authoritative observed binding, then the integration checks
+GUID/slot immediately before sending once. This preserves observed identity
+checks, not an atomic native-generation guarantee across a same-GUID reconnect.
+
+Bindings expire at `observedAtUtc + 2 minutes`, never receive time, with at most
+30 seconds of future skew. Unknown/absent status rows are not disconnects.
+Disconnects retire only an exact identity/runtime match. Native work awaiting an
+initial binding is deferred without claiming or dispatching the effect; the
+existing `rule-action-continuations` queue resumes the original feature execution.
+That queue also handles optional forum publication after the moderation record
+is durable, keeping forum network calls off the plugin HTTP request.
+
+Execution decisions, cursors, commands and logical action claims are persisted
+before dispatch. Logical identity includes server, connection, feature, optional
+Siege session, rule and action, not transport observation IDs or settings revisions.
+Claimed/ambiguous native effects are never blindly resent. RCON UDP dispatch is
+not confirmed application; a native drop is not proof of continuing Ban/TempBan
+cache enforcement. Unknown forum outcomes require manual recovery rather than
+posting a duplicate topic. Queue duplicate detection is not required for safety.
 
 ## Troubleshooting Runbook
 

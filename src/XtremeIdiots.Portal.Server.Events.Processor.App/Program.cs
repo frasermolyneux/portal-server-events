@@ -20,6 +20,8 @@ using XtremeIdiots.Portal.Server.Events.Processor.App;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Commands;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Moderation;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Publishing;
+using XtremeIdiots.Portal.Server.Events.Processor.App.Rules;
+using XtremeIdiots.Portal.Server.Events.Processor.App.Functions;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Services;
 using XtremeIdiots.Portal.Server.Events.Processor.App.VpnProtection;
 
@@ -127,13 +129,22 @@ var host = new HostBuilder()
         services.AddSingleton<WelcomeMessageTemplateRenderer>();
         services.AddTransient<IWelcomeMessageOrchestrator, WelcomeMessageOrchestrator>();
 
-        // VPN protection
-        services.AddSingleton<IVpnProtectionSettingsProvider, VpnProtectionSettingsProvider>();
-        services.AddSingleton<IVpnProtectionEvaluator, VpnProtectionEvaluator>();
-        services.AddSingleton<ICod4xVpnProtectionPolicyProvider, Cod4xVpnProtectionPolicyProvider>();
-        services.AddTransient<IVpnProtectionRconEnforcer, VpnProtectionRconEnforcer>();
-        services.AddTransient<IVpnProtectionService, VpnProtectionService>();
-        services.AddTransient<ISiegeModeService, SiegeModeService>();
+        services.AddTransient<ConfiguredFeatureRulesProvider>();
+        services.AddTransient<VpnFeatureRulesProvider>();
+        services.AddTransient<SiegeFeatureRulesProvider>();
+        services.AddTransient<FeatureExecutionOrchestrator>();
+        services.AddTransient<IUniversalRuleActionExecutor, UniversalRuleActionExecutor>();
+        services.AddTransient<IRegisteredRuleFeature>(provider => new RegisteredRuleFeature(
+            provider.GetRequiredService<VpnFeatureRulesProvider>(), provider.GetRequiredService<FeatureExecutionOrchestrator>()));
+        services.AddTransient<IRegisteredRuleFeature>(provider => new RegisteredRuleFeature(
+            provider.GetRequiredService<SiegeFeatureRulesProvider>(), provider.GetRequiredService<FeatureExecutionOrchestrator>()));
+        services.AddTransient<RegisteredFeatureHost>();
+        services.AddTransient<RulesTriggerService>();
+        services.AddTransient<IRulesTriggerService>(provider => provider.GetRequiredService<RulesTriggerService>());
+        services.AddTransient<IRulesPluginTransport>(provider => provider.GetRequiredService<RulesTriggerService>());
+        services.AddTransient<IRulesExecutionResumer>(provider => provider.GetRequiredService<RulesTriggerService>());
+        services.AddSingleton<IRuleActionContinuationPublisher, RuleActionContinuationPublisher>();
+        services.AddSingleton<IRuleExecutionContinuationPublisher, RuleExecutionContinuationPublisher>();
         services.AddTransient<IVpnDetectedTagService, VpnDetectedTagService>();
 
         // Protected name enforcement

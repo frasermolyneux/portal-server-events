@@ -1,0 +1,374 @@
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+
+using Microsoft.Extensions.Logging;
+
+using MX.Api.Abstractions;
+
+using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.RulesEngine;
+using XtremeIdiots.Portal.Repository.Api.Client.V1;
+using XtremeIdiots.Portal.RulesEngine.V1;
+using XtremeIdiots.Portal.Settings.Contracts.V1.Contracts.RulesEngine;
+
+using PortableRuleMatcher = XtremeIdiots.Portal.RulesEngine.V1.RuleMatcher;
+
+namespace XtremeIdiots.Portal.Server.Events.Processor.App.Rules;
+
+internal interface IUniversalRuleActionExecutor
+{
+    Task<string?> UnsupportedReasonAsync(RuleActionDefinition action, RuleInvocation invocation, CancellationToken ct);
+    Task<ActionAvailability> AvailabilityAsync(RuleActionCommand command, DateTimeOffset waitUntilUtc, CancellationToken ct);
+    Task<ActionExecutionResult> ExecuteAsync(
+        RuleActionDefinition action, RuleActionCommand command, RuleInvocation invocation, CancellationToken ct);
+}
+
+internal sealed class RuleExecutionProgress
+{
+    public HashSet<string> MatchedRuleIds { get; set; } = new(StringComparer.Ordinal);
+    public HashSet<string> CompletedRuleIds { get; set; } = new(StringComparer.Ordinal);
+    public HashSet<string> UnknownRuleIds { get; set; } = new(StringComparer.Ordinal);
+    public RuleExecutionMode Mode { get; set; }
+    public DateTimeOffset? ExpiresAtUtc { get; set; }
+    public ActivationIdentifierHistory? Baseline { get; set; }
+    public DateTimeOffset? BindingWaitUntilUtc { get; set; }
+    public DateTimeOffset ContextObservedAtUtc { get; set; }
+}
+
+internal sealed class RegisteredRuleFeature(
+    IFeatureRulesProvider provider,
+    FeatureExecutionOrchestrator orchestrator) : IRegisteredRuleFeature
+{
+    private readonly FeatureDefinition definition = RulesEngineCatalogueV1.Current.Features.Single(item => item.FeatureId == provider.FeatureId);
+    public string FeatureId => definition.FeatureId;
+    public IReadOnlySet<string> TriggerIds { get; } = RulesEngineCatalogueV1.Current.Features
+        .Single(item => item.FeatureId == provider.FeatureId).TriggerIds.ToHashSet(StringComparer.Ordinal);
+
+    public async Task<Guid?> ProcessAsync(RuleInvocation invocation, CancellationToken ct)
+    {
+        var rules = await provider.GetAsync(invocation.Trigger, ct).ConfigureAwait(false);
+        return rules is null ? null : await orchestrator.ProcessAsync(invocation, rules, ct).ConfigureAwait(false);
+    }
+}
+
+internal sealed class FeatureExecutionOrchestrator(
+    IRepositoryApiClient repository,
+    IUniversalRuleActionExecutor executor,
+    IRuleExecutionContinuationPublisher continuations,
+    ILogger<FeatureExecutionOrchestrator> logger,
+    ILogger<OrderedActionDispatcher> dispatcherLogger)
+{
+    public async Task<Guid> ProcessAsync(RuleInvocation invocation, FeatureRulesSnapshot configured, CancellationToken ct)
+    {
+        var trigger = invocation.Trigger;
+        var start = await repository.RuleExecutions.V1.StartExecution(trigger.GameServerId, new StartRuleFeatureExecutionDto
+        {
+            Trigger = trigger,
+            FeatureId = configured.FeatureId,
+            SiegeSessionId = configured.SiegeSessionId,
+            RuleSetRevision = configured.Revision,
+            FrozenRulesJson = configured.RulesJson,
+            FactSnapshotId = invocation.Facts.SnapshotId
+        }, ct).ConfigureAwait(false);
+        var execution = Require(start, "start rules execution");
+        invocation.ExecutionIds[execution.FeatureId] = execution.ExecutionId;
+        if (execution.State is RuleFeatureExecutionState.Stopped or RuleFeatureExecutionState.Completed)
+        {
+            return execution.ExecutionId;
+        }
+
+        var rules = JsonSerializer.Deserialize<RuleDefinition[]>(execution.FrozenRulesJson, RulesSerialization.Options)
+            ?? throw new InvalidOperationException("Frozen rules are missing.");
+        var validation = new RuleSetValidator().Validate(new FeatureRuleSetDocument
+        {
+            FeatureId = execution.FeatureId,
+            Enabled = true,
+            Rules = rules.ToList()
+        }, RuleSetValidationOptions.ForFeature(execution.FeatureId));
+        if (!validation.IsValid)
+        {
+            throw new InvalidOperationException("Frozen rules are invalid: " + string.Join("; ", validation.Errors));
+        }
+
+        var progress = execution.DecisionSnapshotJson is null
+            ? new RuleExecutionProgress { Mode = configured.Mode, ExpiresAtUtc = configured.ExpiresAtUtc, Baseline = configured.Baseline }
+            : JsonSerializer.Deserialize<RuleExecutionProgress>(execution.DecisionSnapshotJson, RulesSerialization.Options)
+                ?? throw new InvalidOperationException("Persisted rule progress is invalid.");
+        if (progress.Baseline is { } frozenBaseline && configured.Baseline is { } supplementalBaseline)
+        {
+            progress.Baseline = new(
+                frozenBaseline.Guid.Available ? frozenBaseline.Guid : supplementalBaseline.Guid,
+                frozenBaseline.Ip.Available ? frozenBaseline.Ip : supplementalBaseline.Ip);
+        }
+        if (trigger.OccurredAtUtc > progress.ContextObservedAtUtc)
+        {
+            progress.ContextObservedAtUtc = trigger.OccurredAtUtc;
+        }
+        var feature = RulesEngineCatalogueV1.Current.Features.Single(item => item.FeatureId == execution.FeatureId);
+        var context = new RuleEvaluationContext(trigger.GameServerId, (int)trigger.GameType, trigger.ConnectionId,
+            execution.FeatureId, execution.SiegeSessionId, progress.ContextObservedAtUtc,
+            (trigger.Runtime?.Capabilities ?? []).ToHashSet(StringComparer.Ordinal));
+        for (var ruleIndex = 0; ruleIndex < rules.Length; ruleIndex++)
+        {
+            var rule = rules[ruleIndex];
+            if (!rule.Enabled || progress.CompletedRuleIds.Contains(rule.Id))
+            {
+                continue;
+            }
+
+            if (!progress.MatchedRuleIds.Contains(rule.Id))
+            {
+                var intelligence = invocation.Intelligence;
+                if (intelligence is null && UsesIntelligence(rule.Condition) && invocation.IntelligenceLookup is { } lookup)
+                {
+                    intelligence = await lookup.Value.ConfigureAwait(false);
+                }
+                var resolver = new SharedRuleConditionResolver(invocation.Facts, intelligence, progress.Baseline,
+                    feature.ConditionIds.ToHashSet(StringComparer.Ordinal));
+                var match = PortableRuleMatcher.EvaluateCondition(rule.Condition, node => resolver.Resolve(node, context));
+                if (match.Value == RuleTruthValue.Unknown)
+                {
+                    progress.UnknownRuleIds.Add(rule.Id);
+                    logger.LogInformation("Rules condition is unknown for feature {FeatureId}, rule {RuleId}: {Diagnostic}",
+                        execution.FeatureId, rule.Id, match.Diagnostic);
+                    continue;
+                }
+
+                progress.UnknownRuleIds.Remove(rule.Id);
+                if (match.Value == RuleTruthValue.False)
+                {
+                    progress.CompletedRuleIds.Add(rule.Id);
+                    continue;
+                }
+
+                progress.MatchedRuleIds.Add(rule.Id);
+                execution = await SaveProgressAsync(execution, progress, ruleIndex, 0,
+                    RuleFeatureExecutionState.Evaluating, ct).ConfigureAwait(false);
+            }
+
+            var store = new RepositoryRuleActionStore(repository, execution, rule, ruleIndex, progress, invocation.Trigger);
+            var planned = new List<PlannedRuleAction>(rule.Actions.Count);
+            foreach (var action in rule.Actions)
+            {
+                var unsupported = await executor.UnsupportedReasonAsync(action, invocation, ct).ConfigureAwait(false);
+                planned.Add(new PlannedRuleAction(action.Id, action.DependsOnActionIds, unsupported, token =>
+                {
+                    var command = store.Command(action);
+                    if (command.ExpiresAtUtc <= DateTimeOffset.UtcNow)
+                    {
+                        return Task.FromResult(new ActionExecutionResult(ActionExecutionOutcome.Stale, "Action decision expired."));
+                    }
+
+                    return executor.ExecuteAsync(action, command, invocation, token);
+                }, token =>
+                {
+                    if (progress.Mode == RuleExecutionMode.DryRun || unsupported is not null ||
+                        store.Execution.Actions.Any(item => item.Correlation.RuleId == rule.Id && item.Correlation.ActionId == action.Id))
+                    {
+                        return Task.FromResult(new ActionAvailability());
+                    }
+                    progress.BindingWaitUntilUtc ??= DateTimeOffset.UtcNow.AddMinutes(2);
+                    return executor.AvailabilityAsync(store.Command(action), progress.BindingWaitUntilUtc.Value, token);
+                }));
+            }
+
+            var dispatched = await new OrderedActionDispatcher(store, dispatcherLogger)
+                .DispatchAsync(execution.ExecutionId, planned, progress.Mode == RuleExecutionMode.DryRun, ct).ConfigureAwait(false);
+            execution = store.Execution;
+            if (dispatched.AwaitingContext)
+            {
+                execution = await SaveProgressAsync(execution, progress, ruleIndex, execution.ActionIndex,
+                    RuleFeatureExecutionState.Evaluating, ct).ConfigureAwait(false);
+                await continuations.ScheduleAsync(execution.GameServerId, execution.ExecutionId, ct).ConfigureAwait(false);
+                invocation.PendingExecutionIds.Add(execution.ExecutionId);
+                return execution.ExecutionId;
+            }
+            foreach (var command in dispatched.Outcomes.Values.Select(item => item.NativeCommand).OfType<RuleActionCommand>())
+            {
+                invocation.Commands.Add(command);
+                if (command.Effect.Type == RuleNativeEffectType.DropPlayer)
+                {
+                    invocation.SuppressWelcome = true;
+                }
+            }
+            if (dispatched.AwaitingOutcome)
+            {
+                invocation.PendingExecutionIds.Add(execution.ExecutionId);
+                return execution.ExecutionId;
+            }
+
+            progress.CompletedRuleIds.Add(rule.Id);
+            progress.UnknownRuleIds.Remove(rule.Id);
+            var nextState = rule.AfterMatch == RuleAfterMatch.StopProcessingRules
+                ? RuleFeatureExecutionState.Stopped
+                : RuleFeatureExecutionState.Evaluating;
+            execution = await SaveProgressAsync(execution, progress, ruleIndex + 1, 0, nextState, ct).ConfigureAwait(false);
+            if (nextState == RuleFeatureExecutionState.Stopped)
+            {
+                return execution.ExecutionId;
+            }
+        }
+
+        await SaveProgressAsync(execution, progress, rules.Length, 0,
+            progress.UnknownRuleIds.Count == 0 ? RuleFeatureExecutionState.Completed : RuleFeatureExecutionState.Evaluating, ct).ConfigureAwait(false);
+        return execution.ExecutionId;
+    }
+
+    private static bool UsesIntelligence(RuleConditionNode? condition) =>
+        condition?.ConditionId == "vpn.intelligence" || condition?.Conditions?.Any(UsesIntelligence) == true;
+
+    private async Task<RuleFeatureExecutionDto> SaveProgressAsync(
+        RuleFeatureExecutionDto execution, RuleExecutionProgress progress, int ruleIndex, int actionIndex,
+        RuleFeatureExecutionState state, CancellationToken ct) =>
+        Require(await repository.RuleExecutions.V1.UpdateProgress(execution.GameServerId, execution.ExecutionId,
+            new UpdateRuleFeatureExecutionProgressDto
+            {
+                ExpectedVersion = execution.Version,
+                RuleIndex = ruleIndex,
+                ActionIndex = actionIndex,
+                State = state,
+                DecisionSnapshotJson = JsonSerializer.Serialize(progress, RulesSerialization.Options),
+                FactSnapshotId = execution.FactSnapshotId
+            }, ct).ConfigureAwait(false), "persist rules cursor");
+
+    internal static T Require<T>(ApiResult<T> result, string operation) where T : class =>
+        result.IsSuccess && result.Result?.Data is { } data ? data :
+            throw new InvalidOperationException($"Unable to {operation}: {result.StatusCode}.");
+}
+
+internal sealed class RepositoryRuleActionStore(
+    IRepositoryApiClient repository,
+    RuleFeatureExecutionDto execution,
+    RuleDefinition rule,
+    int ruleIndex,
+    RuleExecutionProgress progress,
+    RuleTriggerEnvelope currentTrigger) : IRuleActionExecutionStore
+{
+    public RuleFeatureExecutionDto Execution { get; private set; } = execution;
+
+    public RuleActionCommand Command(RuleActionDefinition action)
+    {
+        var stored = Execution.Actions.SingleOrDefault(item =>
+            item.Correlation.RuleId == rule.Id && item.Correlation.ActionId == action.Id);
+        if (stored is not null)
+        {
+            return stored.Command;
+        }
+
+        var trigger = Execution.Trigger;
+        var logicalId = System.Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new
+        {
+            Execution.GameServerId,
+            Execution.ConnectionId,
+            Execution.FeatureId,
+            Execution.SiegeSessionId,
+            RuleId = rule.Id,
+            ActionId = action.Id
+        }, RulesSerialization.Options))));
+        var message = String(action, "message");
+        var reason = String(action, "reason");
+        return new RuleActionCommand
+        {
+            ExecutionId = Execution.ExecutionId,
+            ActionId = action.Id,
+            LogicalEffectId = logicalId,
+            GameServerId = Execution.GameServerId,
+            ConnectionId = Execution.ConnectionId,
+            ConnectionGeneration = currentTrigger.ConnectionGeneration,
+            Runtime = currentTrigger.Runtime ?? new(),
+            PlayerGuid = trigger.PlayerGuid ?? "",
+            SlotId = trigger.SlotId ?? -1,
+            Mode = progress.Mode,
+            ExpiresAtUtc = progress.ExpiresAtUtc is { } expiry && expiry < DateTimeOffset.UtcNow.AddSeconds(30)
+                ? expiry
+                : DateTimeOffset.UtcNow.AddSeconds(30),
+            Correlation = new RuleActionCorrelation
+            {
+                ConnectionId = Execution.ConnectionId,
+                FeatureId = Execution.FeatureId,
+                SiegeSessionId = Execution.SiegeSessionId,
+                RuleId = rule.Id,
+                ActionId = action.Id,
+                RuleSetRevision = Execution.RuleSetRevision,
+                TriggerId = currentTrigger.TriggerId,
+                TriggerOccurrenceId = currentTrigger.TriggerOccurrenceId
+            },
+            Effect = new RuleNativeEffect
+            {
+                Type = action.TypeId switch
+                {
+                    "message.public" => RuleNativeEffectType.PublicMessage,
+                    "message.private" => RuleNativeEffectType.PrivateMessage,
+                    "player.kick" or "moderation.kick-with-record" or "moderation.ban" or "moderation.temporary-ban" => RuleNativeEffectType.DropPlayer,
+                    _ => RuleNativeEffectType.Unknown
+                },
+                Message = message,
+                Reason = currentTrigger.Runtime?.Id == "server-agent" && action.TypeId != "player.kick" ? null : reason
+            }
+        };
+    }
+
+    public async Task<ActionExecutionClaim> ClaimAsync(Guid executionId, string actionId, CancellationToken ct)
+    {
+        var action = rule.Actions.Single(item => item.Id == actionId);
+        var command = Command(action);
+        var stored = Execution.Actions.SingleOrDefault(item => item.LogicalEffectId == command.LogicalEffectId);
+        if (stored is not null)
+        {
+            if (stored.Outcome is RuleActionExecutionOutcome.Claimed or RuleActionExecutionOutcome.Dispatched &&
+                stored.Command.ExpiresAtUtc <= DateTimeOffset.UtcNow)
+            {
+                var expired = new ActionExecutionResult(ActionExecutionOutcome.OutcomeUnknown,
+                    "The claimed action expired without a confirmed correlated outcome; it will not be resent.");
+                await RecordAsync(executionId, actionId, expired, ct).ConfigureAwait(false);
+                return new(false, expired);
+            }
+            return new(false, Convert(stored));
+        }
+
+        var claimed = FeatureExecutionOrchestrator.Require(await repository.RuleExecutions.V1.ClaimAction(
+            Execution.GameServerId, executionId, new ClaimRuleActionDto
+            {
+                ExpectedVersion = Execution.Version,
+                RuleIndex = ruleIndex,
+                ActionIndex = rule.Actions.IndexOf(action),
+                LogicalEffectId = command.LogicalEffectId,
+                Command = command
+            }, ct).ConfigureAwait(false), "claim rules action");
+        Execution = claimed.Execution;
+        return new(claimed.ShouldDispatch, Convert(claimed.Action));
+    }
+
+    public async Task RecordAsync(Guid executionId, string actionId, ActionExecutionResult result, CancellationToken ct)
+    {
+        var action = rule.Actions.Single(item => item.Id == actionId);
+        var command = Command(action);
+        var updated = FeatureExecutionOrchestrator.Require(await repository.RuleExecutions.V1.UpdateActionOutcome(
+            Execution.GameServerId, executionId, actionId, new UpdateRuleActionOutcomeDto
+            {
+                ExpectedVersion = Execution.Version,
+                Result = new RuleActionResult
+                {
+                    ExecutionId = executionId,
+                    GameServerId = Execution.GameServerId,
+                    ActionId = actionId,
+                    LogicalEffectId = command.LogicalEffectId,
+                    Correlation = command.Correlation,
+                    Outcome = Enum.Parse<RuleActionExecutionOutcome>(result.Outcome.ToString()),
+                    Detail = result.Detail,
+                    OccurredAtUtc = DateTimeOffset.UtcNow
+                },
+                NextRuleIndex = ruleIndex,
+                NextActionIndex = result.IsPending ? rule.Actions.IndexOf(action) : rule.Actions.IndexOf(action) + 1,
+                NextState = result.IsPending ? RuleFeatureExecutionState.AwaitingActionOutcome : RuleFeatureExecutionState.Evaluating,
+                DecisionSnapshotJson = JsonSerializer.Serialize(progress, RulesSerialization.Options)
+            }, ct).ConfigureAwait(false), "persist rules action outcome");
+        Execution = updated.Execution;
+    }
+
+    private static ActionExecutionResult Convert(RuleActionExecutionDto action) =>
+        new(Enum.Parse<ActionExecutionOutcome>(action.Outcome.ToString()), action.Detail);
+
+    private static string? String(RuleActionDefinition action, string key) =>
+        action.Parameters.TryGetValue(key, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
+}

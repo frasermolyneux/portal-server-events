@@ -17,4 +17,5 @@ public static class Queues
     public const string BanLiftApplied = "ban-lift-applied";
     public const string BanSyncFailed = "ban-sync-failed";
     public const string PlayerIpResolved = "player-ip-resolved";
+    public const string RuleActionContinuations = "rule-action-continuations";
 }
