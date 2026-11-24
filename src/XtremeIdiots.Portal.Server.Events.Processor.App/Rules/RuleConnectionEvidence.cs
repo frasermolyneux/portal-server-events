@@ -2,6 +2,8 @@ using System.Net;
 
 using Microsoft.Extensions.Logging;
 
+using MX.Api.Client;
+
 using XtremeIdiots.Portal.Repository.Abstractions.Constants.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.RulesEngine;
 using XtremeIdiots.Portal.Repository.Api.Client.V1;
@@ -109,15 +111,26 @@ internal static class RuleConnectionEvidence
     private static async Task<bool> ObserveAsync(
         IRepositoryApiClient repository, RuleConnectionStatusSnapshotDto snapshot, ILogger logger, CancellationToken ct)
     {
-        var response = await repository.RuleConnectionBindings.V1.ObserveSnapshot(
-            snapshot.GameServerId, snapshot, ct).ConfigureAwait(false);
-        if (response.StatusCode is HttpStatusCode.BadRequest or HttpStatusCode.Conflict)
+        HttpStatusCode? rejectedStatusCode;
+        try
         {
-            logger.LogWarning("Repository rejected stale, conflicting or invalid rules snapshot {SnapshotId} for server {ServerId}: {StatusCode}",
-                snapshot.SnapshotId, snapshot.GameServerId, response.StatusCode);
-            return false;
+            var response = await repository.RuleConnectionBindings.V1.ObserveSnapshot(
+                snapshot.GameServerId, snapshot, ct).ConfigureAwait(false);
+            if (response.StatusCode is not (HttpStatusCode.BadRequest or HttpStatusCode.Conflict))
+            {
+                FeatureExecutionOrchestrator.Require(response, "observe rules connection evidence");
+                return true;
+            }
+            rejectedStatusCode = response.StatusCode;
         }
-        FeatureExecutionOrchestrator.Require(response, "observe rules connection evidence");
-        return true;
+        catch (ApiHttpRequestException exception) when (
+            exception.StatusCode is HttpStatusCode.BadRequest or HttpStatusCode.Conflict)
+        {
+            rejectedStatusCode = exception.StatusCode;
+        }
+
+        logger.LogWarning("Repository rejected stale, conflicting or invalid rules snapshot {SnapshotId} for server {ServerId}: {StatusCode}",
+            snapshot.SnapshotId, snapshot.GameServerId, rejectedStatusCode);
+        return false;
     }
 }

@@ -43,6 +43,11 @@ correlation and IP context; an older retry cannot replace it or substitute a
 different connection/runtime. New context arriving during an older pending
 native claim is saved without changing that command, state or cursor.
 
+Repository HTTP 400/409 connection-snapshot rejections are logged and cannot
+supply fresh rule facts, including when the client throws its typed HTTP error.
+These rejections do not fail routine status/disconnect processing. Other HTTP
+and transport failures still propagate for normal retry handling.
+
 Siege requires its active, unexpired session, frozen universal rules, timestamped
 activation history and session mode. Baseline membership is not a timestamp.
 Dry-run persists `WouldExecute` decisions without moderation records, messages,
