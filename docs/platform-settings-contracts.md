@@ -90,8 +90,13 @@ new player's profile, is deferred without claiming or dispatching the effect.
 The existing `rule-action-continuations` queue resumes agent-owned executions;
 plugin-owned executions remain on plugin polling. Context waits are bounded to
 two minutes and do not replace the frozen pre-observation facts.
-That queue also handles optional forum publication after the moderation record
-is durable, keeping forum network calls off the plugin HTTP request.
+That queue also handles optional forum publication, keeping forum network calls
+off the plugin HTTP request. Publication intent is queued before creating the
+moderation record, so a queue outage cannot strand an already-created record
+without its requested continuation. The worker resolves the atomic record link,
+reschedules while the record write is pending, and never retries native effects.
+An expired claim without a record surfaces through normal queue retry/dead-letter
+handling; a terminal action without a record does not publish a topic.
 
 Execution decisions, cursors, commands and logical action claims are persisted
 before dispatch. Logical identity includes server, connection, feature, optional

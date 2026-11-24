@@ -55,6 +55,12 @@ internal sealed class RepositoryRuleModerationRecordWriter(
             expires = claim.ClaimedAtUtc.AddMinutes(minutes).UtcDateTime;
         }
 
+        if (action.Parameters.TryGetValue("postToForums", out var forums) && forums.ValueKind == JsonValueKind.True)
+        {
+            await continuations.PublishAsync(new(
+                command.LogicalEffectId, command.ExecutionId, command.ActionId, command.GameServerId), ct).ConfigureAwait(false);
+        }
+
         var result = FeatureExecutionOrchestrator.Require(await repository.RuleExecutions.V1.EnsureRuleActionAdminAction(
             command.GameServerId, command.ExecutionId, command.ActionId, new EnsureRuleActionAdminActionDto
             {
@@ -80,15 +86,6 @@ internal sealed class RepositoryRuleModerationRecordWriter(
                 .WithProperty("ActionId", command.ActionId)
                 .WithProperty("Type", type.ToString())
                 .Build());
-        }
-        if (action.Parameters.TryGetValue("postToForums", out var forums) && forums.ValueKind == JsonValueKind.True &&
-            record.ForumTopicId is null)
-        {
-            var username = invocation.Trigger.Username ?? record.Player?.Username;
-            await continuations.PublishAsync(new(
-                command.LogicalEffectId, command.ExecutionId, command.ActionId, record.AdminActionId,
-                command.GameServerId, invocation.Trigger.GameType, record.PlayerId, username, record.Type,
-                record.Created, record.Text, null), ct).ConfigureAwait(false);
         }
         return record.AdminActionId;
     }

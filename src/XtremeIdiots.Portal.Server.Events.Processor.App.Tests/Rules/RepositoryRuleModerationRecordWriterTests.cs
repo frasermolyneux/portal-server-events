@@ -56,8 +56,23 @@ public sealed class RepositoryRuleModerationRecordWriterTests
         await fixture.Writer.PersistAsync(fixture.Action, fixture.Command, fixture.Invocation, default);
 
         var continuation = Assert.Single(fixture.Continuations.Messages);
-        Assert.Equal(fixture.RecordId, continuation.AdminActionId);
+        Assert.Equal(fixture.Command.ExecutionId, continuation.ExecutionId);
         Assert.Equal(fixture.Command.LogicalEffectId, continuation.LogicalEffectId);
+        fixture.Audit.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task FailedIntentPublicationCannotCreateAnUnrecoverableModerationRecord()
+    {
+        var fixture = new Fixture();
+        fixture.Action.Parameters["postToForums"] = System.Text.Json.JsonSerializer.SerializeToElement(true);
+        fixture.Continuations.Failure = new InvalidOperationException("Queue unavailable.");
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            fixture.Writer.PersistAsync(fixture.Action, fixture.Command, fixture.Invocation, default));
+
+        fixture.Api.Verify(item => item.EnsureRuleActionAdminAction(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<string>(),
+            It.IsAny<EnsureRuleActionAdminActionDto>(), It.IsAny<CancellationToken>()), Times.Never);
         fixture.Audit.VerifyNoOtherCalls();
     }
 
@@ -78,6 +93,23 @@ public sealed class RepositoryRuleModerationRecordWriterTests
     }
 
     [Fact]
+    public async Task AmbiguousRecordWriteRetainsItsDurablePublicationIntent()
+    {
+        var fixture = new Fixture();
+        fixture.Action.Parameters["postToForums"] = System.Text.Json.JsonSerializer.SerializeToElement(true);
+        fixture.Api.Setup(item => item.EnsureRuleActionAdminAction(
+                It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<string>(),
+                It.IsAny<EnsureRuleActionAdminActionDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<EnsureAutomatedActionResultDto>(HttpStatusCode.InternalServerError));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            fixture.Writer.PersistAsync(fixture.Action, fixture.Command, fixture.Invocation, default));
+
+        Assert.Single(fixture.Continuations.Messages);
+        fixture.Audit.VerifyNoOtherCalls();
+    }
+
+    [Fact]
     public async Task DryRunCannotReachPersistenceOrForumIntegrations()
     {
         var fixture = new Fixture();
@@ -92,9 +124,14 @@ public sealed class RepositoryRuleModerationRecordWriterTests
 
     private sealed class Continuations : IRuleActionContinuationPublisher
     {
-        public List<RuleActionContinuation> Messages { get; } = [];
-        public Task PublishAsync(RuleActionContinuation continuation, CancellationToken ct = default)
+        public List<RuleActionPublicationIntent> Messages { get; } = [];
+        public Exception? Failure { get; set; }
+        public Task PublishAsync(RuleActionPublicationIntent continuation, CancellationToken ct = default)
         {
+            if (Failure is not null)
+            {
+                return Task.FromException(Failure);
+            }
             Messages.Add(continuation);
             return Task.CompletedTask;
         }
@@ -172,6 +209,10 @@ public sealed class RepositoryRuleModerationRecordWriterTests
                     It.IsAny<EnsureRuleActionAdminActionDto>(), It.IsAny<CancellationToken>()))
                 .Returns((Guid _, Guid _, string _, EnsureRuleActionAdminActionDto request, CancellationToken _) =>
                 {
+                    if (Action.Parameters.TryGetValue("postToForums", out var forums) && forums.ValueKind == JsonValueKind.True)
+                    {
+                        Assert.Single(Continuations.Messages);
+                    }
                     Request = request;
                     persisted = true;
                     var result = JsonConvert.DeserializeObject<EnsureAutomatedActionResultDto>(JsonConvert.SerializeObject(new

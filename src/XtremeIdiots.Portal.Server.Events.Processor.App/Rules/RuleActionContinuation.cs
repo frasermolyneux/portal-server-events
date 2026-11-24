@@ -8,6 +8,12 @@ using XtremeIdiots.Portal.Server.Events.Processor.App.Functions;
 
 namespace XtremeIdiots.Portal.Server.Events.Processor.App.Rules;
 
+internal sealed record RuleActionPublicationIntent(
+    string LogicalEffectId,
+    Guid ExecutionId,
+    string ActionId,
+    Guid GameServerId);
+
 internal sealed record RuleActionContinuation(
     string LogicalEffectId,
     Guid ExecutionId,
@@ -24,24 +30,29 @@ internal sealed record RuleActionContinuation(
 
 internal interface IRuleActionContinuationPublisher
 {
-    Task PublishAsync(RuleActionContinuation continuation, CancellationToken ct = default);
+    Task PublishAsync(RuleActionPublicationIntent intent, CancellationToken ct = default);
 }
 
-internal sealed class RuleActionContinuationPublisher(ServiceBusClient client) : IRuleActionContinuationPublisher
+internal sealed class RuleActionContinuationPublisher(ServiceBusClient client) : IRuleActionContinuationPublisher, IAsyncDisposable
 {
     private readonly ServiceBusSender sender = client.CreateSender(Queues.RuleActionContinuations);
 
-    public Task PublishAsync(RuleActionContinuation continuation, CancellationToken ct = default)
-    {
-        ArgumentNullException.ThrowIfNull(continuation);
-        ArgumentException.ThrowIfNullOrWhiteSpace(continuation.LogicalEffectId);
+    public Task PublishAsync(RuleActionPublicationIntent intent, CancellationToken ct = default) =>
+        sender.SendMessageAsync(CreateMessage(intent), ct);
 
-        var body = JsonSerializer.Serialize(continuation, JsonOptions.Default);
-        var message = new ServiceBusMessage(BinaryData.FromString(body))
+    public Task ScheduleAsync(RuleActionPublicationIntent intent, DateTimeOffset scheduledAtUtc, CancellationToken ct) =>
+        sender.ScheduleMessageAsync(CreateMessage(intent), scheduledAtUtc, ct);
+
+    public ValueTask DisposeAsync() => sender.DisposeAsync();
+
+    private static ServiceBusMessage CreateMessage(RuleActionPublicationIntent intent)
+    {
+        ArgumentNullException.ThrowIfNull(intent);
+        ArgumentException.ThrowIfNullOrWhiteSpace(intent.LogicalEffectId);
+        return new ServiceBusMessage(BinaryData.FromString(JsonSerializer.Serialize(intent, JsonOptions.Default)))
         {
-            MessageId = continuation.LogicalEffectId,
+            MessageId = intent.LogicalEffectId,
             ContentType = "application/json"
         };
-        return sender.SendMessageAsync(message, ct);
     }
 }

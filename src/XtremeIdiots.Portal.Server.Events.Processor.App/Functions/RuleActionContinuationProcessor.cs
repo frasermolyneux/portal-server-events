@@ -10,6 +10,7 @@ using MX.Observability.ApplicationInsights.Auditing.Models;
 
 using XtremeIdiots.Portal.Repository.Abstractions.Constants.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.AdminActions;
+using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.RulesEngine;
 using XtremeIdiots.Portal.Repository.Api.Client.V1;
 using XtremeIdiots.Portal.Server.Events.Abstractions.V1;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Rules;
@@ -22,7 +23,8 @@ public sealed class RuleActionContinuationProcessor(
     IRepositoryApiClient repositoryApiClient,
     IAdminActionTopics adminActionTopics,
     IAuditLogger auditLogger,
-    IRulesExecutionResumer rulesResumer)
+    IRulesExecutionResumer rulesResumer,
+    ServiceBusClient serviceBusClient)
 {
     [Function(nameof(ProcessRuleActionContinuation))]
     public async Task ProcessRuleActionContinuation(
@@ -44,8 +46,48 @@ public sealed class RuleActionContinuationProcessor(
             return;
         }
 
-        var continuation = JsonSerializer.Deserialize<RuleActionContinuation>(message.Body, JsonOptions.Default)
-            ?? throw new InvalidOperationException("Rule action continuation is null.");
+        var intent = JsonSerializer.Deserialize<RuleActionPublicationIntent>(message.Body, JsonOptions.Default)
+            ?? throw new InvalidOperationException("Rule publication intent is null.");
+        if (intent.GameServerId == Guid.Empty || intent.ExecutionId == Guid.Empty ||
+            string.IsNullOrWhiteSpace(intent.ActionId) || string.IsNullOrWhiteSpace(intent.LogicalEffectId))
+        {
+            throw new InvalidOperationException("Rule publication intent has no action identity.");
+        }
+        var execution = FeatureExecutionOrchestrator.Require(await repositoryApiClient.RuleExecutions.V1.GetExecution(
+            intent.GameServerId, intent.ExecutionId, ct).ConfigureAwait(false), "load forum publication action");
+        var action = execution.Actions.SingleOrDefault(item =>
+            item.ActionId == intent.ActionId && item.LogicalEffectId == intent.LogicalEffectId);
+        if (execution.GameServerId != intent.GameServerId || execution.ExecutionId != intent.ExecutionId ||
+            action is null || action.Mode != RuleExecutionMode.Enforce)
+        {
+            throw new InvalidOperationException("Forum publication does not match an enforcing action.");
+        }
+        if (action.AdminActionId is null)
+        {
+            if (action.Outcome == RuleActionExecutionOutcome.Claimed)
+            {
+                if (action.Command.ExpiresAtUtc <= DateTimeOffset.UtcNow)
+                {
+                    throw new InvalidOperationException("Forum publication action expired without a linked record; inspect the durable claim.");
+                }
+                await using var publications = new RuleActionContinuationPublisher(serviceBusClient);
+                await publications.ScheduleAsync(intent, DateTimeOffset.UtcNow.AddSeconds(15), ct).ConfigureAwait(false);
+                return;
+            }
+            logger.LogWarning("Forum publication has no moderation record for effect {LogicalEffectId}, execution {ExecutionId}, action {ActionId}: {Outcome}",
+                intent.LogicalEffectId, intent.ExecutionId, intent.ActionId, action.Outcome);
+            return;
+        }
+        var record = FeatureExecutionOrchestrator.Require(await repositoryApiClient.AdminActions.V1.GetAdminAction(
+            action.AdminActionId.Value, ct).ConfigureAwait(false), "load linked forum publication record");
+        if (record.AdminActionId != action.AdminActionId)
+        {
+            throw new InvalidOperationException("Forum publication returned a different moderation record.");
+        }
+        var continuation = new RuleActionContinuation(
+            intent.LogicalEffectId, intent.ExecutionId, intent.ActionId, record.AdminActionId, intent.GameServerId,
+            execution.Trigger.GameType, record.PlayerId, execution.Trigger.Username ?? record.Player?.Username,
+            record.Type, record.Created, record.Text, null);
 
         if (string.IsNullOrWhiteSpace(continuation.LogicalEffectId) ||
             string.IsNullOrWhiteSpace(continuation.ActionId) ||
