@@ -17,6 +17,7 @@ using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.Players;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.RecentPlayers;
 using XtremeIdiots.Portal.Server.Events.Abstractions.V1;
 using XtremeIdiots.Portal.Server.Events.Abstractions.V1.Events;
+using XtremeIdiots.Portal.Server.Events.Processor.App.Rules;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Services;
 
 namespace XtremeIdiots.Portal.Server.Events.Processor.App.Functions;
@@ -63,6 +64,8 @@ public sealed class ServerStatusProcessor(
             logger.LogWarning("ServerStatus has empty ServerId. MessageId: {MessageId}", message.MessageId);
             return;
         }
+
+        await RuleConnectionEvidence.ObserveAsync(repositoryApiClient, evt, logger, context.CancellationToken).ConfigureAwait(false);
 
         if (string.IsNullOrWhiteSpace(evt.MapName))
         {

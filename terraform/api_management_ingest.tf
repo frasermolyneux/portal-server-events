@@ -335,22 +335,38 @@ resource "azurerm_api_management_api_operation_policy" "cod4x_ingest_active_bans
 XML
 }
 
-# Synchronous VPN Protection evaluation for the CoD4x plugin. The plugin retains
-# its least-privilege product subscription key while APIM authenticates to the
+# Universal rules transport for the CoD4x plugin. APIM authenticates to the
 # Server Events Function with managed identity.
-resource "azurerm_api_management_api_operation" "cod4x_ingest_vpn_protection_evaluate_post" {
-  count = local.cod4x_ingest_enabled ? 1 : 0
+locals {
+  cod4x_ingest_rules_operations = {
+    evaluate = {
+      display_name = "Evaluate Rules"
+      description  = "Evaluate a normalized rules trigger."
+    }
+    outcomes = {
+      display_name = "Record Rules Action Outcome"
+      description  = "Record a rules action outcome."
+    }
+    poll = {
+      display_name = "Poll Rules Execution"
+      description  = "Poll pending rules executions."
+    }
+  }
+}
 
-  operation_id        = "post-vpn-protection-evaluate"
+resource "azurerm_api_management_api_operation" "cod4x_ingest_rules_post" {
+  for_each = local.cod4x_ingest_enabled ? local.cod4x_ingest_rules_operations : {}
+
+  operation_id        = "post-rules-${each.key}"
   api_name            = azurerm_api_management_api.cod4x_ingest[0].name
   api_management_name = local.api_management.name
   resource_group_name = local.api_management.resource_group_name
-  display_name        = "Evaluate VPN Protection"
+  display_name        = each.value.display_name
   method              = "POST"
-  url_template        = "/vpn-protection/evaluate"
+  url_template        = "/rules/${each.key}"
 
   request {
-    description = "Evaluates CoD4x VPN Protection rules for a connecting player without profile-tag exclusions."
+    description = each.value.description
 
     representation {
       content_type = "application/json"
@@ -359,7 +375,7 @@ resource "azurerm_api_management_api_operation" "cod4x_ingest_vpn_protection_eva
 
   response {
     status_code = 200
-    description = "Evaluation completed"
+    description = "Rules request completed"
   }
 
   response {
@@ -368,18 +384,18 @@ resource "azurerm_api_management_api_operation" "cod4x_ingest_vpn_protection_eva
   }
 
   response {
-    status_code = 503
-    description = "IP intelligence unavailable"
+    status_code = 500
+    description = "Rules request failed"
   }
 }
 
-resource "azurerm_api_management_api_operation_policy" "cod4x_ingest_vpn_protection_evaluate_post" {
-  count = local.cod4x_ingest_enabled ? 1 : 0
+resource "azurerm_api_management_api_operation_policy" "cod4x_ingest_rules_post" {
+  for_each = local.cod4x_ingest_enabled ? local.cod4x_ingest_rules_operations : {}
 
   api_name            = azurerm_api_management_api.cod4x_ingest[0].name
   api_management_name = local.api_management.name
   resource_group_name = local.api_management.resource_group_name
-  operation_id        = azurerm_api_management_api_operation.cod4x_ingest_vpn_protection_evaluate_post[0].operation_id
+  operation_id        = azurerm_api_management_api_operation.cod4x_ingest_rules_post[each.key].operation_id
 
   xml_content = <<XML
 <policies>
@@ -392,86 +408,7 @@ resource "azurerm_api_management_api_operation_policy" "cod4x_ingest_vpn_protect
       <value>@("Bearer " + (string)context.Variables[&quot;serverEventsToken&quot;])</value>
     </set-header>
     <set-backend-service base-url="https://${azurerm_linux_function_app.function_app.default_hostname}" />
-    <rewrite-uri template="/api/vpn-protection/evaluate" copy-unmatched-params="false" />
-  </inbound>
-  <backend>
-    <forward-request timeout="15" />
-  </backend>
-  <outbound>
-    <base />
-  </outbound>
-  <on-error>
-    <base />
-  </on-error>
-</policies>
-XML
-}
-
-resource "azurerm_api_management_api_operation" "cod4x_ingest_siege_mode_outcome_post" {
-  count = local.cod4x_ingest_enabled ? 1 : 0
-
-  operation_id        = "post-siege-mode-outcome"
-  api_name            = azurerm_api_management_api.cod4x_ingest[0].name
-  api_management_name = local.api_management.name
-  resource_group_name = local.api_management.resource_group_name
-  display_name        = "Record Siege Mode Action Outcome"
-  method              = "POST"
-  url_template        = "/siege-mode/outcome"
-
-  request {
-    description = "Records the correlated outcome of a dispatched Siege Mode action."
-
-    representation {
-      content_type = "application/json"
-    }
-  }
-
-  response {
-    status_code = 204
-    description = "Outcome recorded"
-  }
-
-  response {
-    status_code = 400
-    description = "Invalid request"
-  }
-
-  response {
-    status_code = 404
-    description = "Session or action not found"
-  }
-
-  response {
-    status_code = 409
-    description = "Conflicting outcome"
-  }
-
-  response {
-    status_code = 503
-    description = "Outcome persistence unavailable"
-  }
-}
-
-resource "azurerm_api_management_api_operation_policy" "cod4x_ingest_siege_mode_outcome_post" {
-  count = local.cod4x_ingest_enabled ? 1 : 0
-
-  api_name            = azurerm_api_management_api.cod4x_ingest[0].name
-  api_management_name = local.api_management.name
-  resource_group_name = local.api_management.resource_group_name
-  operation_id        = azurerm_api_management_api_operation.cod4x_ingest_siege_mode_outcome_post[0].operation_id
-
-  xml_content = <<XML
-<policies>
-  <inbound>
-    <base />
-    <authentication-managed-identity resource="${local.server_events_api.application.primary_identifier_uri}"
-                                     client-id="${local.managed_identities.api_management.client_id}"
-                                     output-token-variable-name="serverEventsToken" />
-    <set-header name="Authorization" exists-action="override">
-      <value>@("Bearer " + (string)context.Variables[&quot;serverEventsToken&quot;])</value>
-    </set-header>
-    <set-backend-service base-url="https://${azurerm_linux_function_app.function_app.default_hostname}" />
-    <rewrite-uri template="/api/siege-mode/outcome" copy-unmatched-params="false" />
+    <rewrite-uri template="/api/rules/${each.key}" copy-unmatched-params="false" />
   </inbound>
   <backend>
     <forward-request timeout="15" />

@@ -19,6 +19,7 @@ using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.Players;
 using XtremeIdiots.Portal.Repository.Api.Client.V1;
 using XtremeIdiots.Portal.Server.Events.Abstractions.V1.Events;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Functions;
+using XtremeIdiots.Portal.Server.Events.Processor.App.Rules;
 using XtremeIdiots.Portal.Server.Events.Processor.App.VpnProtection;
 
 using static XtremeIdiots.Portal.Server.Events.Processor.App.Tests.ServiceBusTestHelpers;
@@ -34,9 +35,9 @@ public class PlayerIpResolvedProcessorTests
     private readonly Mock<IGeoLocationApiClient> _geoLocationApiClient = new();
     private readonly Mock<IVersionedGeoLookupApi> _versionedGeoLookupApi = new();
     private readonly Mock<MX.GeoLocation.Abstractions.Interfaces.V1_1.IGeoLookupApi> _geoLookupApi = new();
-    private readonly Mock<IVpnProtectionService> _vpnProtectionService = new();
+    private readonly Mock<IRulesTriggerService> _rulesTriggerService = new();
+    private readonly PreparedRulesTrigger _prepared = new(null!, null!);
     private readonly Mock<IVpnDetectedTagService> _vpnDetectedTagService = new();
-    private readonly Mock<ISiegeModeService> _siegeModeService = new();
     private readonly IMemoryCache _cache;
     private readonly Mock<IAuditLogger> _auditLogger = new();
     private readonly Mock<FunctionContext> _functionContext = new();
@@ -61,18 +62,18 @@ public class PlayerIpResolvedProcessorTests
         _geoLookupApi
             .Setup(x => x.GetIpIntelligence(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new ApiResult<IpIntelligenceDto>(System.Net.HttpStatusCode.NotFound));
-        _vpnProtectionService
+        _rulesTriggerService
+            .Setup(x => x.PrepareAsync(It.IsAny<PlayerIpResolvedEvent>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(_prepared);
+        _rulesTriggerService
             .Setup(x => x.ProcessAsync(
-                It.IsAny<VpnProtectionContext>(),
-                It.IsAny<IpIntelligenceDto>(),
+                It.IsAny<PreparedRulesTrigger?>(),
+                It.IsAny<IpIntelligenceDto?>(),
                 It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new VpnProtectionProcessingResult());
+            .ReturnsAsync(new RulesProcessingSummary());
         _vpnDetectedTagService
             .Setup(x => x.AddIfDetectedAsync(It.IsAny<Guid>(), It.IsAny<IpIntelligenceDto>(), It.IsAny<CancellationToken>()))
             .Returns(Task.CompletedTask);
-        _siegeModeService
-            .Setup(x => x.EvaluateAsync(It.IsAny<SiegeModeEvaluationContext>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(SiegeModeProcessingResult.NoMatch);
 
         _cache = new MemoryCache(Options.Create(new MemoryCacheOptions()));
 
@@ -80,11 +81,10 @@ public class PlayerIpResolvedProcessorTests
             _logger.Object,
             _repoClient.Object,
             _geoLocationApiClient.Object,
-            _vpnProtectionService.Object,
+            _rulesTriggerService.Object,
             _vpnDetectedTagService.Object,
             _cache,
-            _auditLogger.Object,
-            _siegeModeService.Object);
+            _auditLogger.Object);
     }
 
     private static PlayerIpResolvedEvent CreateValidEvent(
@@ -252,9 +252,7 @@ public class PlayerIpResolvedProcessorTests
 
         _playersApi.Verify(x => x.RecordPlayerIpObservation(
             TestPlayerId, It.IsAny<RecordPlayerIpObservationDto>(), It.IsAny<CancellationToken>()), Times.Once);
-        _vpnProtectionService.Verify(x => x.ProcessAsync(It.IsAny<VpnProtectionContext>(), It.IsAny<IpIntelligenceDto>(), It.IsAny<CancellationToken>()), Times.Never);
-        _siegeModeService.Verify(x => x.EvaluateAsync(
-            It.IsAny<SiegeModeEvaluationContext>(), It.IsAny<CancellationToken>()), Times.Never);
+        _rulesTriggerService.VerifyNoOtherCalls();
     }
 
     [Fact]
@@ -298,7 +296,7 @@ public class PlayerIpResolvedProcessorTests
         await _sut.ProcessPlayerIpResolved(CreateMessage(evt), _functionContext.Object);
 
         _playersApi.Verify(x => x.RecordPlayerIpObservation(It.IsAny<Guid>(), It.IsAny<RecordPlayerIpObservationDto>(), It.IsAny<CancellationToken>()), Times.Once);
-        _vpnProtectionService.Verify(x => x.ProcessAsync(It.IsAny<VpnProtectionContext>(), It.IsAny<IpIntelligenceDto>(), It.IsAny<CancellationToken>()), Times.Never);
+        _rulesTriggerService.VerifyNoOtherCalls();
     }
 
     [Fact]
@@ -316,11 +314,11 @@ public class PlayerIpResolvedProcessorTests
         await _sut.ProcessPlayerIpResolved(message, _functionContext.Object);
 
         _playersApi.Verify(x => x.RecordPlayerIpObservation(It.IsAny<Guid>(), It.IsAny<RecordPlayerIpObservationDto>(), It.IsAny<CancellationToken>()), Times.Once);
-        _vpnProtectionService.Verify(x => x.ProcessAsync(It.IsAny<VpnProtectionContext>(), It.IsAny<IpIntelligenceDto>(), It.IsAny<CancellationToken>()), Times.Never);
+        _rulesTriggerService.VerifyNoOtherCalls();
     }
 
     [Fact]
-    public async Task ValidEvent_WithIntelligence_InvokesVpnProtection()
+    public async Task ValidEvent_WithIntelligence_PreparesIdentityAndProcessesSharedRules()
     {
         var evt = CreateValidEvent(slotId: 0, connectionId: Guid.Parse("33333333-3333-3333-3333-333333333333"));
         var message = CreateMessage(evt);
@@ -335,77 +333,61 @@ public class PlayerIpResolvedProcessorTests
             .ReturnsAsync(new ApiResult<IpIntelligenceDto>(
                 System.Net.HttpStatusCode.OK,
                 new ApiResponse<IpIntelligenceDto>(intelligence)));
+        _rulesTriggerService.Setup(x => x.ProcessAsync(_prepared, intelligence, It.IsAny<CancellationToken>()))
+            .Callback(() =>
+            {
+                _playersApi.Verify(x => x.RecordPlayerIpObservation(
+                    TestPlayerId, It.IsAny<RecordPlayerIpObservationDto>(), It.IsAny<CancellationToken>()), Times.Once);
+                _vpnDetectedTagService.Verify(x => x.AddIfDetectedAsync(TestPlayerId, intelligence, It.IsAny<CancellationToken>()), Times.Once);
+            })
+            .ReturnsAsync(new RulesProcessingSummary());
 
         await _sut.ProcessPlayerIpResolved(message, _functionContext.Object);
 
-        _vpnProtectionService.Verify(x => x.ProcessAsync(
-            It.Is<VpnProtectionContext>(vpnContext =>
-                vpnContext.ServerId == TestServerId &&
-                vpnContext.GameType == GameType.CallOfDuty4 &&
-                vpnContext.PlayerId == TestPlayerId &&
-                vpnContext.PlayerGuid == "abc123guid" &&
-                vpnContext.SlotId == null),
+        _rulesTriggerService.Verify(x => x.ProcessAsync(
+            _prepared,
             intelligence,
             It.IsAny<CancellationToken>()), Times.Once);
         _vpnDetectedTagService.Verify(x => x.AddIfDetectedAsync(TestPlayerId, intelligence, It.IsAny<CancellationToken>()), Times.Once);
-        _siegeModeService.Verify(x => x.EvaluateAsync(
-            It.Is<SiegeModeEvaluationContext>(evaluation =>
-                evaluation.ServerId == TestServerId &&
-                evaluation.PlayerGuid == "abc123guid" &&
-                evaluation.SlotId == 0 &&
-                evaluation.ConnectionId == evt.ConnectionId &&
-                evaluation.EventGeneratedUtc == evt.EventGeneratedUtc &&
-                evaluation.IpAddress == "192.168.1.100" &&
-                evaluation.ObservationPlayerId == TestPlayerId &&
-                evaluation.IpObservation != null &&
-                evaluation.IpObservation.MessageId == message.MessageId &&
-                evaluation.IpObservation.IpAddress == evt.IpAddress &&
-                evaluation.IpObservation.ObservedAtUtc.HasValue &&
-                evaluation.IpObservation.ObservedAtUtc.Value.UtcDateTime == DateTime.SpecifyKind(evt.EventGeneratedUtc, DateTimeKind.Utc) &&
-                ReferenceEquals(evaluation.Intelligence, intelligence)),
+        _rulesTriggerService.Verify(x => x.PrepareAsync(
+            It.Is<PlayerIpResolvedEvent>(source =>
+                source.ServerId == TestServerId &&
+                source.PlayerGuid == evt.PlayerGuid &&
+                source.SlotId == evt.SlotId &&
+                source.ConnectionId == evt.ConnectionId &&
+                source.EventGeneratedUtc == evt.EventGeneratedUtc &&
+                source.IpAddress == evt.IpAddress),
             It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
-    public async Task VpnKick_SuppressesDuplicateSiegeKick()
+    public async Task ValidEvent_PreparesBeforeObservationAndProcessesWithoutIntelligence()
     {
         var evt = CreateValidEvent(slotId: 0, connectionId: Guid.NewGuid());
         _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.Tags))
             .ReturnsAsync(SuccessResult(CreatePlayerDto(TestPlayerId)));
-        var intelligence = Newtonsoft.Json.JsonConvert.DeserializeObject<IpIntelligenceDto>(
-            Newtonsoft.Json.JsonConvert.SerializeObject(new { ProxyCheck = new { IsVpn = true } }))!;
-        _geoLookupApi.Setup(x => x.GetIpIntelligence("192.168.1.100", It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new ApiResult<IpIntelligenceDto>(
-                System.Net.HttpStatusCode.OK, new ApiResponse<IpIntelligenceDto>(intelligence)));
-        _vpnProtectionService
-            .Setup(x => x.ProcessAsync(It.IsAny<VpnProtectionContext>(), intelligence, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new VpnProtectionProcessingResult
+        _rulesTriggerService
+            .Setup(x => x.PrepareAsync(It.IsAny<PlayerIpResolvedEvent>(), It.IsAny<CancellationToken>()))
+            .Callback(() =>
             {
-                Decision = new VpnProtectionDecision
-                {
-                    Action = VpnProtectionAction.Kick,
-                    MatchedRules = [new VpnProtectionRuleMatch
-                    {
-                        RuleId = "vpn",
-                        Signal = VpnProtectionSignal.ProxyCheckIsVpn,
-                        ActualValue = "true",
-                        ExpectedValue = "true",
-                        Action = VpnProtectionAction.Kick,
-                        Reason = "VPN",
-                        OrderIndex = 0
-                    }]
-                }
-            });
+                Assert.Empty(_playersApi.Invocations);
+                Assert.Empty(_vpnDetectedTagService.Invocations);
+            })
+            .ReturnsAsync(_prepared);
+        _rulesTriggerService
+            .Setup(x => x.ProcessAsync(_prepared, null, It.IsAny<CancellationToken>()))
+            .Callback(() => _playersApi.Verify(x => x.RecordPlayerIpObservation(
+                TestPlayerId, It.IsAny<RecordPlayerIpObservationDto>(), It.IsAny<CancellationToken>()), Times.Once))
+            .ReturnsAsync(new RulesProcessingSummary());
 
         await _sut.ProcessPlayerIpResolved(CreateMessage(evt), _functionContext.Object);
 
-        _siegeModeService.Verify(x => x.EvaluateAsync(
-            It.Is<SiegeModeEvaluationContext>(evaluation => evaluation.SuppressEnforcement),
-            It.IsAny<CancellationToken>()), Times.Once);
+        _rulesTriggerService.Verify(x => x.PrepareAsync(It.IsAny<PlayerIpResolvedEvent>(), It.IsAny<CancellationToken>()), Times.Once);
+        _rulesTriggerService.Verify(x => x.ProcessAsync(_prepared, null, It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
-    public async Task PluginEvent_PersistsAndEnrichesWithoutRepeatingProtection()
+    public async Task PluginEvent_PersistsAndEnrichesAndDelegatesProducerOwnership()
     {
         var evt = CreateValidEvent(protectionEvaluatedByPlugin: true);
         _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.Tags))
@@ -422,7 +404,8 @@ public class PlayerIpResolvedProcessorTests
 
         _playersApi.Verify(x => x.RecordPlayerIpObservation(It.IsAny<Guid>(), It.IsAny<RecordPlayerIpObservationDto>(), It.IsAny<CancellationToken>()), Times.Once);
         _vpnDetectedTagService.Verify(x => x.AddIfDetectedAsync(TestPlayerId, intelligence, It.IsAny<CancellationToken>()), Times.Once);
-        _vpnProtectionService.Verify(x => x.ProcessAsync(It.IsAny<VpnProtectionContext>(), It.IsAny<IpIntelligenceDto>(), It.IsAny<CancellationToken>()), Times.Never);
+        _rulesTriggerService.Verify(x => x.PrepareAsync(It.IsAny<PlayerIpResolvedEvent>(), It.IsAny<CancellationToken>()), Times.Once);
+        _rulesTriggerService.Verify(x => x.ProcessAsync(_prepared, intelligence, It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -443,12 +426,55 @@ public class PlayerIpResolvedProcessorTests
             TestPlayerId,
             It.Is<RecordPlayerIpObservationDto>(dto => dto.IpAddress == "192.168.1.100"),
             It.IsAny<CancellationToken>()), Times.Once);
-        _vpnProtectionService.Verify(x => x.ProcessAsync(
-            It.IsAny<VpnProtectionContext>(),
-            It.IsAny<IpIntelligenceDto>(),
-            It.IsAny<CancellationToken>()), Times.Never);
-        _siegeModeService.Verify(x => x.EvaluateAsync(
-            It.Is<SiegeModeEvaluationContext>(evaluation => evaluation.Intelligence == null),
-            It.IsAny<CancellationToken>()), Times.Once);
+        _rulesTriggerService.Verify(x => x.ProcessAsync(_prepared, null, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Theory]
+    [InlineData(true, true)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(false, false)]
+    public async Task RulesFailure_PropagatesWithCancellationToken(bool duringPreparation, bool cancellation)
+    {
+        var ct = new CancellationToken(canceled: cancellation);
+        _functionContext.SetupGet(x => x.CancellationToken).Returns(ct);
+        Exception failure = cancellation
+            ? new OperationCanceledException(ct)
+            : new HttpRequestException("Rules service unavailable");
+        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.Tags))
+            .ReturnsAsync(SuccessResult(CreatePlayerDto(TestPlayerId)));
+        if (duringPreparation)
+        {
+            _rulesTriggerService.Setup(x => x.PrepareAsync(It.IsAny<PlayerIpResolvedEvent>(), ct))
+                .ThrowsAsync(failure);
+        }
+        else
+        {
+            _rulesTriggerService.Setup(x => x.ProcessAsync(_prepared, null, ct))
+                .ThrowsAsync(failure);
+        }
+
+        var actual = await Assert.ThrowsAnyAsync<Exception>(
+            () => _sut.ProcessPlayerIpResolved(CreateMessage(CreateValidEvent()), _functionContext.Object));
+
+        Assert.Same(failure, actual);
+        _playersApi.Verify(x => x.RecordPlayerIpObservation(
+            TestPlayerId, It.IsAny<RecordPlayerIpObservationDto>(), It.IsAny<CancellationToken>()),
+            duringPreparation ? Times.Never : Times.Once);
+    }
+
+    [Fact]
+    public async Task NoPreparedTrigger_StillPersistsAndDelegatesProcessing()
+    {
+        _rulesTriggerService.Setup(x => x.PrepareAsync(It.IsAny<PlayerIpResolvedEvent>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((PreparedRulesTrigger?)null);
+        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.Tags))
+            .ReturnsAsync(SuccessResult(CreatePlayerDto(TestPlayerId)));
+
+        await _sut.ProcessPlayerIpResolved(CreateMessage(CreateValidEvent()), _functionContext.Object);
+
+        _playersApi.Verify(x => x.RecordPlayerIpObservation(
+            TestPlayerId, It.IsAny<RecordPlayerIpObservationDto>(), It.IsAny<CancellationToken>()), Times.Once);
+        _rulesTriggerService.Verify(x => x.ProcessAsync(null, null, It.IsAny<CancellationToken>()), Times.Once);
     }
 }

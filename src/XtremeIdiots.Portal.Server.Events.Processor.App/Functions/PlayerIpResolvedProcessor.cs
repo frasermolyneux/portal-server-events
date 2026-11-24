@@ -16,6 +16,7 @@ using XtremeIdiots.Portal.Repository.Abstractions.Constants.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.Players;
 using XtremeIdiots.Portal.Server.Events.Abstractions.V1;
 using XtremeIdiots.Portal.Server.Events.Abstractions.V1.Events;
+using XtremeIdiots.Portal.Server.Events.Processor.App.Rules;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Services;
 using XtremeIdiots.Portal.Server.Events.Processor.App.VpnProtection;
 
@@ -29,11 +30,10 @@ public class PlayerIpResolvedProcessor(
     ILogger<PlayerIpResolvedProcessor> logger,
     IRepositoryApiClient repositoryApiClient,
     IGeoLocationApiClient geoLocationApiClient,
-    IVpnProtectionService vpnProtectionService,
+    IRulesTriggerService rulesTriggerService,
     IVpnDetectedTagService vpnDetectedTagService,
     IMemoryCache memoryCache,
-    IAuditLogger auditLogger,
-    ISiegeModeService? siegeModeService = null)
+    IAuditLogger auditLogger)
 {
     private static readonly TimeSpan StaleThreshold = TimeSpan.FromMinutes(30);
     private static readonly TimeSpan PlayerCacheExpiration = TimeSpan.FromMinutes(15);
@@ -101,6 +101,10 @@ public class PlayerIpResolvedProcessor(
             ["ServerId"] = evt.ServerId,
             ["PlayerGuid"] = evt.PlayerGuid
         });
+
+        var prepared = isStale
+            ? null
+            : await rulesTriggerService.PrepareAsync(evt, context.CancellationToken).ConfigureAwait(false);
 
         PlayerContext playerContext;
         try
@@ -200,57 +204,12 @@ public class PlayerIpResolvedProcessor(
                 .ConfigureAwait(false);
         }
 
-        if (evt.ProtectionEvaluatedByPlugin == true || isStale)
+        if (isStale)
         {
             return;
         }
 
-        var vpnResult = new VpnProtectionProcessingResult();
-        if (intelligence is not null)
-        {
-            vpnResult = await vpnProtectionService.ProcessAsync(
-                new VpnProtectionContext
-                {
-                    ServerId = evt.ServerId,
-                    GameType = gameType,
-                    PlayerId = playerContext.PlayerId,
-                    PlayerGuid = evt.PlayerGuid,
-                    Username = playerContext.Username,
-                    PlayerTags = playerContext.Tags,
-                    SlotId = null
-                },
-                intelligence,
-                context.CancellationToken).ConfigureAwait(false);
-        }
-
-        if (siegeModeService is not null)
-        {
-            await siegeModeService.EvaluateAsync(
-                new SiegeModeEvaluationContext
-                {
-                    ServerId = evt.ServerId,
-                    GameType = gameType,
-                    PlayerGuid = evt.PlayerGuid,
-                    Username = playerContext.Username,
-                    SlotId = evt.SlotId,
-                    ConnectionId = evt.ConnectionId,
-                    IpAddress = evt.IpAddress,
-                    EventGeneratedUtc = evt.EventGeneratedUtc,
-                    PlayerTags = playerContext.Tags,
-                    Intelligence = intelligence,
-                    IsPluginPath = false,
-                    SuppressEnforcement = vpnResult.Decision.IsMatch &&
-                        vpnResult.Decision.Action is VpnProtectionAction.Kick or VpnProtectionAction.Ban,
-                    ObservationPlayerId = playerContext.PlayerId,
-                    IpObservation = new RecordPlayerIpObservationDto
-                    {
-                        MessageId = message.MessageId,
-                        IpAddress = evt.IpAddress,
-                        ObservedAtUtc = new DateTimeOffset(DateTime.SpecifyKind(evt.EventGeneratedUtc, DateTimeKind.Utc))
-                    }
-                },
-                context.CancellationToken).ConfigureAwait(false);
-        }
+        await rulesTriggerService.ProcessAsync(prepared, intelligence, context.CancellationToken).ConfigureAwait(false);
     }
 
     private static Task DelayRetryAsync(ServiceBusReceivedMessage message, CancellationToken ct) =>

@@ -20,6 +20,8 @@ using XtremeIdiots.Portal.Server.Events.Processor.App;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Commands;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Moderation;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Publishing;
+using XtremeIdiots.Portal.Server.Events.Processor.App.Rules;
+using XtremeIdiots.Portal.Server.Events.Processor.App.Functions;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Services;
 using XtremeIdiots.Portal.Server.Events.Processor.App.VpnProtection;
 
@@ -127,13 +129,7 @@ var host = new HostBuilder()
         services.AddSingleton<WelcomeMessageTemplateRenderer>();
         services.AddTransient<IWelcomeMessageOrchestrator, WelcomeMessageOrchestrator>();
 
-        // VPN protection
-        services.AddSingleton<IVpnProtectionSettingsProvider, VpnProtectionSettingsProvider>();
-        services.AddSingleton<IVpnProtectionEvaluator, VpnProtectionEvaluator>();
-        services.AddSingleton<ICod4xVpnProtectionPolicyProvider, Cod4xVpnProtectionPolicyProvider>();
-        services.AddTransient<IVpnProtectionRconEnforcer, VpnProtectionRconEnforcer>();
-        services.AddTransient<IVpnProtectionService, VpnProtectionService>();
-        services.AddTransient<ISiegeModeService, SiegeModeService>();
+        services.AddUniversalRules();
         services.AddTransient<IVpnDetectedTagService, VpnDetectedTagService>();
 
         // Protected name enforcement
