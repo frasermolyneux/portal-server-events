@@ -1,3 +1,4 @@
+using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -339,7 +340,7 @@ internal sealed class RepositoryRuleActionStore(
             return new(false, Convert(stored));
         }
 
-        var claimed = FeatureExecutionOrchestrator.Require(await repository.RuleExecutions.V1.ClaimAction(
+        var response = await repository.RuleExecutions.V1.ClaimAction(
             Execution.GameServerId, executionId, new ClaimRuleActionDto
             {
                 ExpectedVersion = Execution.Version,
@@ -347,9 +348,10 @@ internal sealed class RepositoryRuleActionStore(
                 ActionIndex = rule.Actions.IndexOf(action),
                 LogicalEffectId = command.LogicalEffectId,
                 Command = command
-            }, ct).ConfigureAwait(false), "claim rules action");
+            }, ct).ConfigureAwait(false);
+        var claimed = FeatureExecutionOrchestrator.Require(response, "claim rules action");
         Execution = claimed.Execution;
-        return new(claimed.ShouldDispatch, Convert(claimed.Action));
+        return new(response.StatusCode == HttpStatusCode.Created, Convert(claimed.Action));
     }
 
     public async Task RecordAsync(Guid executionId, string actionId, ActionExecutionResult result, CancellationToken ct)

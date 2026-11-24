@@ -104,6 +104,9 @@ handling; a terminal action without a record does not publish a topic.
 Execution decisions, cursors, commands and logical action claims are persisted
 before dispatch. Logical identity includes server, connection, feature, optional
 Siege session, rule and action, not transport observation IDs or settings revisions.
+Claim ownership requires Repository's HTTP 201 for a newly-created claim; HTTP 200
+is a duplicate. `ShouldDispatch` is only native-dispatch permission, not ownership
+of dry-run or cloud-only Observation work.
 Claimed/ambiguous native effects are never blindly resent. RCON UDP dispatch is
 not confirmed application; a native drop is not proof of continuing Ban/TempBan
 cache enforcement. Unknown forum outcomes require manual recovery rather than

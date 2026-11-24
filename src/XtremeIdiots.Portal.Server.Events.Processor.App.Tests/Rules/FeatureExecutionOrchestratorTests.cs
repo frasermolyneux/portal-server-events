@@ -174,6 +174,26 @@ public sealed class FeatureExecutionOrchestratorTests
         Assert.Equal(RuleActionExecutionOutcome.WouldExecute, Assert.Single(storage.Execution!.Actions).Outcome);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConcurrentCloudOrDryRunClaimCannotBeAcquiredTwice(bool dryRun)
+    {
+        var storage = new Storage { ClaimAlreadyOwned = true };
+        var executor = new Executor();
+        var invocation = Invocation();
+        var snapshot = Snapshot(Rule("observation", 0)) with
+        {
+            Mode = dryRun ? RuleExecutionMode.DryRun : RuleExecutionMode.Enforce
+        };
+
+        await Create(storage, executor).ProcessAsync(invocation, snapshot, default);
+
+        Assert.Empty(executor.Effects);
+        Assert.Equal(RuleActionExecutionOutcome.Claimed, Assert.Single(storage.Execution!.Actions).Outcome);
+        Assert.Contains(storage.Execution.ExecutionId, invocation.PendingExecutionIds);
+    }
+
     [Fact]
     public async Task ObservationRecordIdentityIsIncludedInCorrelatedAggregateCompletion()
     {
@@ -425,6 +445,7 @@ public sealed class FeatureExecutionOrchestratorTests
         public Mock<IRepositoryApiClient> Repository { get; } = new();
         public RuleFeatureExecutionDto? Execution { get; set; }
         public bool FailOutcomes { get; set; }
+        public bool ClaimAlreadyOwned { get; init; }
 
         public Storage()
         {
@@ -498,9 +519,18 @@ public sealed class FeatureExecutionOrchestratorTests
                         Version = Execution.Version + 1,
                         Actions = [.. Execution.Actions, action],
                         RuleIndex = request.RuleIndex,
-                        ActionIndex = request.ActionIndex
+                        ActionIndex = request.ActionIndex,
+                        State = RuleFeatureExecutionState.AwaitingActionOutcome
                     };
-                    return Task.FromResult(Ok(new RuleActionClaimResultDto { Action = action, Execution = Execution, ShouldDispatch = true }));
+                    return Task.FromResult(new ApiResult<RuleActionClaimResultDto>(
+                        ClaimAlreadyOwned ? HttpStatusCode.OK : HttpStatusCode.Created,
+                        new ApiResponse<RuleActionClaimResultDto>(new RuleActionClaimResultDto
+                        {
+                            Action = action,
+                            Execution = Execution,
+                            ShouldDispatch = !ClaimAlreadyOwned && request.Command.Mode == RuleExecutionMode.Enforce &&
+                                request.Command.Effect.Type != RuleNativeEffectType.Unknown
+                        })));
                 });
             api.Setup(item => item.UpdateActionOutcome(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<string>(),
                     It.IsAny<UpdateRuleActionOutcomeDto>(), It.IsAny<CancellationToken>()))
