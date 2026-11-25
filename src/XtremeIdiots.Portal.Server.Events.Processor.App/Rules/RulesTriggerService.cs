@@ -31,10 +31,10 @@ internal sealed class RulesTriggerService(
     IAuditLogger audit) : IRulesTriggerService, IRulesPluginTransport, IRulesExecutionResumer
 {
     public Task<PreparedRulesTrigger?> PrepareAsync(PlayerConnectedEvent source, CancellationToken ct) =>
-        PrepareEventAsync(() => ConnectionTriggerNormalizer.From(source), source.ServerId, ct);
+        PrepareEventAsync(() => ConnectionTriggerNormalizer.From(source), source.ServerId, source.RulesEvaluatedByPlugin is true, ct);
 
     public Task<PreparedRulesTrigger?> PrepareAsync(PlayerIpResolvedEvent source, CancellationToken ct) =>
-        PrepareEventAsync(() => ConnectionTriggerNormalizer.From(source), source.ServerId, ct);
+        PrepareEventAsync(() => ConnectionTriggerNormalizer.From(source), source.ServerId, false, ct);
 
     public async Task<RulesProcessingSummary> ProcessAsync(
         PreparedRulesTrigger? prepared, IpIntelligenceDto? intelligence, CancellationToken ct)
@@ -464,7 +464,8 @@ internal sealed class RulesTriggerService(
         return new();
     }
 
-    private async Task<PreparedRulesTrigger?> PrepareEventAsync(Func<RuleTriggerEnvelope> normalize, Guid serverId, CancellationToken ct)
+    private async Task<PreparedRulesTrigger?> PrepareEventAsync(
+        Func<RuleTriggerEnvelope> normalize, Guid serverId, bool pluginEvaluatedConnection, CancellationToken ct)
     {
         RuleTriggerEnvelope trigger;
         try
@@ -479,6 +480,14 @@ internal sealed class RulesTriggerService(
         }
         if (!IsValid(trigger))
         {
+            // Some plugin connection mirrors omit the native trigger observation; evaluation uses the plugin transport.
+            if (pluginEvaluatedConnection && trigger.TriggerId == "player.connected" && trigger.Runtime?.Id == "cod4x-plugin" &&
+                trigger.ObservationId == Guid.Empty && trigger.TriggerOccurrenceId == Guid.Empty &&
+                HasValidTriggerContext(trigger))
+            {
+                return null;
+            }
+
             logger.LogWarning("Skipping normalized rules for event without observation evidence on server {ServerId}", serverId);
             return null;
         }
@@ -564,8 +573,11 @@ internal sealed class RulesTriggerService(
         };
 
     private static bool IsValid(RuleTriggerEnvelope trigger) =>
-        trigger.ProtocolVersion == 1 && trigger.GameServerId != Guid.Empty && trigger.ConnectionId != Guid.Empty &&
         trigger.ObservationId != Guid.Empty && trigger.TriggerOccurrenceId != Guid.Empty &&
+        HasValidTriggerContext(trigger);
+
+    private static bool HasValidTriggerContext(RuleTriggerEnvelope trigger) =>
+        trigger.ProtocolVersion == 1 && trigger.GameServerId != Guid.Empty && trigger.ConnectionId != Guid.Empty &&
         trigger.SlotId is >= 0 && !string.IsNullOrWhiteSpace(trigger.PlayerGuid) &&
         trigger.GameType != GameType.Unknown && Enum.IsDefined(trigger.GameType) &&
         trigger.OccurredAtUtc != default && trigger.OccurredAtUtc <= DateTimeOffset.UtcNow.AddSeconds(30) &&

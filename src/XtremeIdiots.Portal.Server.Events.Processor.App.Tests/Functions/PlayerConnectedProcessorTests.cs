@@ -165,6 +165,32 @@ public class PlayerConnectedProcessorTests
         _rulesTriggerService.Verify(x => x.ProcessAsync(_prepared, null, It.IsAny<CancellationToken>()), Times.Once);
     }
 
+    [Fact]
+    public async Task UnpreparedRulesTrigger_DoesNotSkipConnectedPlayerProcessing()
+    {
+        var evt = CreateValidEvent(protectionEvaluatedByPlugin: true);
+        _playersApi.Setup(x => x.HeadPlayerByGameType(GameType.CallOfDuty4, "abc123guid"))
+            .ReturnsAsync(SuccessResult());
+        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.Tags))
+            .ReturnsAsync(SuccessResult(CreatePlayerDto(TestPlayerId)));
+        _playersApi.Setup(x => x.RecordPlayerSession(It.IsAny<RecordPlayerSessionDto>())).ReturnsAsync(SuccessResult());
+        var intelligence = Newtonsoft.Json.JsonConvert.DeserializeObject<IpIntelligenceDto>(
+            Newtonsoft.Json.JsonConvert.SerializeObject(new { ProxyCheck = new { IsVpn = true } }))!;
+        _geoLookupApi.Setup(x => x.GetIpIntelligence("192.168.1.1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<IpIntelligenceDto>(
+                System.Net.HttpStatusCode.OK, new ApiResponse<IpIntelligenceDto>(intelligence)));
+        _rulesTriggerService.Setup(x => x.PrepareAsync(It.IsAny<PlayerConnectedEvent>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((PreparedRulesTrigger?)null);
+
+        await _sut.ProcessPlayerConnected(CreateMessage(evt), _functionContext.Object);
+
+        _playersApi.Verify(x => x.RecordPlayerSession(It.IsAny<RecordPlayerSessionDto>()), Times.Once);
+        _playersApi.Verify(x => x.RecordPlayerIpObservation(
+            TestPlayerId, It.IsAny<RecordPlayerIpObservationDto>(), It.IsAny<CancellationToken>()), Times.Once);
+        _vpnDetectedTagService.Verify(x => x.AddIfDetectedAsync(TestPlayerId, intelligence, It.IsAny<CancellationToken>()), Times.Once);
+        _rulesTriggerService.Verify(x => x.ProcessAsync(null, intelligence, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
