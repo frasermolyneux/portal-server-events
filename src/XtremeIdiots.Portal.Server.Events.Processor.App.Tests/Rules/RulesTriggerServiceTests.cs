@@ -60,6 +60,7 @@ public sealed class RulesTriggerServiceTests
 
     [Theory]
     [InlineData(RuleActionExecutionOutcome.Dispatched, RuleActionExecutionOutcome.OutcomeUnknown)]
+    [InlineData(RuleActionExecutionOutcome.Applied, RuleActionExecutionOutcome.Applied)]
     [InlineData(RuleActionExecutionOutcome.Stale, RuleActionExecutionOutcome.Stale)]
     [InlineData(RuleActionExecutionOutcome.Failed, RuleActionExecutionOutcome.Failed)]
     public async Task PreparedChildReceiptDoesNotAdvanceTheParentActionCursor(
@@ -91,6 +92,10 @@ public sealed class RulesTriggerServiceTests
         Assert.Equal(RuleFeatureExecutionState.Evaluating, fixture.Execution.State);
         fixture.Api.Verify(item => item.UpdateActionOutcome(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<string>(),
             It.IsAny<UpdateRuleActionOutcomeDto>(), It.IsAny<CancellationToken>()), Times.Once);
+        fixture.EventApi.Verify(item => item.CreateGameServerEvent(It.IsAny<CreateGameServerEventDto>(),
+            It.IsAny<CancellationToken>()), Times.Never);
+        Assert.Contains(fixture.Logger.Entries, item => item.Level == LogLevel.Information &&
+            item.Message.Contains("Prepared message receipt"));
         fixture.Audit.VerifyNoOtherCalls();
     }
 

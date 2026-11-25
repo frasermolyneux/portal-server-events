@@ -183,9 +183,7 @@ internal sealed class RulesTriggerService(
             throw new ArgumentException("The native effect has no linked durable moderation record.", nameof(result));
         }
         var recorded = result;
-        var preparedMessageReceipt = result.Outcome == RuleActionExecutionOutcome.Dispatched &&
-            action.Command.DeliveryIdentity is not null &&
-            action.Command.Effect.Type is RuleNativeEffectType.PublicMessage or RuleNativeEffectType.PrivateMessage;
+        var preparedMessageReceipt = result.Outcome == RuleActionExecutionOutcome.Dispatched && IsPreparedMessage(action);
         if (preparedMessageReceipt)
         {
             recorded = result with
@@ -247,7 +245,7 @@ internal sealed class RulesTriggerService(
                     DecisionSnapshotJson = execution.DecisionSnapshotJson
                 }, ct).ConfigureAwait(false), "persist correlated native outcome");
             execution = updated.Execution;
-            if (result.Outcome == RuleActionExecutionOutcome.Applied)
+            if (result.Outcome == RuleActionExecutionOutcome.Applied && !IsPreparedMessage(action))
             {
                 audit.LogAudit(AuditEvent.ServerAction("RulesNativeEffectApplied", AuditAction.Update)
                     .WithGameContext(execution.Trigger.GameType.ToString(), execution.GameServerId)
@@ -271,6 +269,13 @@ internal sealed class RulesTriggerService(
     private async Task RecordNativeReceiptAsync(
         RuleActionExecutionDto action, RuleActionResult result, CancellationToken ct)
     {
+        if (IsPreparedMessage(action))
+        {
+            logger.LogInformation("Prepared message receipt for effect {LogicalEffectId}: {Outcome}",
+                result.LogicalEffectId, result.Outcome);
+            return;
+        }
+
         var effect = action.Command.Effect.Type switch
         {
             RuleNativeEffectType.DropPlayer => "DropPlayer",
@@ -338,6 +343,10 @@ internal sealed class RulesTriggerService(
             ? JsonSerializer.Deserialize<RuleActionResult>(json, RulesSerialization.Options)
                 ?? throw new InvalidOperationException("The persisted aggregate result is missing.")
             : throw new InvalidOperationException("The persisted aggregate result is missing.");
+
+    private static bool IsPreparedMessage(RuleActionExecutionDto action) =>
+        action.Command.DeliveryIdentity is not null &&
+        action.Command.Effect.Type is RuleNativeEffectType.PublicMessage or RuleNativeEffectType.PrivateMessage;
 
     private static bool SameRuntimeIdentity(RuleRuntimeDescriptor? runtime, RuleRuntimeDescriptor? producer) =>
         runtime is not null && producer is not null &&
