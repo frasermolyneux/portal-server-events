@@ -124,7 +124,7 @@ public sealed class FuCommand : IChatCommand
         var response = BuildPrefixedMessage(prefix, renderedMessage);
 
         var saySent = await _rconResponseService
-            .TrySayAsync(context.ServerId, context.GameType, response, context.EventGeneratedUtc, ct)
+            .TrySayAsync(context.ServerId, context.GameType, response, context.ResponseDeadline, ct)
             .ConfigureAwait(false);
 
         if (!saySent)
@@ -157,13 +157,13 @@ public sealed class FuCommand : IChatCommand
             context.SlotId,
             reason,
             context.Username,
-            context.EventGeneratedUtc,
+            context.ResponseDeadline,
             ct).ConfigureAwait(false);
 
         if (!sent)
         {
             _logger.LogWarning(
-                "Private fu response not delivered for {Username} on server {ServerId} (player {PlayerGuid}, slot {SlotId})",
+                "Private fu response dispatch not confirmed for {Username} on server {ServerId} (player {PlayerGuid}, slot {SlotId})",
                 context.Username,
                 context.ServerId,
                 context.PlayerGuid,

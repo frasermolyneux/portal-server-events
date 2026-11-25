@@ -36,14 +36,33 @@ public sealed class RconResponseService : IRconResponseService
         return TrySayAsync(serverId, GameType.CallOfDuty4x.ToString(), message, eventGeneratedUtc, ct);
     }
 
-    public async Task<bool> TrySayAsync(
+    public Task<bool> TrySayAsync(
         Guid serverId,
         string gameType,
         string message,
         DateTime eventGeneratedUtc,
+        CancellationToken ct = default) =>
+        TrySayCoreAsync(serverId, gameType, message, Deadline(eventGeneratedUtc), ct);
+
+    public async Task<bool> TrySayAsync(
+        Guid serverId,
+        string gameType,
+        string message,
+        DateTimeOffset deadlineUtc,
         CancellationToken ct = default)
     {
-        if (!IsFresh(serverId, eventGeneratedUtc))
+        using var deadlineCancellation = CreateDeadlineCancellation(deadlineUtc, ct);
+        return await TrySayCoreAsync(serverId, gameType, message, deadlineUtc, deadlineCancellation.Token).ConfigureAwait(false);
+    }
+
+    private async Task<bool> TrySayCoreAsync(
+        Guid serverId,
+        string gameType,
+        string message,
+        DateTimeOffset deadlineUtc,
+        CancellationToken ct)
+    {
+        if (!IsFresh(serverId, deadlineUtc))
         {
             return false;
         }
@@ -93,7 +112,7 @@ public sealed class RconResponseService : IRconResponseService
                 return false;
             }
 
-            _logger.LogInformation("RCON Say sent to server {ServerId} ({GameType})", serverId, parsedGameType);
+            _logger.LogInformation("RCON Say request accepted for server {ServerId} ({GameType}); player delivery unconfirmed", serverId, parsedGameType);
             return true;
         }
         catch (Exception ex)
@@ -122,16 +141,26 @@ public sealed class RconResponseService : IRconResponseService
             ct);
     }
 
-    public async Task<bool> TryTellAsync(
+    public Task<bool> TryTellAsync(
         Guid serverId,
         string gameType,
         string playerGuid,
         string message,
         string? expectedPlayerName,
         DateTime eventGeneratedUtc,
-        CancellationToken ct = default)
+        CancellationToken ct = default) =>
+        TryTellByGuidAsync(serverId, gameType, playerGuid, message, expectedPlayerName, Deadline(eventGeneratedUtc), ct);
+
+    private async Task<bool> TryTellByGuidAsync(
+        Guid serverId,
+        string gameType,
+        string playerGuid,
+        string message,
+        string? expectedPlayerName,
+        DateTimeOffset deadlineUtc,
+        CancellationToken ct)
     {
-        if (!IsFresh(serverId, eventGeneratedUtc))
+        if (!IsFresh(serverId, deadlineUtc))
         {
             return false;
         }
@@ -171,6 +200,11 @@ public sealed class RconResponseService : IRconResponseService
                 return false;
             }
 
+            if (!IsFresh(serverId, deadlineUtc))
+            {
+                return false;
+            }
+
             var result = await SendTellAsync(serverId, parsedGameType, player.Slot, message, ct).ConfigureAwait(false);
 
             if (!result.IsSuccess)
@@ -187,7 +221,7 @@ public sealed class RconResponseService : IRconResponseService
             }
 
             _logger.LogInformation(
-                "RCON Tell sent to server {ServerId} ({GameType}), client {ClientId}",
+                "RCON Tell request accepted for server {ServerId} ({GameType}), client {ClientId}; player delivery unconfirmed",
                 serverId,
                 parsedGameType,
                 player.Slot);
@@ -226,7 +260,7 @@ public sealed class RconResponseService : IRconResponseService
             ct);
     }
 
-    public async Task<bool> TryTellAsync(
+    public Task<bool> TryTellAsync(
         Guid serverId,
         string gameType,
         string playerGuid,
@@ -234,9 +268,35 @@ public sealed class RconResponseService : IRconResponseService
         string message,
         string? expectedPlayerName,
         DateTime eventGeneratedUtc,
+        CancellationToken ct = default) =>
+        TryTellCoreAsync(serverId, gameType, playerGuid, slotId, message, expectedPlayerName, Deadline(eventGeneratedUtc), ct);
+
+    public async Task<bool> TryTellAsync(
+        Guid serverId,
+        string gameType,
+        string playerGuid,
+        int slotId,
+        string message,
+        string? expectedPlayerName,
+        DateTimeOffset deadlineUtc,
         CancellationToken ct = default)
     {
-        if (!IsFresh(serverId, eventGeneratedUtc))
+        using var deadlineCancellation = CreateDeadlineCancellation(deadlineUtc, ct);
+        return await TryTellCoreAsync(serverId, gameType, playerGuid, slotId, message, expectedPlayerName, deadlineUtc, deadlineCancellation.Token)
+            .ConfigureAwait(false);
+    }
+
+    private async Task<bool> TryTellCoreAsync(
+        Guid serverId,
+        string gameType,
+        string playerGuid,
+        int slotId,
+        string message,
+        string? expectedPlayerName,
+        DateTimeOffset deadlineUtc,
+        CancellationToken ct)
+    {
+        if (!IsFresh(serverId, deadlineUtc))
         {
             return false;
         }
@@ -258,12 +318,17 @@ public sealed class RconResponseService : IRconResponseService
                 && string.Equals(slotPlayer.Guid, playerGuid, StringComparison.OrdinalIgnoreCase)
                 && NamesMatch(expectedPlayerName, slotPlayer.Name))
             {
+                if (!IsFresh(serverId, deadlineUtc))
+                {
+                    return false;
+                }
+
                 var sendResult = await SendTellAsync(serverId, parsedGameType, slotId, message, ct).ConfigureAwait(false);
 
                 if (sendResult.IsSuccess)
                 {
                     _logger.LogInformation(
-                        "RCON Tell sent to server {ServerId} ({GameType}), client {ClientId}",
+                        "RCON Tell request accepted for server {ServerId} ({GameType}), client {ClientId}; player delivery unconfirmed",
                         serverId,
                         parsedGameType,
                         slotId);
@@ -289,7 +354,7 @@ public sealed class RconResponseService : IRconResponseService
                 slotId);
         }
 
-        return await TryTellAsync(serverId, gameType, playerGuid, message, expectedPlayerName, eventGeneratedUtc, ct)
+        return await TryTellByGuidAsync(serverId, gameType, playerGuid, message, expectedPlayerName, deadlineUtc, ct)
             .ConfigureAwait(false);
     }
 
@@ -497,18 +562,34 @@ public sealed class RconResponseService : IRconResponseService
         return alphanumericOnly.Trim();
     }
 
-    private bool IsFresh(Guid serverId, DateTime eventGeneratedUtc)
-    {
-        var age = DateTime.UtcNow - eventGeneratedUtc;
+    private static DateTimeOffset Deadline(DateTime eventGeneratedUtc) =>
+        new DateTimeOffset(DateTime.SpecifyKind(eventGeneratedUtc, DateTimeKind.Utc)).Add(FreshnessThreshold);
 
-        if (age <= FreshnessThreshold)
+    private static CancellationTokenSource CreateDeadlineCancellation(DateTimeOffset deadlineUtc, CancellationToken ct)
+    {
+        var source = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var remaining = deadlineUtc - DateTimeOffset.UtcNow;
+        if (remaining <= TimeSpan.Zero)
+        {
+            source.Cancel();
+        }
+        else if (remaining.TotalMilliseconds <= uint.MaxValue - 1)
+        {
+            source.CancelAfter(remaining);
+        }
+        return source;
+    }
+
+    private bool IsFresh(Guid serverId, DateTimeOffset deadlineUtc)
+    {
+        if (DateTimeOffset.UtcNow <= deadlineUtc)
         {
             return true;
         }
 
         _logger.LogInformation(
-            "Skipping RCON response for server {ServerId} - event is {Age} old (threshold {Threshold})",
-            serverId, age, FreshnessThreshold);
+            "Skipping RCON response for server {ServerId} - deadline {DeadlineUtc} passed",
+            serverId, deadlineUtc);
         return false;
     }
 

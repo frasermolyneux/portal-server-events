@@ -67,7 +67,7 @@ public sealed class CommandsCommand : IChatCommand
         if (!sent)
         {
             _logger.LogWarning(
-                "Private commands response not delivered for {Username} on server {ServerId} (player {PlayerGuid}, slot {SlotId})",
+                "Private commands response dispatch not confirmed for {Username} on server {ServerId} (player {PlayerGuid}, slot {SlotId})",
                 context.Username,
                 context.ServerId,
                 context.PlayerGuid,
@@ -83,7 +83,7 @@ public sealed class CommandsCommand : IChatCommand
         if (!sent)
         {
             _logger.LogWarning(
-                "Private commands failure response not delivered for {Username} on server {ServerId} (player {PlayerGuid}, slot {SlotId})",
+                "Private commands failure response dispatch not confirmed for {Username} on server {ServerId} (player {PlayerGuid}, slot {SlotId})",
                 context.Username,
                 context.ServerId,
                 context.PlayerGuid,
@@ -102,7 +102,7 @@ public sealed class CommandsCommand : IChatCommand
             context.SlotId,
             message,
             context.Username,
-            context.EventGeneratedUtc,
+            context.ResponseDeadline,
             ct).ConfigureAwait(false);
     }
 }

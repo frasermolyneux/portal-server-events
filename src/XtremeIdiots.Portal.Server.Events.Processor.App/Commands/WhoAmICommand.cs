@@ -12,7 +12,7 @@ namespace XtremeIdiots.Portal.Server.Events.Processor.App.Commands;
 public sealed class WhoAmICommand : IChatCommand
 {
     private static readonly ChatCommandDescriptor Descriptor = ChatCommandDescriptorCatalog.WhoAmI;
-    private const string PersistedSuccessMessage = "WhoAmI response delivered.";
+    private const string PersistedSuccessMessage = "WhoAmI response dispatch accepted.";
 
     private readonly IRepositoryApiClient _repositoryClient;
     private readonly IGeoLocationApiClient? _geoLocationApiClient;
@@ -93,13 +93,13 @@ public sealed class WhoAmICommand : IChatCommand
             context.SlotId,
             response,
             context.Username,
-            context.EventGeneratedUtc,
+            context.ResponseDeadline,
             ct).ConfigureAwait(false);
 
         if (!sent)
         {
             _logger.LogWarning(
-                "Private whoami response not delivered for {Username} on server {ServerId} (player {PlayerGuid}, slot {SlotId})",
+                "Private whoami response dispatch not confirmed for {Username} on server {ServerId} (player {PlayerGuid}, slot {SlotId})",
                 context.Username,
                 context.ServerId,
                 context.PlayerGuid,
@@ -120,13 +120,13 @@ public sealed class WhoAmICommand : IChatCommand
             context.SlotId,
             reason,
             context.Username,
-            context.EventGeneratedUtc,
+            context.ResponseDeadline,
             ct).ConfigureAwait(false);
 
         if (!sent)
         {
             _logger.LogWarning(
-                "Private whoami failure response not delivered for {Username} on server {ServerId} (player {PlayerGuid}, slot {SlotId})",
+                "Private whoami failure response dispatch not confirmed for {Username} on server {ServerId} (player {PlayerGuid}, slot {SlotId})",
                 context.Username,
                 context.ServerId,
                 context.PlayerGuid,

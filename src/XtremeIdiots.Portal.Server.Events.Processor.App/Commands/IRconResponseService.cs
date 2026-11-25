@@ -22,6 +22,13 @@ public interface IRconResponseService
         DateTime eventGeneratedUtc,
         CancellationToken ct = default);
 
+    Task<bool> TrySayAsync(
+        Guid serverId,
+        string gameType,
+        string message,
+        DateTimeOffset deadlineUtc,
+        CancellationToken ct = default);
+
     /// <summary>
     /// Send a broadcast message to a game server via RCON, but only if the event is fresh.
     /// </summary>
@@ -82,6 +89,16 @@ public interface IRconResponseService
         string message,
         string? expectedPlayerName,
         DateTime eventGeneratedUtc,
+        CancellationToken ct = default);
+
+    Task<bool> TryTellAsync(
+        Guid serverId,
+        string gameType,
+        string playerGuid,
+        int slotId,
+        string message,
+        string? expectedPlayerName,
+        DateTimeOffset deadlineUtc,
         CancellationToken ct = default);
 
     Task<bool> TryTellAsync(

@@ -34,7 +34,7 @@ public class CommandsCommandTests
                 It.IsAny<int>(),
                 It.IsAny<string>(),
                 It.IsAny<string?>(),
-                It.IsAny<DateTime>(),
+                It.IsAny<DateTimeOffset>(),
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(true);
 
@@ -71,7 +71,7 @@ public class CommandsCommandTests
             3,
             "Available commands: !commands, !dislike, !like, !register",
             "TestPlayer",
-            It.IsAny<DateTime>(),
+            It.IsAny<DateTimeOffset>(),
             It.IsAny<CancellationToken>()), Times.Once);
     }
 
@@ -100,7 +100,7 @@ public class CommandsCommandTests
             3,
             "Available commands: !commands, !dislike, !fu, !like, !register",
             "TestPlayer",
-            It.IsAny<DateTime>(),
+            It.IsAny<DateTimeOffset>(),
             It.IsAny<CancellationToken>()), Times.Once);
     }
 
@@ -128,7 +128,7 @@ public class CommandsCommandTests
             3,
             "Available commands: !commands, !dislike, !like, !register",
             "TestPlayer",
-            It.IsAny<DateTime>(),
+            It.IsAny<DateTimeOffset>(),
             It.IsAny<CancellationToken>()), Times.Once);
     }
 
@@ -148,7 +148,7 @@ public class CommandsCommandTests
             3,
             "Usage: !commands",
             "TestPlayer",
-            It.IsAny<DateTime>(),
+            It.IsAny<DateTimeOffset>(),
             It.IsAny<CancellationToken>()), Times.Once);
     }
 

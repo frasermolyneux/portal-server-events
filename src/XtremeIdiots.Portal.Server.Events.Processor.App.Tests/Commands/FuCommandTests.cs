@@ -88,7 +88,7 @@ public class FuCommandTests
                 It.IsAny<int>(),
                 It.IsAny<string>(),
                 It.IsAny<string?>(),
-                It.IsAny<DateTime>(),
+                It.IsAny<DateTimeOffset>(),
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(true);
 
@@ -97,7 +97,7 @@ public class FuCommandTests
                 It.IsAny<Guid>(),
                 It.IsAny<string>(),
                 It.IsAny<string>(),
-                It.IsAny<DateTime>(),
+                It.IsAny<DateTimeOffset>(),
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(true);
 
@@ -126,14 +126,14 @@ public class FuCommandTests
             3,
             "Usage: !fu <player name>",
             "Issuer",
-            It.IsAny<DateTime>(),
+            It.IsAny<DateTimeOffset>(),
             It.IsAny<CancellationToken>()), Times.Once);
 
         _rconResponseService.Verify(x => x.TrySayAsync(
                 It.IsAny<Guid>(),
                 It.IsAny<string>(),
                 It.IsAny<string>(),
-                It.IsAny<DateTime>(), It.IsAny<CancellationToken>()), Times.Never);
+                It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -161,7 +161,7 @@ public class FuCommandTests
                 It.IsAny<Guid>(),
                 It.IsAny<string>(),
                 It.IsAny<string>(),
-                It.IsAny<DateTime>(), It.IsAny<CancellationToken>()), Times.Never);
+                It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()), Times.Never);
         _rconResponseService.Verify(x => x.TryTellAsync(
                 It.IsAny<Guid>(),
                 It.IsAny<string>(),
@@ -169,7 +169,7 @@ public class FuCommandTests
                 It.IsAny<int>(),
             It.IsAny<string>(),
             It.IsAny<string?>(),
-            It.IsAny<DateTime>(),
+            It.IsAny<DateTimeOffset>(),
             It.IsAny<CancellationToken>()), Times.Never);
     }
 
@@ -205,7 +205,7 @@ public class FuCommandTests
                 It.IsAny<Guid>(),
                 It.IsAny<string>(),
                 It.IsAny<string>(),
-                It.IsAny<DateTime>(), It.IsAny<CancellationToken>()), Times.Never);
+                It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()), Times.Never);
         _rconResponseService.Verify(x => x.TryTellAsync(
                 It.IsAny<Guid>(),
                 It.IsAny<string>(),
@@ -213,7 +213,7 @@ public class FuCommandTests
                 It.IsAny<int>(),
             It.IsAny<string>(),
             It.IsAny<string?>(),
-            It.IsAny<DateTime>(),
+            It.IsAny<DateTimeOffset>(),
             It.IsAny<CancellationToken>()), Times.Never);
     }
 
@@ -245,7 +245,7 @@ public class FuCommandTests
             TestServerId,
                 It.IsAny<string>(),
             "^2[ServerBot]^7 ^1FU^7 ^3Target^7",
-            It.IsAny<DateTime>(),
+            It.IsAny<DateTimeOffset>(),
             It.IsAny<CancellationToken>()), Times.Once);
 
         _rconResponseService.Verify(x => x.TryTellAsync(
@@ -255,7 +255,7 @@ public class FuCommandTests
                 It.IsAny<int>(),
             It.IsAny<string>(),
             It.IsAny<string?>(),
-            It.IsAny<DateTime>(),
+            It.IsAny<DateTimeOffset>(),
             It.IsAny<CancellationToken>()), Times.Never);
     }
 
@@ -317,7 +317,7 @@ public class FuCommandTests
             TestServerId,
             "CallOfDuty2",
             It.IsAny<string>(),
-            It.IsAny<DateTime>(),
+            It.IsAny<DateTimeOffset>(),
             It.IsAny<CancellationToken>()), Times.Once);
     }
 
@@ -351,7 +351,7 @@ public class FuCommandTests
             TestServerId,
             "CallOfDuty5",
             It.IsAny<string>(),
-            It.IsAny<DateTime>(),
+            It.IsAny<DateTimeOffset>(),
             It.IsAny<CancellationToken>()), Times.Once);
     }
 
@@ -385,7 +385,7 @@ public class FuCommandTests
             TestServerId,
             "CallOfDuty4x",
             It.IsAny<string>(),
-            It.IsAny<DateTime>(),
+            It.IsAny<DateTimeOffset>(),
             It.IsAny<CancellationToken>()), Times.Once);
     }
 
@@ -412,14 +412,14 @@ public class FuCommandTests
             3,
             "No player found.",
             "Issuer",
-            It.IsAny<DateTime>(),
+            It.IsAny<DateTimeOffset>(),
             It.IsAny<CancellationToken>()), Times.Once);
 
         _rconResponseService.Verify(x => x.TrySayAsync(
                 It.IsAny<Guid>(),
                 It.IsAny<string>(),
                 It.IsAny<string>(),
-                It.IsAny<DateTime>(), It.IsAny<CancellationToken>()), Times.Never);
+                It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -449,14 +449,14 @@ public class FuCommandTests
             3,
             "No exact player found. Did you mean: Name1 (slot 3), Name2 (slot 5)",
             "Issuer",
-            It.IsAny<DateTime>(),
+            It.IsAny<DateTimeOffset>(),
             It.IsAny<CancellationToken>()), Times.Once);
 
         _rconResponseService.Verify(x => x.TrySayAsync(
                 It.IsAny<Guid>(),
                 It.IsAny<string>(),
                 It.IsAny<string>(),
-                It.IsAny<DateTime>(), It.IsAny<CancellationToken>()), Times.Never);
+                It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -479,14 +479,14 @@ public class FuCommandTests
             3,
             "Unable to resolve player right now. Please try again.",
             "Issuer",
-            It.IsAny<DateTime>(),
+            It.IsAny<DateTimeOffset>(),
             It.IsAny<CancellationToken>()), Times.Once);
 
         _rconResponseService.Verify(x => x.TrySayAsync(
                 It.IsAny<Guid>(),
                 It.IsAny<string>(),
                 It.IsAny<string>(),
-                It.IsAny<DateTime>(), It.IsAny<CancellationToken>()), Times.Never);
+                It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     private static CommandContext CreateContext(string message, string gameType = "CallOfDuty4") => new()

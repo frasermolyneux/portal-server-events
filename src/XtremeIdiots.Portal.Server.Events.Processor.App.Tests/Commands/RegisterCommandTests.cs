@@ -31,7 +31,7 @@ public class RegisterCommandTests
         _limiter.Setup(x => x.TryAcquire(It.IsAny<Guid>(), It.IsAny<DateTime>(), out It.Ref<TimeSpan>.IsAny))
             .Returns(true);
         _responses.Setup(x => x.TryTellAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<string>(),
-            It.IsAny<int>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
+            It.IsAny<int>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(true);
         _sut = new RegisterCommand(repository.Object, _responses.Object, _limiter.Object, _audit.Object,
             Mock.Of<ILogger<RegisterCommand>>());

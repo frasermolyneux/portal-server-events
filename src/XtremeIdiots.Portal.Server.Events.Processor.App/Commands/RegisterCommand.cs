@@ -217,13 +217,13 @@ public sealed class RegisterCommand : IChatCommand
             context.SlotId,
             message,
             context.Username,
-            context.EventGeneratedUtc,
+            context.ResponseDeadline,
             ct).ConfigureAwait(false);
 
         if (!sent)
         {
             _logger.LogWarning(
-                "Private register response not delivered for {Username} on server {ServerId} (player {PlayerGuid}, slot {SlotId})",
+                "Private register response dispatch not confirmed for {Username} on server {ServerId} (player {PlayerGuid}, slot {SlotId})",
                 context.Username,
                 context.ServerId,
                 context.PlayerGuid,

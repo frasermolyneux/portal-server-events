@@ -6,6 +6,7 @@ using Moq;
 
 using MX.Api.Abstractions;
 using MX.Observability.ApplicationInsights.Auditing;
+using MX.Observability.ApplicationInsights.Auditing.Models;
 
 using XtremeIdiots.Portal.Integrations.Servers.Abstractions.Interfaces.V1;
 using XtremeIdiots.Portal.Integrations.Servers.Abstractions.Models.V1.Rcon;
@@ -110,7 +111,7 @@ public class MapVoteLikeCommandTests
                 TestServerId,
                 It.IsAny<string>(),
                 It.IsAny<string>(),
-                It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
+                It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(true);
 
         var result = await _sut.ExecuteAsync(CreateContext());
@@ -126,8 +127,33 @@ public class MapVoteLikeCommandTests
             TestServerId,
                 It.IsAny<string>(),
             It.Is<string>(s => s.StartsWith("^2[ServerBot]^7 ") && s.Contains("LIKE")),
-            It.IsAny<DateTime>(),
+            It.IsAny<DateTimeOffset>(),
             It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ExecuteAsync_SeparatesVotePersistenceFromResponseDispatch(bool voteSucceeded)
+    {
+        _cod4RconApi.Setup(x => x.GetCurrentMap(TestServerId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<RconCurrentMapDto>(HttpStatusCode.OK,
+                new ApiResponse<RconCurrentMapDto>(new RconCurrentMapDto("mp_crash"))));
+        _mapsApi.Setup(x => x.GetMap(GameType.CallOfDuty4, "mp_crash", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<MapDto>(HttpStatusCode.OK, new ApiResponse<MapDto>(CreateMapDto())));
+        _mapsApi.Setup(x => x.UpsertMapVote(It.IsAny<UpsertMapVoteDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult(voteSucceeded ? HttpStatusCode.OK : HttpStatusCode.InternalServerError));
+        _rconService.Setup(x => x.TrySayAsync(TestServerId, It.IsAny<string>(), It.IsAny<string>(),
+            It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>())).ReturnsAsync(false);
+
+        var result = await _sut.ExecuteAsync(CreateContext());
+
+        Assert.Equal(voteSucceeded, result.Success);
+        Assert.Equal(voteSucceeded ? "Vote recorded; response dispatch was not confirmed." : "Unable to record the map vote.", result.ResponseMessage);
+        _mapsApi.Verify(x => x.UpsertMapVote(It.IsAny<UpsertMapVoteDto>(), It.IsAny<CancellationToken>()), Times.Once);
+        _auditLogger.Verify(x => x.LogAudit(It.Is<AuditEvent>(a => a.EventName == "MapVoteRecorded")), voteSucceeded ? Times.Once : Times.Never);
+        _rconService.Verify(x => x.TrySayAsync(TestServerId, It.IsAny<string>(), It.IsAny<string>(),
+            It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()), voteSucceeded ? Times.Once : Times.Never);
     }
 
     [Fact]
@@ -205,7 +231,7 @@ public class MapVoteLikeCommandTests
             TestServerId,
                 It.IsAny<string>(),
             It.Is<string>(s => s.Contains("LIKE")),
-            It.IsAny<DateTime>(),
+            It.IsAny<DateTimeOffset>(),
             It.IsAny<CancellationToken>()), Times.Once);
     }
 
@@ -227,7 +253,7 @@ public class MapVoteLikeCommandTests
                 TestServerId,
                 It.IsAny<string>(),
                 It.IsAny<string>(),
-                It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
+                It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(false);
 
         var result = await _sut.ExecuteAsync(CreateContext());
@@ -260,7 +286,7 @@ public class MapVoteLikeCommandTests
                 TestServerId,
                 It.IsAny<string>(),
                 It.IsAny<string>(),
-                It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
+                It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(true);
 
         var result = await _sut.ExecuteAsync(CreateContext());
@@ -270,7 +296,7 @@ public class MapVoteLikeCommandTests
             TestServerId,
                 It.IsAny<string>(),
             It.Is<string>(s => s.StartsWith("^5[GlobalBot]^7 ") && s.Contains("LIKE")),
-            It.IsAny<DateTime>(),
+            It.IsAny<DateTimeOffset>(),
             It.IsAny<CancellationToken>()), Times.Once);
     }
 
@@ -304,7 +330,7 @@ public class MapVoteLikeCommandTests
                 TestServerId,
                 It.IsAny<string>(),
                 It.IsAny<string>(),
-                It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
+                It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(true);
 
         var result = await _sut.ExecuteAsync(CreateContext());
@@ -314,7 +340,7 @@ public class MapVoteLikeCommandTests
             TestServerId,
                 It.IsAny<string>(),
             It.Is<string>(s => s.StartsWith("^4[^1>XI< BOT^4]^7 ") && s.Contains("LIKE")),
-            It.IsAny<DateTime>(),
+            It.IsAny<DateTimeOffset>(),
             It.IsAny<CancellationToken>()), Times.Once);
     }
 

@@ -71,6 +71,56 @@ public class RconResponseServiceTests
     }
 
     [Fact]
+    public async Task TrySayAsync_UsesSuppliedDeadlineInsteadOfFiveSecondThreshold()
+    {
+        _coD4xRconApi.Setup(x => x.Say(TestServerId, It.IsAny<CoD4xMessageRequestDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<string>(System.Net.HttpStatusCode.OK, new ApiResponse<string>("ok")));
+
+        var result = await _sut.TrySayAsync(TestServerId, "CallOfDuty4x", "Hello", DateTimeOffset.UtcNow.AddSeconds(2));
+
+        Assert.True(result);
+        _coD4xRconApi.Verify(x => x.Say(TestServerId, It.IsAny<CoD4xMessageRequestDto>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task TryTellAsync_WhenDeadlinePassesDuringPlayerLookup_DoesNotSend()
+    {
+        var lookup = new TaskCompletionSource<ApiResult<CoD4xStatusResponseDto>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _coD4xRconApi.Setup(x => x.Status(TestServerId, It.IsAny<CancellationToken>())).Returns(lookup.Task);
+        var pending = _sut.TryTellAsync(TestServerId, "CallOfDuty4x", "guid-1", 5, "Hello", "PlayerOne", DateTimeOffset.UtcNow.AddMilliseconds(200));
+        await Task.Delay(350);
+        lookup.SetResult(new ApiResult<CoD4xStatusResponseDto>(System.Net.HttpStatusCode.OK,
+            new ApiResponse<CoD4xStatusResponseDto>(new CoD4xStatusResponseDto
+            {
+                Players = [new CoD4xStatusPlayerDto { Num = 5, PlayerIdentifier = "guid-1", Name = "PlayerOne" }]
+            })));
+
+        Assert.False(await pending);
+        _coD4xRconApi.Verify(x => x.Tell(It.IsAny<Guid>(), It.IsAny<CoD4xTargetMessageRequestDto>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task TrySayAsync_CancelsInFlightRequestAtOriginalDeadline()
+    {
+        CancellationToken requestToken = default;
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _coD4xRconApi.Setup(x => x.Say(TestServerId, It.IsAny<CoD4xMessageRequestDto>(), It.IsAny<CancellationToken>()))
+            .Returns<Guid, CoD4xMessageRequestDto, CancellationToken>(async (_, _, token) =>
+            {
+                requestToken = token;
+                started.SetResult();
+                await Task.Delay(Timeout.InfiniteTimeSpan, token);
+                return new ApiResult<string>(System.Net.HttpStatusCode.OK, new ApiResponse<string>("ok"));
+            });
+
+        var pending = _sut.TrySayAsync(TestServerId, "CallOfDuty4x", "Hello", DateTimeOffset.UtcNow.AddMilliseconds(200));
+        await started.Task;
+
+        Assert.False(await pending);
+        Assert.True(requestToken.IsCancellationRequested);
+    }
+
+    [Fact]
     public async Task TrySayAsync_WithCallOfDuty4GameType_UsesCod4Say()
     {
         _cod4RconApi.Setup(x => x.Say(TestServerId, It.IsAny<SayRequest>(), It.IsAny<CancellationToken>()))
