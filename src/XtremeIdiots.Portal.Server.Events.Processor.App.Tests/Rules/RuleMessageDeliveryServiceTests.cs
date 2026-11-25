@@ -482,7 +482,7 @@ public sealed class RuleMessageDeliveryServiceTests
             text.Setup(item => item.PrepareAsync(It.IsAny<RuleActionDefinition>(), It.IsAny<RuleInvocation>(),
                     It.IsAny<DateTimeOffset>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
                 .Returns((RuleActionDefinition action, RuleInvocation _, DateTimeOffset _, string _, string _, CancellationToken _) =>
-                    Task.FromResult(action));
+                    Task.FromResult(new RuleActionTextPreparation(action, [])));
             var budgets = new Mock<IRuleMessageBudgetProvider>();
             budgets.Setup(item => item.GetAsync(It.IsAny<RuleInvocation>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
                 .Returns(() => Task.FromResult(Budget));

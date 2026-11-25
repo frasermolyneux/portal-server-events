@@ -273,8 +273,8 @@ internal sealed class FeatureExecutionOrchestrator(
                 if (action.TemplateParameters.Count != 0 &&
                     !store.Execution.Actions.Any(item => item.Correlation.RuleId == rule.Id && item.Correlation.ActionId == action.Id))
                 {
-                    action = await textPreparer.PrepareAsync(action, invocation, execution.Trigger.OccurredAtUtc,
-                        execution.FeatureId, rule.Id, ct).ConfigureAwait(false);
+                    action = (await textPreparer.PrepareAsync(action, invocation, execution.Trigger.OccurredAtUtc,
+                        execution.FeatureId, rule.Id, ct).ConfigureAwait(false)).Action;
                     store.ResolvedActions[action.Id] = action;
                 }
                 var unsupported = await executor.UnsupportedReasonAsync(action, invocation, ct).ConfigureAwait(false);

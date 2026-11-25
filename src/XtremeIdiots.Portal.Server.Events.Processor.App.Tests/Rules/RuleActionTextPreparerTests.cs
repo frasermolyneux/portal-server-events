@@ -19,7 +19,8 @@ public sealed class RuleActionTextPreparerTests
 
         var resolved = await Create(context).PrepareAsync(action, Invocation(), DateTimeOffset.UtcNow, "feature", "rule", default);
 
-        Assert.Same(action, resolved);
+        Assert.Same(action, resolved.Action);
+        Assert.Empty(resolved.Diagnostics);
         context.VerifyNoOtherCalls();
     }
 
@@ -36,9 +37,10 @@ public sealed class RuleActionTextPreparerTests
 
         var resolved = await Create(context).PrepareAsync(action, Invocation(), DateTimeOffset.UtcNow, "feature", "selected-rule", default);
 
-        Assert.Equal("Hello Joining player: selected-rule", resolved.Parameters["message"].GetString());
-        Assert.Equal("Literal {context.player.Name}", resolved.Parameters["reason"].GetString());
-        Assert.Empty(resolved.TemplateParameters);
+        Assert.Equal("Hello Joining player: selected-rule", resolved.Action.Parameters["message"].GetString());
+        Assert.Equal("Literal {context.player.Name}", resolved.Action.Parameters["reason"].GetString());
+        Assert.Empty(resolved.Action.TemplateParameters);
+        Assert.Empty(resolved.Diagnostics);
         Assert.Equal("Hello {context.player.Name}: {context.rule.Id}", action.Parameters["message"].GetString());
         context.Verify(item => item.HydrateAsync(It.IsAny<RuleInvocation>(),
             It.Is<IReadOnlySet<RuleTextTokenSource>>(sources =>
@@ -71,7 +73,35 @@ public sealed class RuleActionTextPreparerTests
         var resolved = await Create(context).PrepareAsync(action, Invocation(), DateTimeOffset.UtcNow, "feature", "rule", default);
 
         Assert.Equal(["Welcome player", "From an unknown country"],
-            resolved.Parameters["messages"].EnumerateArray().Select(value => value.GetString()));
+            resolved.Action.Parameters["messages"].EnumerateArray().Select(value => value.GetString()));
+    }
+
+    [Fact]
+    public async Task RepeatedItemsRetainOneDiagnosticPerSourceAndFallback()
+    {
+        var context = new Mock<IRuleTextContextHydrator>();
+        context.Setup(item => item.HydrateAsync(It.IsAny<RuleInvocation>(),
+                It.IsAny<IReadOnlySet<RuleTextTokenSource>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new RuleTextValues
+            {
+                SourceDiagnostics = new Dictionary<RuleTextTokenSource, string>
+                {
+                    [RuleTextTokenSource.Connection] = "Player name unavailable."
+                }
+            });
+        var action = Action("Hello {context.player.Name}");
+        action.Parameters["messages"] = JsonSerializer.SerializeToElement(new[] { "Again {context.player.Name}" });
+        action.TemplateParameters = ["message", "messages"];
+
+        var resolved = await Create(context).PrepareAsync(action, Invocation(), DateTimeOffset.UtcNow, "feature", "rule", default);
+
+        Assert.Equal("Hello player", resolved.Action.Parameters["message"].GetString());
+        Assert.Equal("Again player", resolved.Action.Parameters["messages"][0].GetString());
+        Assert.Equal(2, resolved.Diagnostics.Count);
+        Assert.Contains(resolved.Diagnostics, item =>
+            item.Code == "SourceUnavailable" && item.Source == RuleTextTokenSource.Connection && item.TokenKey is null);
+        Assert.Contains(resolved.Diagnostics, item =>
+            item.Code == "FallbackUsed" && item.Source == RuleTextTokenSource.Connection && item.TokenKey == "context.player.Name");
     }
 
     private static RuleActionTextPreparer Create(Mock<IRuleTextContextHydrator> context) =>

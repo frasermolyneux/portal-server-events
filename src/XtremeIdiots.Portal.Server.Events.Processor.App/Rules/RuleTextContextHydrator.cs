@@ -240,9 +240,12 @@ internal sealed class RuleTextContextHydrator(
 
 internal sealed record RuleTextSourceValues(RuleTextTokenSource Source, RuleTextValues Values);
 
+internal sealed record RuleActionTextPreparation(
+    RuleActionDefinition Action, IReadOnlyList<RuleTextDiagnostic> Diagnostics);
+
 internal interface IRuleActionTextPreparer
 {
-    Task<RuleActionDefinition> PrepareAsync(
+    Task<RuleActionTextPreparation> PrepareAsync(
         RuleActionDefinition action, RuleInvocation invocation, DateTimeOffset occurredAtUtc,
         string featureId, string ruleId, CancellationToken ct);
 }
@@ -250,13 +253,13 @@ internal interface IRuleActionTextPreparer
 internal sealed class RuleActionTextPreparer(
     IRuleTextContextHydrator context, ILogger<RuleActionTextPreparer> logger) : IRuleActionTextPreparer
 {
-    public async Task<RuleActionDefinition> PrepareAsync(
+    public async Task<RuleActionTextPreparation> PrepareAsync(
         RuleActionDefinition action, RuleInvocation invocation, DateTimeOffset occurredAtUtc,
         string featureId, string ruleId, CancellationToken ct)
     {
         if (action.TemplateParameters.Count == 0)
         {
-            return action;
+            return new(action, []);
         }
         var templates = action.TemplateParameters.SelectMany(parameter =>
             action.Parameters[parameter].ValueKind == JsonValueKind.Array
@@ -272,6 +275,7 @@ internal sealed class RuleActionTextPreparer(
             parsed.SelectMany(item => item.RequiredSources).ToHashSet(), ct).ConfigureAwait(false);
         values = values with { TriggerOccurredAtUtc = occurredAtUtc, FeatureId = featureId, RuleId = ruleId };
         var parameters = new Dictionary<string, JsonElement>(action.Parameters, StringComparer.Ordinal);
+        var diagnostics = new Dictionary<(string Code, string? TokenKey, RuleTextTokenSource? Source), RuleTextDiagnostic>();
         foreach (var parameter in action.TemplateParameters)
         {
             var value = parameters[parameter];
@@ -279,13 +283,14 @@ internal sealed class RuleActionTextPreparer(
                 ? JsonSerializer.SerializeToElement(value.EnumerateArray().Select(item => Render(item.GetString()!)).ToArray())
                 : JsonSerializer.SerializeToElement(Render(value.GetString()!));
         }
-        return new()
+        var resolved = new RuleActionDefinition
         {
             Id = action.Id,
             TypeId = action.TypeId,
             DependsOnActionIds = action.DependsOnActionIds,
             Parameters = parameters
         };
+        return new(resolved, diagnostics.Values.ToArray());
 
         string Render(string template)
         {
@@ -297,8 +302,11 @@ internal sealed class RuleActionTextPreparer(
             }
             foreach (var diagnostic in result.Diagnostics)
             {
-                logger.LogWarning("Rule token {Token} used fallback for connection {ConnectionId}: {Detail}",
-                    diagnostic.TokenKey, invocation.Trigger.ConnectionId, diagnostic.Message);
+                if (diagnostics.TryAdd((diagnostic.Code, diagnostic.TokenKey, diagnostic.Source), diagnostic))
+                {
+                    logger.LogWarning("Rule text diagnostic {Code} for token {Token}, source {Source}, connection {ConnectionId}: {Detail}",
+                        diagnostic.Code, diagnostic.TokenKey, diagnostic.Source, invocation.Trigger.ConnectionId, diagnostic.Message);
+                }
             }
             return result.Text;
         }

@@ -110,8 +110,8 @@ internal sealed class RuleMessageDeliveryService(
                 audience = audience with { Recipients = audience.Recipients.DistinctBy(item => item.ConnectionId).ToArray() };
             }
 
-            var resolved = await text.PrepareAsync(action, invocation, execution.Trigger.OccurredAtUtc,
-                execution.FeatureId, rule.Id, ct).ConfigureAwait(false);
+            var resolved = (await text.PrepareAsync(action, invocation, execution.Trigger.OccurredAtUtc,
+                execution.FeatureId, rule.Id, ct).ConfigureAwait(false)).Action;
             var prepared = MessagePreparation.Prepare(String(resolved, "message"), Strings(resolved, "messages"), budget.Budget);
             if (!prepared.IsValid)
             {
