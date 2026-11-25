@@ -513,7 +513,23 @@ public class ChatCommandProcessorTests
     public async Task ProcessAsync_WhenSettingsLookupExhaustsFreshness_DoesNotExecute()
     {
         var eventTime = new DateTime(2026, 6, 3, 10, 0, 0, DateTimeKind.Utc);
-        _clock.SetupGet(x => x.UtcNow).Returns(eventTime.AddSeconds(6));
+        _clock.SetupGet(x => x.UtcNow).Returns(eventTime.AddSeconds(1));
+        _settingsProvider
+            .Setup(x => x.GetEffectiveSettingsAsync(It.IsAny<Guid>(), "test", false, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() =>
+            {
+                _clock.SetupGet(x => x.UtcNow).Returns(eventTime.AddSeconds(6));
+                return new EffectiveChatCommandSettings
+                {
+                    CommandName = "test",
+                    Enabled = true,
+                    FreshnessSeconds = 5,
+                    EnabledSource = SettingsValueSource.Hardcoded,
+                    FreshnessSource = SettingsValueSource.Hardcoded,
+                    AuthorizationSource = SettingsValueSource.Hardcoded,
+                    PayloadSource = SettingsValueSource.Hardcoded
+                };
+            });
         var command = new Mock<IChatCommand>();
         command.Setup(c => c.Prefix).Returns("!test");
         command.Setup(c => c.Metadata).Returns(new ChatCommandMetadata { Name = "test", Prefix = "!test", Usage = "!test" });
