@@ -42,6 +42,7 @@ public sealed class FeatureExecutionOrchestratorTests
         Assert.Empty(storage.Execution!.Actions);
         Assert.Equal(RuleFeatureExecutionState.Waiting, storage.Execution.State);
         Assert.Equal("Waiting for original connection delay.", storage.Execution.Coordination!.WaitingReason);
+        Assert.Equal(RuleExecutionDiagnosticCode.WaitingForDelay, Assert.Single(storage.Execution.Diagnostics).Code);
         Assert.Equal(scheduledCount, continuation.Scheduled.Count);
         if (scheduledCount > 0)
         {
@@ -59,6 +60,7 @@ public sealed class FeatureExecutionOrchestratorTests
         Assert.Equal(original.Trigger.OccurredAtUtc.AddSeconds(120), progress.RuleWindows["delayed"].ExpiresAtUtc);
         Assert.Null(progress.WaitingReason);
         Assert.Null(storage.Execution.Coordination!.WaitingReason);
+        Assert.Empty(storage.Execution.Diagnostics);
     }
 
     [Fact]
@@ -176,6 +178,7 @@ public sealed class FeatureExecutionOrchestratorTests
         Assert.Empty(storage.Execution!.Actions);
         Assert.Empty(executor.Effects);
         Assert.Equal(RuleFeatureExecutionState.Completed, storage.Execution.State);
+        Assert.Equal(RuleExecutionDiagnosticCode.Expired, Assert.Single(storage.Execution.Diagnostics).Code);
     }
 
     [Fact]
@@ -240,6 +243,57 @@ public sealed class FeatureExecutionOrchestratorTests
         Assert.Empty(progress.MatchedRuleIds);
         Assert.Empty(storage.Execution.Actions);
         Assert.Equal(storage.Execution.ExecutionId, Assert.Single(invocation.PendingExecutionIds));
+        Assert.Equal(RuleExecutionDiagnosticCode.WaitingForContext, Assert.Single(storage.Execution.Diagnostics).Code);
+    }
+
+    [Fact]
+    public async Task NonMatchingRulePersistsTypedReason()
+    {
+        var storage = new Storage();
+        var rule = Rule("known-only", 0);
+        rule.Condition!.Parameters!["operator"] = JsonSerializer.SerializeToElement("IsKnown");
+
+        await Create(storage, new Executor()).ProcessAsync(Invocation(), Snapshot(rule), default);
+
+        var diagnostic = Assert.Single(storage.Execution!.Diagnostics);
+        Assert.Equal(RuleExecutionDiagnosticCode.NoMatch, diagnostic.Code);
+        Assert.Equal("known-only", diagnostic.RuleId);
+        Assert.Empty(storage.Execution.Actions);
+    }
+
+    [Fact]
+    public async Task RetryingRenderedActionReplacesProvisionalDiagnosticsBeforeClaim()
+    {
+        var storage = new Storage();
+        var executor = new Executor { Deferred = true };
+        var rule = Rule("templated", 0);
+        rule.Actions[0].TemplateParameters.Add("reason");
+        var first = rule.Actions[0];
+        var resolved = new RuleActionDefinition
+        {
+            Id = first.Id,
+            TypeId = first.TypeId,
+            Parameters = new() { ["reason"] = JsonSerializer.SerializeToElement("Fresh reason") }
+        };
+        var preparer = new Mock<IRuleActionTextPreparer>();
+        preparer.SetupSequence(item => item.PrepareAsync(It.IsAny<RuleActionDefinition>(), It.IsAny<RuleInvocation>(),
+                It.IsAny<DateTimeOffset>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new RuleActionTextPreparation(first,
+                [new("FallbackUsed", "player.name", RuleTextTokenSource.Connection, "Used fallback.")]))
+            .ReturnsAsync(new RuleActionTextPreparation(resolved, []));
+        var engine = Create(storage, executor, textPreparer: preparer.Object);
+        var invocation = Invocation();
+
+        await engine.ProcessAsync(invocation, Snapshot(rule), default);
+
+        Assert.Contains(storage.Execution!.Diagnostics, item => item.Code == RuleExecutionDiagnosticCode.FallbackUsed);
+        Assert.Contains(storage.Execution.Diagnostics, item => item.Code == RuleExecutionDiagnosticCode.WaitingForContext);
+        executor.Deferred = false;
+        await engine.ProcessAsync(invocation, Snapshot(rule), default);
+
+        Assert.Empty(storage.DiagnosticsAtClaim!);
+        Assert.Empty(storage.Execution.Diagnostics);
+        Assert.Equal("Fresh reason", Assert.Single(storage.Execution.Actions).Command.Effect.Reason);
     }
 
     [Fact]
@@ -492,6 +546,7 @@ public sealed class FeatureExecutionOrchestratorTests
         var enriched = new RuleInvocation(enrichedTrigger, original.Facts, null);
 
         await engine.ProcessAsync(enriched, snapshot, default);
+        var versionAfterEnrichment = storage.Execution.Version;
         await engine.ProcessAsync(original, snapshot, default);
 
         var progress = JsonSerializer.Deserialize<RuleExecutionProgress>(
@@ -502,6 +557,7 @@ public sealed class FeatureExecutionOrchestratorTests
         Assert.Equal(ruleIndex, storage.Execution.RuleIndex);
         Assert.Equal(actionIndex, storage.Execution.ActionIndex);
         Assert.Equal(RuleFeatureExecutionState.AwaitingActionOutcome, storage.Execution.State);
+        Assert.Equal(versionAfterEnrichment, storage.Execution.Version);
         Assert.Single(executor.Effects);
         Assert.Empty(enriched.Commands);
     }
@@ -661,10 +717,10 @@ public sealed class FeatureExecutionOrchestratorTests
 
     private static FeatureExecutionOrchestrator Create(
         Storage storage, Executor executor, IRuleExecutionContinuationPublisher? continuation = null, TimeProvider? clock = null,
-        IRuleMessageDeliveryService? messages = null) =>
+        IRuleMessageDeliveryService? messages = null, IRuleActionTextPreparer? textPreparer = null) =>
         new(storage.Repository.Object, executor, continuation ?? new Continuations(),
             NullLogger<FeatureExecutionOrchestrator>.Instance, NullLogger<OrderedActionDispatcher>.Instance,
-            Mock.Of<IRuleActionTextPreparer>(), messages ?? Mock.Of<IRuleMessageDeliveryService>(), clock);
+            textPreparer ?? Mock.Of<IRuleActionTextPreparer>(), messages ?? Mock.Of<IRuleMessageDeliveryService>(), clock);
 
     private static RuleDefinition WelcomeRule(string id, int order)
     {
@@ -779,6 +835,7 @@ public sealed class FeatureExecutionOrchestratorTests
         public RuleFeatureExecutionDto? Execution { get; set; }
         public bool FailOutcomes { get; set; }
         public bool ClaimAlreadyOwned { get; init; }
+        public RuleExecutionDiagnostic[]? DiagnosticsAtClaim { get; private set; }
 
         public Storage()
         {
@@ -822,7 +879,8 @@ public sealed class FeatureExecutionOrchestratorTests
                         ActionIndex = request.ActionIndex,
                         State = request.State,
                         DecisionSnapshotJson = request.DecisionSnapshotJson,
-                        Coordination = request.Coordination
+                        Coordination = request.Coordination,
+                        Diagnostics = request.Diagnostics ?? Execution.Diagnostics
                     };
                     return Task.FromResult(Ok(Execution));
                 });
@@ -831,6 +889,7 @@ public sealed class FeatureExecutionOrchestratorTests
                 .Returns((Guid _, Guid _, ClaimRuleActionDto request, CancellationToken _) =>
                 {
                     Assert.Equal(Execution!.Version, request.ExpectedVersion);
+                    DiagnosticsAtClaim = Execution.Diagnostics;
                     using var frozen = JsonDocument.Parse(Execution.FrozenRulesJson);
                     var frozenRule = frozen.RootElement.GetProperty("rules")[request.RuleIndex];
                     Assert.Equal(request.Command.Correlation.RuleId, frozenRule.GetProperty("id").GetString());

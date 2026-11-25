@@ -32,7 +32,8 @@ internal sealed record PlannedRuleAction(
     Func<CancellationToken, Task<ActionExecutionResult>> DispatchAsync,
     Func<CancellationToken, Task<ActionAvailability>>? AvailabilityAsync = null);
 
-internal sealed record ActionAvailability(bool Deferred = false, ActionExecutionResult? Unavailable = null);
+internal sealed record ActionAvailability(
+    bool Deferred = false, ActionExecutionResult? Unavailable = null, bool ConnectionUnavailable = false);
 
 internal sealed record ActionExecutionClaim(bool Acquired, ActionExecutionResult State);
 

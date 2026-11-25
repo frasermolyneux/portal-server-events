@@ -154,23 +154,27 @@ internal sealed class UniversalRuleActionExecutor(
         {
             if (command.RecipientTarget is not null)
             {
-                return new(Unavailable: new(ActionExecutionOutcome.Stale, "The snapshotted recipient binding is no longer available."));
+                return new(Unavailable: new(ActionExecutionOutcome.Stale, "The snapshotted recipient binding is no longer available."),
+                    ConnectionUnavailable: true);
             }
             return clock.GetUtcNow() < waitUntilUtc
                 ? new(Deferred: true)
-                : new(Unavailable: new(ActionExecutionOutcome.Stale, "No fresh authoritative connection binding became available."));
+                : new(Unavailable: new(ActionExecutionOutcome.Stale, "No fresh authoritative connection binding became available."),
+                    ConnectionUnavailable: true);
         }
         var binding = FeatureExecutionOrchestrator.Require(response, "verify current agent connection ownership");
         var now = clock.GetUtcNow();
         if (binding.GameServerId != target.GameServerId || target.GameServerId != command.GameServerId ||
             binding.SlotId != target.SlotId || !string.Equals(binding.PlayerGuid, target.PlayerGuid, StringComparison.OrdinalIgnoreCase))
         {
-            return new(Unavailable: new(ActionExecutionOutcome.Stale, "Authoritative observed connection ownership has changed or expired."));
+            return new(Unavailable: new(ActionExecutionOutcome.Stale, "Authoritative observed connection ownership has changed or expired."),
+                ConnectionUnavailable: true);
         }
         if (binding.ObservedAtUtc > now.AddSeconds(30) || binding.ObservedAtUtc < now.AddMinutes(-2) ||
             binding.ExpiresAtUtc != binding.ObservedAtUtc.AddMinutes(2) || binding.ExpiresAtUtc <= now)
         {
-            return new(Unavailable: new(ActionExecutionOutcome.Stale, "Authoritative observed connection ownership has changed or expired."));
+            return new(Unavailable: new(ActionExecutionOutcome.Stale, "Authoritative observed connection ownership has changed or expired."),
+                ConnectionUnavailable: true);
         }
         if (binding.ConnectionId != target.ConnectionId || binding.ConnectionGeneration != target.ConnectionGeneration ||
             binding.Runtime.Id != target.Runtime.Id || binding.Runtime.IdentityModel != RuleRuntimeIdentityModel.AgentObservedConnection ||
@@ -184,7 +188,8 @@ internal sealed class UniversalRuleActionExecutor(
                 return new(Deferred: true);
             }
 
-            return new(Unavailable: new(ActionExecutionOutcome.Stale, "Authoritative observed connection ownership has changed or expired."));
+            return new(Unavailable: new(ActionExecutionOutcome.Stale, "Authoritative observed connection ownership has changed or expired."),
+                ConnectionUnavailable: true);
         }
         return new();
     }

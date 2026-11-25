@@ -127,6 +127,7 @@ public sealed class UniversalRuleActionExecutorTests
 
         Assert.False(result.Deferred);
         Assert.Equal(ActionExecutionOutcome.Stale, result.Unavailable?.Outcome);
+        Assert.True(result.ConnectionUnavailable);
     }
 
     [Fact]

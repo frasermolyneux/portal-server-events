@@ -81,6 +81,7 @@ public sealed class RuleMessageDeliveryServiceTests
         var result = await fixture.DispatchAsync();
 
         Assert.Equal(ActionExecutionOutcome.SkippedUnsupported, result.Outcome!.Outcome);
+        Assert.Equal(RuleExecutionDiagnosticCode.UnsupportedDelivery, result.DiagnosticCode);
         Assert.Empty(fixture.Sent);
         Assert.Empty(fixture.Execution.PreparedActions);
     }
@@ -163,6 +164,29 @@ public sealed class RuleMessageDeliveryServiceTests
             Assert.Single(fixture.Execution.PreparedActions).Commands.Select(item => item.Effect.Message));
     }
 
+    [Fact]
+    public async Task PersistsDeduplicatedRendererDiagnosticsBeforeFreezingMessagePlan()
+    {
+        var fixture = new Fixture
+        {
+            TextDiagnostics =
+            [
+                new("SourceUnavailable", null, RuleTextTokenSource.Connection, "Connection unavailable."),
+                new("FallbackUsed", "player.name", RuleTextTokenSource.Connection, "Fallback used."),
+                new("FallbackUsed", "player.name", RuleTextTokenSource.Connection, "Fallback used.")
+            ]
+        };
+
+        await fixture.DispatchAsync();
+
+        var diagnostics = Assert.IsType<RuleExecutionDiagnostic[]>(fixture.DiagnosticsAtPreparation);
+        Assert.Equal([RuleExecutionDiagnosticCode.SourceUnavailable, RuleExecutionDiagnosticCode.FallbackUsed],
+            diagnostics.Select(item => item.Code));
+        Assert.Equal("player.name", diagnostics[1].TokenKey);
+        Assert.Equal("Connection", diagnostics[1].Source);
+        Assert.Single(fixture.Execution.PreparedActions);
+    }
+
     [Theory]
     [InlineData("Any", RuleRecipientTagMatch.Any)]
     [InlineData("All", RuleRecipientTagMatch.All)]
@@ -174,6 +198,7 @@ public sealed class RuleMessageDeliveryServiceTests
         var result = await fixture.DispatchAsync();
 
         Assert.Equal(ActionExecutionOutcome.Applied, result.Outcome!.Outcome);
+        Assert.Equal(RuleExecutionDiagnosticCode.AudienceEmpty, result.DiagnosticCode);
         Assert.Equal(expected, fixture.AudienceRequest!.Match);
         Assert.Empty(fixture.Sent);
         Assert.Empty(Assert.Single(fixture.Execution.PreparedActions).Commands);
@@ -188,11 +213,13 @@ public sealed class RuleMessageDeliveryServiceTests
         var result = await fixture.DispatchAsync();
 
         Assert.NotNull(result.ResumeAtUtc);
+        Assert.Equal(RuleExecutionDiagnosticCode.AudienceUnavailable, result.DiagnosticCode);
         Assert.Null(result.Outcome);
         Assert.Empty(fixture.Execution.PreparedActions);
         fixture.Clock.Now = fixture.Clock.Now.AddSeconds(120);
         result = await fixture.DispatchAsync();
         Assert.Equal(ActionExecutionOutcome.Stale, result.Outcome!.Outcome);
+        Assert.Equal(RuleExecutionDiagnosticCode.Expired, result.DiagnosticCode);
         Assert.Empty(fixture.Sent);
     }
 
@@ -228,7 +255,8 @@ public sealed class RuleMessageDeliveryServiceTests
         fixture.Executor.Setup(item => item.AvailabilityAsync(It.IsAny<RuleActionDefinition>(),
                 It.Is<RuleActionCommand>(command => command.RecipientTarget!.ConnectionId == replaced.ConnectionId),
                 It.IsAny<RuleInvocation>(), It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new ActionAvailability(Unavailable: new(ActionExecutionOutcome.Stale, "Recipient replaced.")));
+            .ReturnsAsync(new ActionAvailability(Unavailable: new(ActionExecutionOutcome.Stale, "Recipient replaced."),
+                ConnectionUnavailable: true));
 
         await fixture.FinishAsync();
 
@@ -241,6 +269,21 @@ public sealed class RuleMessageDeliveryServiceTests
         });
         Assert.Equal(4, Assert.Single(fixture.Execution.PreparedActions).Commands.Length);
         Assert.Equal(4, fixture.Execution.Actions.Length);
+        Assert.Equal(RuleExecutionDiagnosticCode.ConnectionUnavailable, Assert.Single(fixture.Execution.Diagnostics).Code);
+    }
+
+    [Fact]
+    public async Task AmbiguousNativeStaleOutcomeIsNotReportedAsConnectionLoss()
+    {
+        var fixture = new Fixture();
+        fixture.Executor.Setup(item => item.AvailabilityAsync(It.IsAny<RuleActionDefinition>(), It.IsAny<RuleActionCommand>(),
+                It.IsAny<RuleInvocation>(), It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ActionAvailability(Unavailable: new(ActionExecutionOutcome.Stale, "Native state unavailable.")));
+
+        var result = await fixture.DispatchAsync();
+
+        Assert.Equal(ActionExecutionOutcome.Failed, result.Outcome!.Outcome);
+        Assert.Empty(fixture.Execution.Diagnostics);
     }
 
     [Fact]
@@ -265,6 +308,7 @@ public sealed class RuleMessageDeliveryServiceTests
 
         var greeting = await fixture.DispatchAsync();
         Assert.Equal(ActionExecutionOutcome.SkippedDependency, greeting.Outcome!.Outcome);
+        Assert.Equal(RuleExecutionDiagnosticCode.SuppressedByProtection, greeting.DiagnosticCode);
         Assert.Empty(fixture.Execution.PreparedActions);
 
         fixture.ConfigureTagged();
@@ -310,6 +354,7 @@ public sealed class RuleMessageDeliveryServiceTests
         Assert.Single(fixture.Sent);
         Assert.Equal([RuleActionExecutionOutcome.OutcomeUnknown, RuleActionExecutionOutcome.Stale],
             fixture.Execution.Actions.Select(item => item.Outcome));
+        Assert.Equal(RuleExecutionDiagnosticCode.Expired, Assert.Single(fixture.Execution.Diagnostics).Code);
     }
 
     [Fact]
@@ -340,6 +385,35 @@ public sealed class RuleMessageDeliveryServiceTests
         Assert.NotNull(suppressed.Outcome);
         Assert.Single(fixture.Sent);
         Assert.Equal(RuleActionExecutionOutcome.SkippedDependency, fixture.Execution.Actions[1].Outcome);
+        Assert.Equal(RuleExecutionDiagnosticCode.SuppressedByProtection, suppressed.DiagnosticCode);
+    }
+
+    [Fact]
+    public async Task LaterProtectionDoesNotRelabelAnAlreadyCompletedGreetingAsSuppressed()
+    {
+        var fixture = new Fixture();
+        fixture.Execution = fixture.Execution with { FeatureId = WelcomeFeatureRulesProvider.Id };
+        await fixture.DispatchAsync();
+        fixture.Protections =
+        [
+            new()
+            {
+                FeatureId = RulesEngineCatalogueV1.VpnProtectionFeature,
+                State = RuleFeatureExecutionState.Completed,
+                Actions = [new()
+                {
+                    Mode = RuleExecutionMode.Enforce,
+                    Outcome = RuleActionExecutionOutcome.Applied,
+                    Command = new() { Effect = new() { Type = RuleNativeEffectType.DropPlayer } }
+                }]
+            }
+        ];
+
+        var result = await fixture.DispatchAsync();
+
+        Assert.Equal(ActionExecutionOutcome.OutcomeUnknown, result.Outcome!.Outcome);
+        Assert.Null(result.DiagnosticCode);
+        Assert.Single(fixture.Sent);
     }
 
     [Fact]
@@ -381,6 +455,8 @@ public sealed class RuleMessageDeliveryServiceTests
         public RuleTaggedAudienceRequestDto? AudienceRequest { get; private set; }
         public int Preparations { get; private set; }
         public bool FailOutcomes { get; set; }
+        public RuleTextDiagnostic[] TextDiagnostics { get; init; } = [];
+        public RuleExecutionDiagnostic[]? DiagnosticsAtPreparation { get; private set; }
         public RuleExecutionProgress Progress => progress;
         public RuleMessageBudgetResult Budget { get; set; } = new(new("test", 4));
         public RuleActionDefinition Action { get; } = new()
@@ -432,11 +508,29 @@ public sealed class RuleMessageDeliveryServiceTests
                     AudienceRequest = request;
                     return Task.FromResult(Ok(Audience));
                 });
+            api.Setup(item => item.UpdateProgress(It.IsAny<Guid>(), It.IsAny<Guid>(),
+                    It.IsAny<UpdateRuleFeatureExecutionProgressDto>(), It.IsAny<CancellationToken>()))
+                .Returns((Guid _, Guid _, UpdateRuleFeatureExecutionProgressDto request, CancellationToken _) =>
+                {
+                    Assert.Equal(Execution.Version, request.ExpectedVersion);
+                    Execution = Execution with
+                    {
+                        Version = Execution.Version + 1,
+                        RuleIndex = request.RuleIndex,
+                        ActionIndex = request.ActionIndex,
+                        State = request.State,
+                        DecisionSnapshotJson = request.DecisionSnapshotJson,
+                        Coordination = request.Coordination,
+                        Diagnostics = request.Diagnostics ?? Execution.Diagnostics
+                    };
+                    return Task.FromResult(Ok(Execution));
+                });
             api.Setup(item => item.PrepareAction(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<PrepareRuleActionDto>(), It.IsAny<CancellationToken>()))
                 .Returns((Guid _, Guid _, PrepareRuleActionDto request, CancellationToken _) =>
                 {
                     Assert.Empty(Sent);
                     Assert.Equal(Execution.Version, request.ExpectedVersion);
+                    DiagnosticsAtPreparation = Execution.Diagnostics;
                     Preparations++;
                     var plan = new RulePreparedActionDto
                     {
@@ -504,7 +598,7 @@ public sealed class RuleMessageDeliveryServiceTests
             text.Setup(item => item.PrepareAsync(It.IsAny<RuleActionDefinition>(), It.IsAny<RuleInvocation>(),
                     It.IsAny<DateTimeOffset>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
                 .Returns((RuleActionDefinition action, RuleInvocation _, DateTimeOffset _, string _, string _, CancellationToken _) =>
-                    Task.FromResult(new RuleActionTextPreparation(action, [])));
+                    Task.FromResult(new RuleActionTextPreparation(action, TextDiagnostics)));
             var budgets = new Mock<IRuleMessageBudgetProvider>();
             budgets.Setup(item => item.GetAsync(It.IsAny<RuleInvocation>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
                 .Returns(() => Task.FromResult(Budget));

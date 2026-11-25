@@ -24,7 +24,8 @@ internal sealed record RuleMessageDispatchResult(
     ActionExecutionResult? Outcome = null,
     bool AwaitingOutcome = false,
     DateTimeOffset? ResumeAtUtc = null,
-    string? Detail = null)
+    string? Detail = null,
+    RuleExecutionDiagnosticCode? DiagnosticCode = null)
 {
     public IReadOnlyList<RuleActionCommand> Commands { get; init; } = [];
 }
@@ -71,8 +72,12 @@ internal sealed class RuleMessageDeliveryService(
             if (protectionDecision is { } decision && plan is null)
             {
                 return decision.Deferred && clock.GetUtcNow() < expiry
-                    ? Wait(decision.Detail, clock.GetUtcNow().AddSeconds(10))
-                    : Complete(ActionExecutionOutcome.SkippedDependency, decision.Detail);
+                    ? Wait(decision.Detail, clock.GetUtcNow().AddSeconds(10), RuleExecutionDiagnosticCode.WaitingForProtection)
+                    : decision.Deferred
+                        ? Complete(ActionExecutionOutcome.Stale, "Original delivery window expired while waiting for protection.",
+                            RuleExecutionDiagnosticCode.Expired)
+                        : Complete(ActionExecutionOutcome.SkippedDependency, decision.Detail,
+                            RuleExecutionDiagnosticCode.SuppressedByProtection);
             }
         }
 
@@ -80,19 +85,22 @@ internal sealed class RuleMessageDeliveryService(
         {
             if (clock.GetUtcNow() >= expiry)
             {
-                return Complete(ActionExecutionOutcome.Stale, "Original message delivery window expired before preparation.");
+                return Complete(ActionExecutionOutcome.Stale, "Original message delivery window expired before preparation.",
+                    RuleExecutionDiagnosticCode.Expired);
             }
             var unsupported = await executor.UnsupportedReasonAsync(action, invocation, ct).ConfigureAwait(false);
             if (unsupported is not null)
             {
-                return Complete(ActionExecutionOutcome.SkippedUnsupported, unsupported);
+                return Complete(ActionExecutionOutcome.SkippedUnsupported, unsupported, RuleExecutionDiagnosticCode.UnsupportedDelivery);
             }
             var budget = await budgets.GetAsync(invocation, action.TypeId, ct).ConfigureAwait(false);
             if (budget.Budget is null)
             {
                 return budget.Unavailable
-                    ? Wait(budget.UnsupportedReason ?? "Waiting for channel budget evidence.", clock.GetUtcNow().AddSeconds(10))
-                    : Complete(ActionExecutionOutcome.SkippedUnsupported, budget.UnsupportedReason);
+                    ? Wait(budget.UnsupportedReason ?? "Waiting for channel budget evidence.", clock.GetUtcNow().AddSeconds(10),
+                        RuleExecutionDiagnosticCode.WaitingForDelivery)
+                    : Complete(ActionExecutionOutcome.SkippedUnsupported, budget.UnsupportedReason,
+                        RuleExecutionDiagnosticCode.UnsupportedDelivery);
             }
             RuleTaggedAudienceDto? audience = null;
             if (tagged)
@@ -112,20 +120,28 @@ internal sealed class RuleMessageDeliveryService(
                     logger.LogWarning("Tagged message audience unavailable for execution {ExecutionId}: {Detail}",
                         execution.ExecutionId, audience.Detail);
                     return Wait(audience.Detail ?? "Waiting for a complete authoritative recipient roster.",
-                        clock.GetUtcNow().AddSeconds(10));
+                        clock.GetUtcNow().AddSeconds(10), RuleExecutionDiagnosticCode.AudienceUnavailable);
                 }
                 audience = audience with { Recipients = audience.Recipients.DistinctBy(item => item.ConnectionId).ToArray() };
             }
 
-            var resolved = (await text.PrepareAsync(action, invocation, execution.Trigger.OccurredAtUtc,
-                execution.FeatureId, rule.Id, ct).ConfigureAwait(false)).Action;
+            var preparedText = await text.PrepareAsync(action, invocation, execution.Trigger.OccurredAtUtc,
+                execution.FeatureId, rule.Id, ct).ConfigureAwait(false);
+            if ((progress.Diagnostics is not null || preparedText.Diagnostics.Count != 0) &&
+                (progress.Diagnostics ??= new()).ReplaceActionText(rule.Id, action.Id, preparedText.Diagnostics, clock.GetUtcNow(), logger))
+            {
+                execution = await FeatureExecutionOrchestrator.PersistProgressAsync(repository, execution, progress,
+                    execution.RuleIndex, execution.ActionIndex, execution.State, logger, clock.GetUtcNow(), ct).ConfigureAwait(false);
+            }
+            var resolved = preparedText.Action;
             var prepared = MessagePreparation.Prepare(String(resolved, "message"), Strings(resolved, "messages"), budget.Budget);
             if (!prepared.IsValid)
             {
                 if (prepared.Errors.All(error => error.Code != "InvalidBudget"))
                 {
                     return Complete(ActionExecutionOutcome.SkippedUnsupported,
-                        "Message preparation failed: " + string.Join("; ", prepared.Errors.Select(error => error.Message)));
+                        "Message preparation failed: " + string.Join("; ", prepared.Errors.Select(error => error.Message)),
+                        RuleExecutionDiagnosticCode.UnsupportedDelivery);
                 }
                 throw new InvalidOperationException("Message preparation failed: " + string.Join("; ", prepared.Errors));
             }
@@ -134,7 +150,8 @@ internal sealed class RuleMessageDeliveryService(
                     prepared.Fragments.Any(fragment => ViolatesConstraints(fragment.Text, constraints))))
             {
                 return Complete(ActionExecutionOutcome.SkippedUnsupported,
-                    "The rendered message contains characters unsupported by the RCON transport.");
+                    "The rendered message contains characters unsupported by the RCON transport.",
+                    RuleExecutionDiagnosticCode.UnsupportedDelivery);
             }
             var parent = commandFactory(resolved);
             var targets = audience is null ? new RuleMessageRecipientTarget?[] { null } : audience.Recipients;
@@ -169,11 +186,13 @@ internal sealed class RuleMessageDeliveryService(
                 var validation = await executor.AvailabilityAsync(resolved, command, invocation, expiry, ct).ConfigureAwait(false);
                 if (validation.Deferred)
                 {
-                    return Wait("Waiting for complete message delivery eligibility.", clock.GetUtcNow().AddSeconds(10));
+                    return Wait("Waiting for complete message delivery eligibility.", clock.GetUtcNow().AddSeconds(10),
+                        RuleExecutionDiagnosticCode.WaitingForDelivery);
                 }
                 if (validation.Unavailable is { Outcome: not ActionExecutionOutcome.Stale } invalid)
                 {
-                    return Complete(invalid.Outcome, invalid.Detail);
+                    return Complete(invalid.Outcome, invalid.Detail,
+                        invalid.Outcome == ActionExecutionOutcome.SkippedUnsupported ? RuleExecutionDiagnosticCode.UnsupportedDelivery : null);
                 }
             }
             var preparationResponse = await repository.RuleExecutions.V1.PrepareAction(execution.GameServerId, execution.ExecutionId, new()
@@ -219,7 +238,7 @@ internal sealed class RuleMessageDeliveryService(
             }
             if (protectionDecision is { Deferred: true } waiting && clock.GetUtcNow() < expiry)
             {
-                return Wait(waiting.Detail, clock.GetUtcNow().AddSeconds(10));
+                return Wait(waiting.Detail, clock.GetUtcNow().AddSeconds(10), RuleExecutionDiagnosticCode.WaitingForProtection);
             }
             var failedEarlierFragment = completed.Any(item =>
                 item.Command.DeliveryIdentity?.RecipientConnectionId == command.DeliveryIdentity?.RecipientConnectionId &&
@@ -232,9 +251,10 @@ internal sealed class RuleMessageDeliveryService(
             if (command.ExpiresAtUtc > clock.GetUtcNow() && protectionDecision is null && !failedEarlierFragment &&
                 clock.GetUtcNow() < lastDispatch.AddSeconds(1))
             {
-                return Wait("Pacing ordered message fragments.", lastDispatch.AddSeconds(1));
+                return Wait("Pacing ordered message fragments.", lastDispatch.AddSeconds(1), RuleExecutionDiagnosticCode.WaitingForDelivery);
             }
-            var availability = command.ExpiresAtUtc <= clock.GetUtcNow()
+            var expiredBeforeEligibility = command.ExpiresAtUtc <= clock.GetUtcNow();
+            var availability = expiredBeforeEligibility
                 ? new ActionAvailability(Unavailable: new(ActionExecutionOutcome.Stale, "Message delivery window expired."))
                 : protectionDecision is { } suppressed
                     ? new(Unavailable: new(ActionExecutionOutcome.SkippedDependency, suppressed.Detail))
@@ -243,13 +263,15 @@ internal sealed class RuleMessageDeliveryService(
                     : await executor.AvailabilityAsync(resolvedAction, command, invocation, expiry, ct).ConfigureAwait(false);
             if (availability.Deferred)
             {
-                return Wait("Waiting for message recipient connection evidence.", clock.GetUtcNow().AddSeconds(10));
+                return Wait("Waiting for message recipient connection evidence.", clock.GetUtcNow().AddSeconds(10),
+                    RuleExecutionDiagnosticCode.WaitingForDelivery);
             }
             if (availability.Unavailable is { Outcome: ActionExecutionOutcome.Failed } failed)
             {
                 logger.LogWarning("Message eligibility failed for fragment {LogicalEffectId}: {Detail}",
                     command.LogicalEffectId, failed.Detail);
-                return Wait(failed.Detail ?? "Native message eligibility failed.", clock.GetUtcNow().AddSeconds(10));
+                return Wait(failed.Detail ?? "Native message eligibility failed.", clock.GetUtcNow().AddSeconds(10),
+                    RuleExecutionDiagnosticCode.WaitingForDelivery);
             }
             var response = await repository.RuleExecutions.V1.ClaimAction(execution.GameServerId, execution.ExecutionId, new()
             {
@@ -267,6 +289,26 @@ internal sealed class RuleMessageDeliveryService(
             execution = claim.Execution;
             if (claim.Action.Outcome is not (RuleActionExecutionOutcome.Claimed or RuleActionExecutionOutcome.Dispatched))
             {
+                var unavailableDiagnostic = expiredBeforeEligibility
+                    ? RuleExecutionDiagnosticCode.Expired
+                    : availability.ConnectionUnavailable ? RuleExecutionDiagnosticCode.ConnectionUnavailable : (RuleExecutionDiagnosticCode?)null;
+                if (response.StatusCode == HttpStatusCode.Created &&
+                    claim.Action.Outcome == RuleActionExecutionOutcome.Stale && unavailableDiagnostic is { } code)
+                {
+                    var added = (progress.Diagnostics ??= new()).Add(new()
+                    {
+                        Code = code,
+                        RuleId = rule.Id,
+                        ActionId = action.Id,
+                        Detail = RuleExecutionDiagnostics.SafeDetail(claim.Action.Detail, logger),
+                        ObservedAtUtc = clock.GetUtcNow()
+                    });
+                    if (added)
+                    {
+                        execution = await FeatureExecutionOrchestrator.PersistProgressAsync(repository, execution, progress,
+                            execution.RuleIndex, execution.ActionIndex, execution.State, logger, clock.GetUtcNow(), ct).ConfigureAwait(false);
+                    }
+                }
                 completed.Add(claim.Action);
                 continue;
             }
@@ -322,14 +364,21 @@ internal sealed class RuleMessageDeliveryService(
                 : completed.Any(item => item.Outcome == RuleActionExecutionOutcome.OutcomeUnknown)
                     ? ActionExecutionOutcome.OutcomeUnknown
                     : ActionExecutionOutcome.Failed;
+        var terminalDiagnostic = protectionDecision is { Deferred: false } suppression &&
+            completed.Any(item => item.Outcome == RuleActionExecutionOutcome.SkippedDependency && item.Detail == suppression.Detail)
+            ? RuleExecutionDiagnosticCode.SuppressedByProtection
+            : tagged && plan.Commands.Length == 0
+                ? RuleExecutionDiagnosticCode.AudienceEmpty
+                : (RuleExecutionDiagnosticCode?)null;
         return Complete(outcome, completed.Count == 0 ? "No recipients." :
-            $"{completed.Count}/{plan.Commands.Length} fragments terminal; transport acceptance is not confirmed delivery.");
+            $"{completed.Count}/{plan.Commands.Length} fragments terminal; transport acceptance is not confirmed delivery.",
+            terminalDiagnostic);
 
-        RuleMessageDispatchResult Complete(ActionExecutionOutcome outcome, string? detail) =>
-            new(execution, new(outcome, detail));
+        RuleMessageDispatchResult Complete(ActionExecutionOutcome outcome, string? detail, RuleExecutionDiagnosticCode? code = null) =>
+            new(execution, new(outcome, detail), DiagnosticCode: code);
 
-        RuleMessageDispatchResult Wait(string detail, DateTimeOffset dueAtUtc) =>
-            new(execution, ResumeAtUtc: dueAtUtc < expiry ? dueAtUtc : expiry, Detail: detail);
+        RuleMessageDispatchResult Wait(string detail, DateTimeOffset dueAtUtc, RuleExecutionDiagnosticCode code) =>
+            new(execution, ResumeAtUtc: dueAtUtc < expiry ? dueAtUtc : expiry, Detail: detail, DiagnosticCode: code);
     }
 
     private async Task<(bool Deferred, string Detail)?> ProtectionAsync(

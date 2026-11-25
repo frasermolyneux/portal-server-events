@@ -54,6 +54,12 @@ requested and are cached for the invocation. Missing provider facts remain
 unavailable, not invented zeros. Resolved moderation reasons are frozen before
 claiming their effects and creating matching audit records.
 
+Execution diagnostics expose current waits and selected rule and delivery
+outcomes, including unavailable token sources and fallback use. Text diagnostics
+are persisted before the corresponding action is frozen or claimed; waiting
+markers clear on resume. The projection contains at most 256 entries and reports
+an exact count of any omitted diagnostics.
+
 Message actions append `messages` after an optional `message`. Rendering precedes
 channel-aware splitting. The complete ordered recipient/item/fragment plan is
 persisted before the first send and is never rerendered or resegmented on retry.
