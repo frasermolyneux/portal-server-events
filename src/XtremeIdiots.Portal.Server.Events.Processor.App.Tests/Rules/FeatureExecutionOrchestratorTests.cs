@@ -18,6 +18,284 @@ namespace XtremeIdiots.Portal.Server.Events.Processor.App.Tests.Rules;
 
 public sealed class FeatureExecutionOrchestratorTests
 {
+    [Theory]
+    [InlineData("server-agent", 1)]
+    [InlineData("cod4x-plugin", 0)]
+    public async Task OriginalConnectionDelaySurvivesRestartAndConfigurationChanges(string runtimeId, int scheduledCount)
+    {
+        var storage = new Storage();
+        var executor = new Executor();
+        var continuation = new Continuations();
+        var messages = new Messages();
+        var original = Invocation();
+        var clock = new Clock(original.Trigger.OccurredAtUtc.AddSeconds(1));
+        var invocation = original with { Trigger = original.Trigger with { Runtime = new() { Id = runtimeId } } };
+        var snapshot = Snapshot(WelcomeRule("delayed", 0)) with
+        {
+            FeatureId = WelcomeFeatureRulesProvider.Id,
+            Timing = new() { ConnectionDelaySeconds = 10, FreshnessSeconds = 120 }
+        };
+
+        await Create(storage, executor, continuation, clock, messages).ProcessAsync(invocation, snapshot, default);
+
+        Assert.Empty(messages.Deliveries);
+        Assert.Empty(storage.Execution!.Actions);
+        Assert.Equal(RuleFeatureExecutionState.Waiting, storage.Execution.State);
+        Assert.Equal("Waiting for original connection delay.", storage.Execution.Coordination!.WaitingReason);
+        Assert.Equal(RuleExecutionDiagnosticCode.WaitingForDelay, Assert.Single(storage.Execution.Diagnostics).Code);
+        Assert.Equal(scheduledCount, continuation.Scheduled.Count);
+        if (scheduledCount > 0)
+        {
+            Assert.Equal(original.Trigger.OccurredAtUtc.AddSeconds(10), Assert.Single(continuation.DueTimes));
+        }
+        clock.Now = original.Trigger.OccurredAtUtc.AddSeconds(10);
+        await Create(storage, executor, continuation, clock, messages).ProcessAsync(invocation, snapshot with
+        {
+            Timing = new() { ConnectionDelaySeconds = 60, FreshnessSeconds = 900 }
+        }, default);
+
+        Assert.Equal(["delayed"], messages.Deliveries);
+        var progress = JsonSerializer.Deserialize<RuleExecutionProgress>(
+            storage.Execution.DecisionSnapshotJson!, RulesSerialization.Options)!;
+        Assert.Equal(original.Trigger.OccurredAtUtc.AddSeconds(120), progress.RuleWindows["delayed"].ExpiresAtUtc);
+        Assert.Null(progress.WaitingReason);
+        Assert.Null(storage.Execution.Coordination!.WaitingReason);
+        Assert.Empty(storage.Execution.Diagnostics);
+    }
+
+    [Fact]
+    public async Task MessagePreparationDeadlineSurvivesRetriesWithoutFeatureExpiry()
+    {
+        var storage = new Storage();
+        var original = Invocation();
+        var invocation = original with { Trigger = original.Trigger with { Runtime = new() { Id = "server-agent" } } };
+        var rule = WelcomeRule("notice", 0);
+        var key = JsonSerializer.Serialize(new[] { rule.Id, rule.Actions[0].Id });
+        var deadlines = new List<DateTimeOffset>();
+        var messages = new Mock<IRuleMessageDeliveryService>();
+        messages.Setup(item => item.DispatchAsync(It.IsAny<RuleFeatureExecutionDto>(), It.IsAny<RuleDefinition>(),
+                It.IsAny<int>(), It.IsAny<int>(), It.IsAny<RuleActionDefinition>(),
+                It.IsAny<Func<RuleActionDefinition, RuleActionCommand>>(), It.IsAny<RuleInvocation>(),
+                It.IsAny<RuleExecutionProgress>(), It.IsAny<CancellationToken>()))
+            .Returns((RuleFeatureExecutionDto execution, RuleDefinition _, int _, int _, RuleActionDefinition _,
+                Func<RuleActionDefinition, RuleActionCommand> _, RuleInvocation _, RuleExecutionProgress progress, CancellationToken _) =>
+            {
+                var deadline = progress.MessagePreparationExpiries[key];
+                deadlines.Add(deadline);
+                return Task.FromResult(new RuleMessageDispatchResult(execution, ResumeAtUtc: deadline));
+            });
+        var engine = Create(storage, new Executor(), messages: messages.Object);
+
+        await engine.ProcessAsync(invocation, Snapshot(rule), default);
+        await engine.ProcessAsync(invocation, Snapshot(rule), default);
+
+        Assert.Equal(2, deadlines.Count);
+        Assert.Equal(deadlines[0], deadlines[1]);
+        var progress = JsonSerializer.Deserialize<RuleExecutionProgress>(
+            storage.Execution!.DecisionSnapshotJson!, RulesSerialization.Options)!;
+        Assert.Equal(deadlines[0], progress.MessagePreparationExpiries[key]);
+    }
+
+    [Theory]
+    [InlineData("server-agent", 1)]
+    [InlineData("cod4x-plugin", 0)]
+    public async Task PendingMessageClaimSchedulesOnlyAgentRecovery(string runtimeId, int expectedSchedules)
+    {
+        var storage = new Storage();
+        var original = Invocation();
+        var invocation = original with { Trigger = original.Trigger with { Runtime = new() { Id = runtimeId } } };
+        var rule = WelcomeRule("notice", 0);
+        var snapshot = Snapshot(rule);
+        var deadline = DateTimeOffset.UtcNow.AddMinutes(1);
+        var command = new RuleActionCommand
+        {
+            ExpiresAtUtc = deadline,
+            ActionId = rule.Actions[0].Id,
+            Correlation = new() { RuleId = rule.Id, ActionId = rule.Actions[0].Id },
+            DeliveryIdentity = new()
+        };
+        storage.Execution = new()
+        {
+            ExecutionId = Guid.NewGuid(),
+            GameServerId = invocation.Trigger.GameServerId,
+            ConnectionId = invocation.Trigger.ConnectionId,
+            Trigger = invocation.Trigger,
+            FeatureId = snapshot.FeatureId,
+            FrozenRulesJson = snapshot.RulesJson,
+            State = RuleFeatureExecutionState.AwaitingActionOutcome,
+            Actions = [new()
+            {
+                Command = command,
+                Correlation = command.Correlation,
+                Outcome = RuleActionExecutionOutcome.Claimed
+            }],
+            DecisionSnapshotJson = JsonSerializer.Serialize(new RuleExecutionProgress
+            {
+                Mode = RuleExecutionMode.Enforce,
+                MatchedRuleIds = [rule.Id],
+                ExpiresAtUtc = deadline,
+                ContextTrigger = invocation.Trigger,
+                ContextObservedAtUtc = invocation.Trigger.OccurredAtUtc
+            }, RulesSerialization.Options)
+        };
+        var messages = new Mock<IRuleMessageDeliveryService>();
+        messages.Setup(item => item.DispatchAsync(It.IsAny<RuleFeatureExecutionDto>(), It.IsAny<RuleDefinition>(),
+                It.IsAny<int>(), It.IsAny<int>(), It.IsAny<RuleActionDefinition>(),
+                It.IsAny<Func<RuleActionDefinition, RuleActionCommand>>(), It.IsAny<RuleInvocation>(),
+                It.IsAny<RuleExecutionProgress>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new RuleMessageDispatchResult(storage.Execution, AwaitingOutcome: true));
+        var continuations = new Continuations();
+
+        await Create(storage, new Executor(), continuations, messages: messages.Object).ProcessAsync(invocation, snapshot, default);
+
+        Assert.Equal(expectedSchedules, continuations.Scheduled.Count);
+        if (expectedSchedules != 0)
+        {
+            Assert.Equal(deadline, Assert.Single(continuations.DueTimes));
+        }
+        Assert.Empty(invocation.Commands);
+    }
+
+    [Fact]
+    public async Task ExpiryWhileWaitingNeverClaimsOrDispatchesAnOldGreeting()
+    {
+        var storage = new Storage();
+        var executor = new Executor();
+        var messages = new Messages();
+        var original = Invocation();
+        var clock = new Clock(original.Trigger.OccurredAtUtc);
+        var snapshot = Snapshot(WelcomeRule("delayed", 0)) with
+        {
+            FeatureId = WelcomeFeatureRulesProvider.Id,
+            Timing = new() { ConnectionDelaySeconds = 5, FreshnessSeconds = 120 }
+        };
+        await Create(storage, executor, clock: clock, messages: messages).ProcessAsync(original, snapshot, default);
+
+        clock.Now = clock.Now.AddSeconds(120);
+        await Create(storage, executor, clock: clock, messages: messages).ProcessAsync(original, snapshot, default);
+
+        Assert.Empty(messages.Deliveries);
+        Assert.Empty(storage.Execution!.Actions);
+        Assert.Empty(executor.Effects);
+        Assert.Equal(RuleFeatureExecutionState.Completed, storage.Execution.State);
+        Assert.Equal(RuleExecutionDiagnosticCode.Expired, Assert.Single(storage.Execution.Diagnostics).Code);
+    }
+
+    [Fact]
+    public async Task ContinuingTaggedAlertBypassesDelayWithoutReplayingBeforeLaterGreeting()
+    {
+        var storage = new Storage();
+        var messages = new Messages();
+        var original = Invocation();
+        var clock = new Clock(original.Trigger.OccurredAtUtc);
+        var alert = WelcomeRule("alert", 0);
+        alert.AfterMatch = RuleAfterMatch.ContinueToNextRule;
+        alert.Actions[0].TypeId = "message.private-tagged";
+        alert.Actions[0].Parameters["recipientTags"] = JsonSerializer.SerializeToElement(new[] { Guid.NewGuid() });
+        alert.Actions[0].Parameters["recipientTagMatch"] = JsonSerializer.SerializeToElement("Any");
+        var snapshot = Snapshot(alert, WelcomeRule("greeting", 1)) with
+        {
+            FeatureId = WelcomeFeatureRulesProvider.Id,
+            Timing = new() { ConnectionDelaySeconds = 10 }
+        };
+        var engine = Create(storage, new Executor(), clock: clock, messages: messages);
+
+        await engine.ProcessAsync(original, snapshot, default);
+        Assert.Equal(["alert"], messages.Deliveries);
+        Assert.Equal(RuleFeatureExecutionState.Waiting, storage.Execution!.State);
+        clock.Now = clock.Now.AddSeconds(10);
+        await engine.ProcessAsync(original, snapshot, default);
+
+        Assert.Equal(["alert", "greeting"], messages.Deliveries);
+        Assert.Equal(RuleFeatureExecutionState.Stopped, storage.Execution.State);
+    }
+
+    [Fact]
+    public async Task UnknownHigherPriorityWelcomeDoesNotSelectCatchAll()
+    {
+        var storage = new Storage();
+        var executor = new Executor();
+        var first = Rule("needs-tags", 0, "player.tags");
+        first.Condition!.Parameters = new()
+        {
+            ["tags"] = JsonSerializer.SerializeToElement(new[] { Guid.NewGuid().ToString() }),
+            ["operator"] = JsonSerializer.SerializeToElement("ContainsAny")
+        };
+        var second = Rule("everyone", 1, "always");
+        second.Condition!.Parameters = [];
+        foreach (var rule in new[] { first, second })
+        {
+            rule.Actions[0].TypeId = "message.public";
+            rule.Actions[0].Parameters = new() { ["message"] = JsonSerializer.SerializeToElement("Welcome") };
+        }
+        var snapshot = Snapshot(first, second) with
+        {
+            FeatureId = WelcomeFeatureRulesProvider.Id,
+            Timing = new() { ConnectionDelaySeconds = 0 }
+        };
+
+        var invocation = Invocation();
+        await Create(storage, executor).ProcessAsync(invocation, snapshot, default);
+
+        var progress = JsonSerializer.Deserialize<RuleExecutionProgress>(
+            storage.Execution!.DecisionSnapshotJson!, RulesSerialization.Options)!;
+        Assert.Contains("needs-tags", progress.UnknownRuleIds);
+        Assert.Empty(progress.MatchedRuleIds);
+        Assert.Empty(storage.Execution.Actions);
+        Assert.Equal(storage.Execution.ExecutionId, Assert.Single(invocation.PendingExecutionIds));
+        Assert.Equal(RuleExecutionDiagnosticCode.WaitingForContext, Assert.Single(storage.Execution.Diagnostics).Code);
+    }
+
+    [Fact]
+    public async Task NonMatchingRulePersistsTypedReason()
+    {
+        var storage = new Storage();
+        var rule = Rule("known-only", 0);
+        rule.Condition!.Parameters!["operator"] = JsonSerializer.SerializeToElement("IsKnown");
+
+        await Create(storage, new Executor()).ProcessAsync(Invocation(), Snapshot(rule), default);
+
+        var diagnostic = Assert.Single(storage.Execution!.Diagnostics);
+        Assert.Equal(RuleExecutionDiagnosticCode.NoMatch, diagnostic.Code);
+        Assert.Equal("known-only", diagnostic.RuleId);
+        Assert.Empty(storage.Execution.Actions);
+    }
+
+    [Fact]
+    public async Task RetryingRenderedActionReplacesProvisionalDiagnosticsBeforeClaim()
+    {
+        var storage = new Storage();
+        var executor = new Executor { Deferred = true };
+        var rule = Rule("templated", 0);
+        rule.Actions[0].TemplateParameters.Add("reason");
+        var first = rule.Actions[0];
+        var resolved = new RuleActionDefinition
+        {
+            Id = first.Id,
+            TypeId = first.TypeId,
+            Parameters = new() { ["reason"] = JsonSerializer.SerializeToElement("Fresh reason") }
+        };
+        var preparer = new Mock<IRuleActionTextPreparer>();
+        preparer.SetupSequence(item => item.PrepareAsync(It.IsAny<RuleActionDefinition>(), It.IsAny<RuleInvocation>(),
+                It.IsAny<DateTimeOffset>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new RuleActionTextPreparation(first,
+                [new("FallbackUsed", "player.name", RuleTextTokenSource.Connection, "Used fallback.")]))
+            .ReturnsAsync(new RuleActionTextPreparation(resolved, []));
+        var engine = Create(storage, executor, textPreparer: preparer.Object);
+        var invocation = Invocation();
+
+        await engine.ProcessAsync(invocation, Snapshot(rule), default);
+
+        Assert.Contains(storage.Execution!.Diagnostics, item => item.Code == RuleExecutionDiagnosticCode.FallbackUsed);
+        Assert.Contains(storage.Execution.Diagnostics, item => item.Code == RuleExecutionDiagnosticCode.WaitingForContext);
+        executor.Deferred = false;
+        await engine.ProcessAsync(invocation, Snapshot(rule), default);
+
+        Assert.Empty(storage.DiagnosticsAtClaim!);
+        Assert.Empty(storage.Execution.Diagnostics);
+        Assert.Equal("Fresh reason", Assert.Single(storage.Execution.Actions).Command.Effect.Reason);
+    }
+
     [Fact]
     public async Task ConfiguredOrderAndStopArePreservedWhenActionIsUnsupported()
     {
@@ -249,8 +527,8 @@ public sealed class FeatureExecutionOrchestratorTests
         rule.Actions[0] = new()
         {
             Id = "action",
-            TypeId = "message.public",
-            Parameters = new() { ["message"] = JsonSerializer.SerializeToElement("Hello") }
+            TypeId = "player.kick",
+            Parameters = new() { ["reason"] = JsonSerializer.SerializeToElement("Rule matched.") }
         };
         var snapshot = Snapshot(rule);
         await engine.ProcessAsync(original, snapshot, default);
@@ -268,6 +546,7 @@ public sealed class FeatureExecutionOrchestratorTests
         var enriched = new RuleInvocation(enrichedTrigger, original.Facts, null);
 
         await engine.ProcessAsync(enriched, snapshot, default);
+        var versionAfterEnrichment = storage.Execution.Version;
         await engine.ProcessAsync(original, snapshot, default);
 
         var progress = JsonSerializer.Deserialize<RuleExecutionProgress>(
@@ -278,8 +557,67 @@ public sealed class FeatureExecutionOrchestratorTests
         Assert.Equal(ruleIndex, storage.Execution.RuleIndex);
         Assert.Equal(actionIndex, storage.Execution.ActionIndex);
         Assert.Equal(RuleFeatureExecutionState.AwaitingActionOutcome, storage.Execution.State);
+        Assert.Equal(versionAfterEnrichment, storage.Execution.Version);
         Assert.Single(executor.Effects);
         Assert.Empty(enriched.Commands);
+    }
+
+    [Fact]
+    public async Task PreviouslyClaimedLegacyMessageRemainsPendingWithoutNewDeliveryPlan()
+    {
+        var storage = new Storage();
+        var executor = new Executor();
+        var invocation = Invocation();
+        var rule = Rule("legacy", 0);
+        rule.Actions[0] = new()
+        {
+            Id = "action",
+            TypeId = "message.public",
+            Parameters = new() { ["message"] = JsonSerializer.SerializeToElement("Hello") }
+        };
+        var snapshot = Snapshot(rule);
+        var command = new RuleActionCommand
+        {
+            GameServerId = invocation.Trigger.GameServerId,
+            ConnectionId = invocation.Trigger.ConnectionId,
+            ExpiresAtUtc = DateTimeOffset.UtcNow.AddMinutes(1),
+            ActionId = "action",
+            LogicalEffectId = new string('a', 64),
+            Correlation = new() { RuleId = "legacy", ActionId = "action" },
+            Effect = new() { Type = RuleNativeEffectType.PublicMessage, Message = "Hello" }
+        };
+        storage.Execution = new()
+        {
+            ExecutionId = Guid.NewGuid(),
+            GameServerId = command.GameServerId,
+            ConnectionId = command.ConnectionId,
+            Trigger = invocation.Trigger,
+            FeatureId = snapshot.FeatureId,
+            RuleSetRevision = snapshot.Revision,
+            FrozenRulesJson = snapshot.RulesJson,
+            State = RuleFeatureExecutionState.AwaitingActionOutcome,
+            Actions = [new()
+            {
+                Command = command,
+                LogicalEffectId = command.LogicalEffectId,
+                Correlation = command.Correlation,
+                Outcome = RuleActionExecutionOutcome.Dispatched
+            }],
+            DecisionSnapshotJson = JsonSerializer.Serialize(new RuleExecutionProgress
+            {
+                Mode = RuleExecutionMode.Enforce,
+                MatchedRuleIds = ["legacy"],
+                ContextTrigger = invocation.Trigger,
+                ContextObservedAtUtc = invocation.Trigger.OccurredAtUtc
+            }, RulesSerialization.Options)
+        };
+
+        await Create(storage, executor).ProcessAsync(invocation, snapshot, default);
+
+        Assert.Empty(executor.Effects);
+        Assert.Empty(storage.Execution.PreparedActions);
+        Assert.Single(storage.Execution.Actions);
+        Assert.Equal(RuleFeatureExecutionState.AwaitingActionOutcome, storage.Execution.State);
     }
 
     [Fact]
@@ -378,9 +716,20 @@ public sealed class FeatureExecutionOrchestratorTests
     }
 
     private static FeatureExecutionOrchestrator Create(
-        Storage storage, Executor executor, IRuleExecutionContinuationPublisher? continuation = null) =>
+        Storage storage, Executor executor, IRuleExecutionContinuationPublisher? continuation = null, TimeProvider? clock = null,
+        IRuleMessageDeliveryService? messages = null, IRuleActionTextPreparer? textPreparer = null) =>
         new(storage.Repository.Object, executor, continuation ?? new Continuations(),
-            NullLogger<FeatureExecutionOrchestrator>.Instance, NullLogger<OrderedActionDispatcher>.Instance);
+            NullLogger<FeatureExecutionOrchestrator>.Instance, NullLogger<OrderedActionDispatcher>.Instance,
+            textPreparer ?? Mock.Of<IRuleActionTextPreparer>(), messages ?? Mock.Of<IRuleMessageDeliveryService>(), clock);
+
+    private static RuleDefinition WelcomeRule(string id, int order)
+    {
+        var rule = Rule(id, order, "always");
+        rule.Condition!.Parameters!.Clear();
+        rule.Actions[0].TypeId = "message.public";
+        rule.Actions[0].Parameters = new() { ["message"] = JsonSerializer.SerializeToElement("Welcome") };
+        return rule;
+    }
 
     private static FeatureRulesSnapshot Snapshot(params RuleDefinition[] rules) =>
         new(RulesEngineCatalogueV1.VpnProtectionFeature, rules, RuleExecutionMode.Enforce);
@@ -427,10 +776,34 @@ public sealed class FeatureExecutionOrchestratorTests
     private sealed class Continuations : IRuleExecutionContinuationPublisher
     {
         public List<(Guid ServerId, Guid ExecutionId)> Scheduled { get; } = [];
-        public Task ScheduleAsync(Guid serverId, Guid executionId, CancellationToken ct)
+        public List<DateTimeOffset> DueTimes { get; } = [];
+        public Task ScheduleAsync(Guid serverId, Guid executionId, DateTimeOffset scheduledAtUtc, CancellationToken ct)
         {
             Scheduled.Add((serverId, executionId));
+            DueTimes.Add(scheduledAtUtc);
             return Task.CompletedTask;
+        }
+    }
+
+    private sealed class Clock(DateTimeOffset now) : TimeProvider
+    {
+        public DateTimeOffset Now { get; set; } = now;
+        public override DateTimeOffset GetUtcNow() => Now;
+    }
+
+    private sealed class Messages : IRuleMessageDeliveryService
+    {
+        public List<string> Deliveries { get; } = [];
+        public Task<RuleMessageDispatchResult> DispatchAsync(
+            RuleFeatureExecutionDto execution, RuleDefinition rule, int ruleIndex, int actionIndex,
+            RuleActionDefinition action, Func<RuleActionDefinition, RuleActionCommand> commandFactory,
+            RuleInvocation invocation, RuleExecutionProgress progress, CancellationToken ct)
+        {
+            Assert.Equal(RuleFeatureExecutionState.Evaluating, execution.State);
+            Assert.Equal(ruleIndex, execution.RuleIndex);
+            Assert.Equal(actionIndex, execution.ActionIndex);
+            Deliveries.Add(rule.Id);
+            return Task.FromResult(new RuleMessageDispatchResult(execution, new(ActionExecutionOutcome.Applied)));
         }
     }
 
@@ -462,6 +835,7 @@ public sealed class FeatureExecutionOrchestratorTests
         public RuleFeatureExecutionDto? Execution { get; set; }
         public bool FailOutcomes { get; set; }
         public bool ClaimAlreadyOwned { get; init; }
+        public RuleExecutionDiagnostic[]? DiagnosticsAtClaim { get; private set; }
 
         public Storage()
         {
@@ -482,7 +856,8 @@ public sealed class FeatureExecutionOrchestratorTests
                         Trigger = request.Trigger,
                         RuleSetRevision = request.RuleSetRevision,
                         FrozenRulesJson = request.FrozenRulesJson,
-                        FactSnapshotId = request.FactSnapshotId
+                        FactSnapshotId = request.FactSnapshotId,
+                        Coordination = request.Coordination
                     };
                     return Task.FromResult(Ok(Execution));
                 });
@@ -503,7 +878,9 @@ public sealed class FeatureExecutionOrchestratorTests
                         RuleIndex = request.RuleIndex,
                         ActionIndex = request.ActionIndex,
                         State = request.State,
-                        DecisionSnapshotJson = request.DecisionSnapshotJson
+                        DecisionSnapshotJson = request.DecisionSnapshotJson,
+                        Coordination = request.Coordination,
+                        Diagnostics = request.Diagnostics ?? Execution.Diagnostics
                     };
                     return Task.FromResult(Ok(Execution));
                 });
@@ -512,6 +889,7 @@ public sealed class FeatureExecutionOrchestratorTests
                 .Returns((Guid _, Guid _, ClaimRuleActionDto request, CancellationToken _) =>
                 {
                     Assert.Equal(Execution!.Version, request.ExpectedVersion);
+                    DiagnosticsAtClaim = Execution.Diagnostics;
                     using var frozen = JsonDocument.Parse(Execution.FrozenRulesJson);
                     var frozenRule = frozen.RootElement.GetProperty("rules")[request.RuleIndex];
                     Assert.Equal(request.Command.Correlation.RuleId, frozenRule.GetProperty("id").GetString());

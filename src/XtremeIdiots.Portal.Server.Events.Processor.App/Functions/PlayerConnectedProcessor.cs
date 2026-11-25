@@ -31,7 +31,6 @@ public class PlayerConnectedProcessor(
     IRulesTriggerService rulesTriggerService,
     IVpnDetectedTagService vpnDetectedTagService,
     IProtectedNameService protectedNameService,
-    IWelcomeMessageOrchestrator welcomeMessageOrchestrator,
     IMemoryCache memoryCache,
     IAuditLogger auditLogger)
 {
@@ -159,13 +158,9 @@ public class PlayerConnectedProcessor(
 
                 var enrichment = await EnrichWithGeoLocation(playerEvent, context.CancellationToken).ConfigureAwait(false);
                 await vpnDetectedTagService.AddIfDetectedAsync(newPlayerContext.PlayerId, enrichment.Intelligence, context.CancellationToken).ConfigureAwait(false);
-                var rulesResult = await rulesTriggerService.ProcessAsync(
+                await rulesTriggerService.ProcessAsync(
                     prepared, enrichment.Intelligence,
                     context.CancellationToken).ConfigureAwait(false);
-                if (!rulesResult.SuppressWelcome)
-                {
-                    await TryProcessWelcomeMessage(playerEvent, gameType, newPlayerContext.Tags, enrichment.Country, context.CancellationToken).ConfigureAwait(false);
-                }
 
                 return;
             }
@@ -219,13 +214,9 @@ public class PlayerConnectedProcessor(
         // GeoIP enrichment (best-effort, never blocks player processing)
         var enriched = await EnrichWithGeoLocation(playerEvent, context.CancellationToken).ConfigureAwait(false);
         await vpnDetectedTagService.AddIfDetectedAsync(playerContext.PlayerId, enriched.Intelligence, context.CancellationToken).ConfigureAwait(false);
-        var rulesSummary = await rulesTriggerService.ProcessAsync(
+        await rulesTriggerService.ProcessAsync(
             prepared, enriched.Intelligence,
             context.CancellationToken).ConfigureAwait(false);
-        if (!rulesSummary.SuppressWelcome)
-        {
-            await TryProcessWelcomeMessage(playerEvent, gameType, playerContext.Tags, enriched.Country, context.CancellationToken).ConfigureAwait(false);
-        }
     }
 
     private async Task<IpEnrichmentResult> EnrichWithGeoLocation(
@@ -384,35 +375,6 @@ public class PlayerConnectedProcessor(
             new MemoryCacheEntryOptions().SetSlidingExpiration(PlayerCacheExpiration));
 
         return context;
-    }
-
-    private async Task TryProcessWelcomeMessage(
-        PlayerConnectedEvent playerEvent,
-        GameType gameType,
-        string[] playerTags,
-        string? country,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            await welcomeMessageOrchestrator
-                .ProcessAsync(playerEvent, gameType, playerTags, country, cancellationToken)
-                .ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            logger.LogDebug(
-                "Welcome message processing cancelled during shutdown for server {ServerId}, player {PlayerGuid}",
-                playerEvent.ServerId,
-                playerEvent.PlayerGuid);
-        }
-        catch (Exception ex)
-        {
-            logger.LogWarning(ex,
-                "Welcome message processing failed for server {ServerId}, player {PlayerGuid}",
-                playerEvent.ServerId,
-                playerEvent.PlayerGuid);
-        }
     }
 
     private void InvalidatePlayerCache(GameType gameType, string guid)

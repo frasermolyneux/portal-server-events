@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using XtremeIdiots.Portal.Repository.Abstractions.Constants.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.RulesEngine;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Rules;
+using XtremeIdiots.Portal.Settings.Contracts.V1.Contracts.RulesEngine;
 
 namespace XtremeIdiots.Portal.Server.Events.Processor.App.Tests.Rules;
 
@@ -63,6 +64,48 @@ public sealed class RegisteredFeatureHostTests
     }
 
     [Fact]
+    public async Task WelcomeWaitsForConcurrentProtectionAdmissionsButNotUnrelatedFeatures()
+    {
+        var releaseVpn = new TaskCompletionSource<Guid?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseSiege = new TaskCompletionSource<Guid?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseIndependent = new TaskCompletionSource<Guid?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var vpn = new Feature(RulesEngineCatalogueV1.VpnProtectionFeature, ["player.connected"], () => releaseVpn.Task);
+        var siege = new Feature(RulesEngineCatalogueV1.SiegeModeFeature, ["player.connected"], () => releaseSiege.Task);
+        var independent = new Feature("independent", ["player.connected"], () => releaseIndependent.Task);
+        var welcome = new Feature("welcome-messages", ["player.connected"]);
+        var invocation = Trigger with { };
+        var processing = Create(welcome, vpn, independent, siege).ProcessAsync(invocation, default);
+
+        Assert.Equal(1, vpn.Calls);
+        Assert.Equal(1, siege.Calls);
+        Assert.Equal(1, independent.Calls);
+        Assert.Equal(0, welcome.Calls);
+        releaseVpn.SetResult(Guid.NewGuid());
+        releaseSiege.SetResult(Guid.NewGuid());
+        await welcome.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.False(processing.IsCompleted);
+        Assert.Equal(2, invocation.ProtectionResults.Count);
+        Assert.All(invocation.ProtectionResults, result => Assert.NotNull(result.ExecutionId));
+        releaseIndependent.SetResult(Guid.NewGuid());
+        await processing;
+    }
+
+    [Fact]
+    public async Task WelcomeReceivesProtectionFailureInsteadOfTreatingItAsNoEnforcement()
+    {
+        var failure = new InvalidOperationException("Protection unavailable.");
+        var protection = new Feature(RulesEngineCatalogueV1.VpnProtectionFeature, ["player.connected"], () => throw failure);
+        var welcome = new Feature("welcome-messages", ["player.connected"]);
+        var invocation = Trigger with { };
+
+        await Create(welcome, protection).ProcessAsync(invocation, default);
+
+        Assert.Same(failure, Assert.Single(invocation.ProtectionResults).Failure);
+        Assert.Equal(1, welcome.Calls);
+    }
+
+    [Fact]
     public async Task Cancellation_PropagatesRatherThanBecomingFeatureFailure()
     {
         using var cts = new CancellationTokenSource();
@@ -91,10 +134,12 @@ public sealed class RegisteredFeatureHostTests
         public string FeatureId => featureId;
         public IReadOnlySet<string> TriggerIds { get; } = triggerIds.ToHashSet(StringComparer.Ordinal);
         public int Calls { get; private set; }
+        public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public Task<Guid?> ProcessAsync(RuleInvocation invocation, CancellationToken ct)
         {
             Calls++;
+            Started.TrySetResult();
             return process is null ? Task.FromResult<Guid?>(Guid.NewGuid()) : process();
         }
     }

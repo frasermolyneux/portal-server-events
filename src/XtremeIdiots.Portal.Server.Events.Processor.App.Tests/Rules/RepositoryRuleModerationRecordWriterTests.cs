@@ -51,6 +51,30 @@ public sealed class RepositoryRuleModerationRecordWriterTests
     }
 
     [Fact]
+    public async Task RecordUsesFrozenClaimReasonRatherThanTemplateOrChangedConfiguration()
+    {
+        var fixture = new Fixture();
+        fixture.Action.Parameters["reason"] = System.Text.Json.JsonSerializer.SerializeToElement("Changed {context.player.Name}");
+
+        await fixture.Writer.PersistAsync(fixture.Action, fixture.Command, fixture.Invocation, default);
+
+        Assert.Equal("Matched rule.", fixture.Request!.Text);
+    }
+
+    [Fact]
+    public async Task CommandCannotReplaceFrozenClaimReason()
+    {
+        var fixture = new Fixture();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => fixture.Writer.PersistAsync(
+            fixture.Action, fixture.Command with { Effect = new() { Reason = "Different reason." } }, fixture.Invocation, default));
+
+        Assert.Null(fixture.Request);
+        fixture.Audit.VerifyNoOtherCalls();
+        Assert.Empty(fixture.Continuations.Messages);
+    }
+
+    [Fact]
     public async Task TemporaryBanExpiryIsAnchoredToDurableClaimNotRetryTime()
     {
         var fixture = new Fixture("moderation.temporary-ban", AdminActionType.TempBan);
@@ -181,6 +205,7 @@ public sealed class RepositoryRuleModerationRecordWriterTests
                 PlayerGuid = "player",
                 ActionId = Action.Id,
                 LogicalEffectId = new string('a', 64),
+                Effect = new() { Reason = "Matched rule." },
                 Mode = RuleExecutionMode.Enforce,
                 Correlation = new() { ActionId = Action.Id, FeatureId = "vpn-protection", RuleId = "rule" },
                 ExpiresAtUtc = DateTimeOffset.UtcNow.AddSeconds(30)

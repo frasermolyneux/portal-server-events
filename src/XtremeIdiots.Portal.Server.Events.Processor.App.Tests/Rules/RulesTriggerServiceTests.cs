@@ -24,6 +24,82 @@ namespace XtremeIdiots.Portal.Server.Events.Processor.App.Tests.Rules;
 public sealed class RulesTriggerServiceTests
 {
     [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task IpEnrichmentResumesOnlyAnExistingPendingWelcome(bool pending)
+    {
+        var calls = 0;
+        var welcome = new Feature(WelcomeFeatureRulesProvider.Id, _ =>
+        {
+            calls++;
+            return Guid.NewGuid();
+        }, ["player.connected"]);
+        var fixture = new Fixture(welcome);
+        fixture.Api.Setup(item => item.GetConnectionExecutions(
+                It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Ok(new[]
+            {
+                fixture.Execution with
+                {
+                    FeatureId = WelcomeFeatureRulesProvider.Id,
+                    State = pending ? RuleFeatureExecutionState.Waiting : RuleFeatureExecutionState.Completed
+                }
+            }));
+        var trigger = fixture.Execution.Trigger with
+        {
+            TriggerId = "player.ip-resolved",
+            TriggerOccurrenceId = Guid.NewGuid(),
+            ObservationId = Guid.NewGuid(),
+            PlayerIpAddress = "8.8.8.8"
+        };
+
+        await fixture.Service.EvaluateAsync(trigger, default);
+
+        Assert.Equal(pending ? 1 : 0, calls);
+    }
+
+    [Theory]
+    [InlineData(RuleActionExecutionOutcome.Dispatched, RuleActionExecutionOutcome.OutcomeUnknown)]
+    [InlineData(RuleActionExecutionOutcome.Applied, RuleActionExecutionOutcome.Applied)]
+    [InlineData(RuleActionExecutionOutcome.Stale, RuleActionExecutionOutcome.Stale)]
+    [InlineData(RuleActionExecutionOutcome.Failed, RuleActionExecutionOutcome.Failed)]
+    public async Task PreparedChildReceiptDoesNotAdvanceTheParentActionCursor(
+        RuleActionExecutionOutcome receipt, RuleActionExecutionOutcome expected)
+    {
+        var fixture = new Fixture();
+        var action = fixture.Execution.Actions[0];
+        fixture.Execution = fixture.Execution with
+        {
+            ActionIndex = 3,
+            Actions = [action with
+            {
+                ActionTypeId = "message.private",
+                AdminActionId = null,
+                Command = action.Command with
+                {
+                    Effect = new() { Type = RuleNativeEffectType.PrivateMessage, Message = "Hello" },
+                    DeliveryIdentity = new() { ParentLogicalEffectId = new string('a', 64) }
+                }
+            }]
+        };
+        var result = fixture.Result(receipt);
+
+        await fixture.Service.OutcomeAsync(result, default);
+        await fixture.Service.OutcomeAsync(result, default);
+
+        Assert.Equal(3, fixture.Execution.ActionIndex);
+        Assert.Equal(expected, fixture.Execution.Actions[0].Outcome);
+        Assert.Equal(RuleFeatureExecutionState.Evaluating, fixture.Execution.State);
+        fixture.Api.Verify(item => item.UpdateActionOutcome(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<string>(),
+            It.IsAny<UpdateRuleActionOutcomeDto>(), It.IsAny<CancellationToken>()), Times.Once);
+        fixture.EventApi.Verify(item => item.CreateGameServerEvent(It.IsAny<CreateGameServerEventDto>(),
+            It.IsAny<CancellationToken>()), Times.Never);
+        Assert.Contains(fixture.Logger.Entries, item => item.Level == LogLevel.Information &&
+            item.Message.Contains("Prepared message receipt"));
+        fixture.Audit.VerifyNoOtherCalls();
+    }
+
+    [Theory]
     [InlineData("::ffff:8.8.8.8", "8.8.8.8")]
     [InlineData("2001:0DB8:0000:0000:0000:0000:0000:0001", "2001:db8::1")]
     public async Task PluginFactsUseCanonicalIpBeforeValidatingRepositoryResponse(string address, string expected)
@@ -780,10 +856,11 @@ public sealed class RulesTriggerServiceTests
             It.IsAny<Guid>(), It.IsAny<RuleFactSnapshotRequestDto>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
-    private sealed class Feature(string featureId, Func<RuleInvocation, Guid?> process) : IRegisteredRuleFeature
+    private sealed class Feature(string featureId, Func<RuleInvocation, Guid?> process, string[]? triggerIds = null) : IRegisteredRuleFeature
     {
         public string FeatureId => featureId;
-        public IReadOnlySet<string> TriggerIds { get; } = new HashSet<string> { "player.connected", "player.ip-resolved" };
+        public IReadOnlySet<string> TriggerIds { get; } =
+            new HashSet<string>(triggerIds ?? ["player.connected", "player.ip-resolved"]);
         public Task<Guid?> ProcessAsync(RuleInvocation invocation, CancellationToken ct) =>
             Task.FromResult(process(invocation));
     }
@@ -883,6 +960,8 @@ public sealed class RulesTriggerServiceTests
             var versioned = new Mock<IVersionedRuleExecutionsApi>();
             versioned.Setup(item => item.V1).Returns(Api.Object);
             repository.Setup(item => item.RuleExecutions).Returns(versioned.Object);
+            Api.Setup(item => item.GetConnectionExecutions(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(Ok(Array.Empty<RuleFeatureExecutionDto>()));
             var eventVersions = new Mock<IVersionedGameServersEventsApi>();
             eventVersions.Setup(item => item.V1).Returns(EventApi.Object);
             repository.Setup(item => item.GameServersEvents).Returns(eventVersions.Object);

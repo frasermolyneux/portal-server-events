@@ -20,6 +20,74 @@ namespace XtremeIdiots.Portal.Server.Events.Processor.App.Tests.Rules;
 public sealed class UniversalRuleActionExecutorTests
 {
     [Fact]
+    public async Task PrivateRecipientUsesItsOwnFreshBindingWithoutRequiringTriggerPresence()
+    {
+        var fixture = new Fixture();
+        var recipient = new RuleMessageRecipientTarget
+        {
+            GameServerId = fixture.Command.GameServerId,
+            ConnectionId = Guid.NewGuid(),
+            PlayerGuid = "recipient",
+            SlotId = 7,
+            Runtime = fixture.Command.Runtime
+        };
+        fixture.Setup(fixture.Binding with
+        {
+            ConnectionId = recipient.ConnectionId,
+            PlayerGuid = recipient.PlayerGuid.ToUpperInvariant(),
+            SlotId = recipient.SlotId
+        });
+        var command = fixture.Command with
+        {
+            RecipientTarget = recipient,
+            Effect = new() { Type = RuleNativeEffectType.PrivateMessage, Message = "Alert" }
+        };
+
+        var result = await fixture.Executor.AvailabilityAsync(
+            new() { Id = "alert", TypeId = "message.private-tagged" }, command,
+            new(new(), new(), null), DateTimeOffset.UtcNow.AddMinutes(1), default);
+
+        Assert.False(result.Deferred);
+        Assert.Null(result.Unavailable);
+        fixture.Bindings.Verify(item => item.GetCurrentBinding(recipient.GameServerId, recipient.SlotId,
+            recipient.PlayerGuid, It.IsAny<CancellationToken>()), Times.Once);
+        fixture.Bindings.Verify(item => item.GetCurrentBinding(command.GameServerId, command.SlotId,
+            command.PlayerGuid, It.IsAny<CancellationToken>()), Times.Never);
+        fixture.Servers.Verify(item => item.RulesNativeAction.V1.Execute(command.GameServerId,
+            It.Is<RuleActionCommand>(probe => probe.Correlation == command.Correlation &&
+                probe.ConnectionId == command.ConnectionId && probe.RecipientTarget == recipient),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task SeparateRecipientCanNeverRetargetModerationOrPublicMessage()
+    {
+        var fixture = new Fixture();
+        var command = fixture.Command with
+        {
+            RecipientTarget = new()
+            {
+                GameServerId = fixture.Command.GameServerId,
+                ConnectionId = Guid.NewGuid(),
+                PlayerGuid = "recipient",
+                SlotId = 7
+            }
+        };
+
+        var result = await fixture.Executor.AvailabilityAsync(
+            new() { Id = "message", TypeId = "message.public" }, command,
+            new(new(), new(), null), DateTimeOffset.UtcNow.AddMinutes(1), default);
+
+        Assert.Equal(ActionExecutionOutcome.SkippedUnsupported, result.Unavailable?.Outcome);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => fixture.Executor.ExecuteAsync(
+            new() { Id = "kick", TypeId = "moderation.kick-with-record" },
+            command with { Effect = new() { Type = RuleNativeEffectType.DropPlayer } }, new(new(), new(), null), default));
+        Assert.Equal(0, fixture.Records.Calls);
+        fixture.Servers.VerifyNoOtherCalls();
+        fixture.Bindings.VerifyNoOtherCalls();
+    }
+
+    [Fact]
     public async Task TriggerBeforeBindingWaitsAndResumesWhenExactObservedIdentityArrives()
     {
         var fixture = new Fixture();
@@ -59,6 +127,7 @@ public sealed class UniversalRuleActionExecutorTests
 
         Assert.False(result.Deferred);
         Assert.Equal(ActionExecutionOutcome.Stale, result.Unavailable?.Outcome);
+        Assert.True(result.ConnectionUnavailable);
     }
 
     [Fact]
@@ -324,7 +393,7 @@ public sealed class UniversalRuleActionExecutorTests
         {
             Id = "ban",
             TypeId = "moderation.ban",
-            Parameters = new Dictionary<string, JsonElement> { ["reason"] = JsonSerializer.SerializeToElement(text) }
+            Parameters = new Dictionary<string, JsonElement> { ["reason"] = JsonSerializer.SerializeToElement("Original template.") }
         };
         var invocation = new RuleInvocation(new()
         {
@@ -338,9 +407,18 @@ public sealed class UniversalRuleActionExecutorTests
             }
         }, new(), null);
 
-        var reason = await fixture.Executor.UnsupportedReasonAsync(action, invocation, default);
+        fixture.Players.Setup(item => item.HeadPlayerByGameType(It.IsAny<GameType>(), It.IsAny<string>()))
+            .ReturnsAsync(new ApiResult(HttpStatusCode.OK));
+        var command = fixture.Command with
+        {
+            Runtime = invocation.Trigger.Runtime!,
+            ConnectionGeneration = 1,
+            Effect = new() { Type = RuleNativeEffectType.DropPlayer, Reason = text }
+        };
+        var availability = await fixture.Executor.AvailabilityAsync(
+            action, command, invocation, DateTimeOffset.UtcNow.AddMinutes(2), default);
 
-        Assert.Equal(unsupported, reason is not null);
+        Assert.Equal(unsupported, availability.Unavailable is not null);
         Assert.Equal(0, fixture.Records.Calls);
         fixture.Servers.VerifyNoOtherCalls();
     }

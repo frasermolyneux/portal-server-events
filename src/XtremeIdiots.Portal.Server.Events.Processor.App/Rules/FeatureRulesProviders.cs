@@ -10,6 +10,7 @@ using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.SiegeMode;
 using XtremeIdiots.Portal.Repository.Api.Client.V1;
 using XtremeIdiots.Portal.Settings.Contracts.V1.Contracts.RulesEngine;
 using XtremeIdiots.Portal.Settings.Contracts.V1.Contracts.SiegeMode;
+using XtremeIdiots.Portal.Settings.Contracts.V1.Contracts.WelcomeMessages;
 
 namespace XtremeIdiots.Portal.Server.Events.Processor.App.Rules;
 
@@ -19,15 +20,29 @@ internal sealed record FeatureRulesSnapshot(
     RuleExecutionMode Mode,
     Guid? SiegeSessionId = null,
     DateTimeOffset? ExpiresAtUtc = null,
-    ActivationIdentifierHistory? Baseline = null)
+    ActivationIdentifierHistory? Baseline = null,
+    RuleTimingSettings? Timing = null)
 {
     public string RulesJson => JsonSerializer.Serialize(new FeatureRuleSetDocument
     {
         FeatureId = FeatureId,
         Enabled = true,
+        Timing = Timing,
         Rules = Rules.OrderBy(rule => rule.Order).ToList()
     }, RulesSerialization.Options);
     public string Revision => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(RulesJson)));
+}
+
+internal sealed class WelcomeFeatureRulesProvider(ConfiguredFeatureRulesProvider settings) : IFeatureRulesProvider
+{
+    public const string Id = WelcomeRulesSettingsConstants.FeatureId;
+    public string FeatureId => Id;
+
+    public async Task<FeatureRulesSnapshot?> GetAsync(RuleTriggerEnvelope trigger, CancellationToken ct)
+    {
+        var rules = await settings.GetAsync(trigger.GameServerId, FeatureId, WelcomeRulesSettingsConstants.Namespace, ct).ConfigureAwait(false);
+        return rules.Enabled ? new(FeatureId, rules.Rules, RuleExecutionMode.Enforce, Timing: rules.Timing) : null;
+    }
 }
 
 internal static class RulesSerialization
@@ -73,15 +88,18 @@ internal sealed class ConfiguredFeatureRulesProvider(
         {
             var globalJson = globalResponse.Result?.Data?.Configuration;
             var serverJson = serverResponse.Result?.Data?.Configuration;
-            var global = string.IsNullOrWhiteSpace(globalJson)
+            FeatureRuleSetDocument? global = string.IsNullOrWhiteSpace(globalJson)
                 ? new FeatureRuleSetDocument { FeatureId = featureId, Enabled = false }
-                : JsonSerializer.Deserialize<FeatureRuleSetDocument>(globalJson, RulesSerialization.Options);
+                : featureId == WelcomeRulesSettingsConstants.FeatureId
+                    ? JsonSerializer.Deserialize<WelcomeRulesSettingsDocument>(globalJson, RulesSerialization.Options)
+                    : JsonSerializer.Deserialize<FeatureRuleSetDocument>(globalJson, RulesSerialization.Options);
             var server = string.IsNullOrWhiteSpace(serverJson)
                 ? null
                 : JsonSerializer.Deserialize<FeatureRuleSetOverrideDocument>(serverJson, RulesSerialization.Options);
             var validator = new RuleSetValidator();
             var options = RuleSetValidationOptions.ForFeature(featureId);
-            var globalValidation = validator.Validate(global, options);
+            var globalValidation = global is WelcomeRulesSettingsDocument welcome
+                ? new WelcomeRulesSettingsValidator().Validate(welcome) : validator.Validate(global, options);
             var overrideValidation = server is null ? null : validator.ValidateOverride(server, options);
             if (!globalValidation.IsValid || overrideValidation?.IsValid == false)
             {

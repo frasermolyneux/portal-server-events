@@ -45,7 +45,6 @@ public class PlayerConnectedProcessorTests
     private readonly Mock<IVersionedGlobalConfigurationsApi> _versionedGlobalConfigs = new();
     private readonly Mock<IGlobalConfigurationsApi> _globalConfigsApi = new();
     private readonly Mock<IProtectedNameService> _protectedNameService = new();
-    private readonly Mock<IWelcomeMessageOrchestrator> _welcomeMessageOrchestrator = new();
     private readonly IMemoryCache _cache;
     private readonly Mock<IAuditLogger> _auditLogger = new();
     private readonly Mock<FunctionContext> _functionContext = new();
@@ -108,7 +107,6 @@ public class PlayerConnectedProcessorTests
             _rulesTriggerService.Object,
             _vpnDetectedTagService.Object,
             _protectedNameService.Object,
-            _welcomeMessageOrchestrator.Object,
             _cache,
             _auditLogger.Object);
     }
@@ -165,9 +163,6 @@ public class PlayerConnectedProcessorTests
                 string.IsNullOrEmpty(source.IpAddress)),
             It.IsAny<CancellationToken>()), Times.Once);
         _rulesTriggerService.Verify(x => x.ProcessAsync(_prepared, null, It.IsAny<CancellationToken>()), Times.Once);
-        _welcomeMessageOrchestrator.Verify(x => x.ProcessAsync(
-            It.IsAny<PlayerConnectedEvent>(), It.IsAny<GameType>(), It.IsAny<string[]>(),
-            It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Theory]
@@ -404,7 +399,7 @@ public class PlayerConnectedProcessorTests
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
-    public async Task ProcessPlayerConnected_RulesSuppressWelcome_SuppressesWelcomeMessage(bool newPlayer)
+    public async Task ProcessPlayerConnected_ProtectionResultDoesNotStartAnotherWelcomePath(bool newPlayer)
     {
         var evt = CreateValidEvent();
         var message = CreateMessage(evt);
@@ -427,12 +422,9 @@ public class PlayerConnectedProcessorTests
 
         await _sut.ProcessPlayerConnected(message, _functionContext.Object);
 
-        _welcomeMessageOrchestrator.Verify(x => x.ProcessAsync(
-            It.IsAny<PlayerConnectedEvent>(),
-            It.IsAny<GameType>(),
-            It.IsAny<string[]>(),
-            It.IsAny<string?>(),
-            It.IsAny<CancellationToken>()), Times.Never);
+        _rulesTriggerService.Verify(x => x.ProcessAsync(_prepared, geoData, It.IsAny<CancellationToken>()), Times.Once);
+        _globalConfigsApi.Verify(x => x.GetConfigurations(It.IsAny<CancellationToken>()), Times.Never);
+        _serverConfigsApi.Verify(x => x.GetConfigurations(It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -501,9 +493,6 @@ public class PlayerConnectedProcessorTests
         Assert.Same(failure, actual);
         _playersApi.Verify(x => x.RecordPlayerSession(It.IsAny<RecordPlayerSessionDto>()),
             duringPreparation ? Times.Never : Times.Once);
-        _welcomeMessageOrchestrator.Verify(x => x.ProcessAsync(
-            It.IsAny<PlayerConnectedEvent>(), It.IsAny<GameType>(), It.IsAny<string[]>(),
-            It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -647,7 +636,7 @@ public class PlayerConnectedProcessorTests
     }
 
     [Fact]
-    public async Task ExistingPlayer_CoD4xPluginEnabled_StillExecutesWelcomeOrchestration()
+    public async Task ExistingPlayer_CoD4xPluginEnabled_DelegatesOnlyToSharedRules()
     {
         var evt = CreateValidEvent(gameType: "CallOfDuty4x");
         var message = CreateMessage(evt);
@@ -678,21 +667,14 @@ public class PlayerConnectedProcessorTests
                                         """)
             ])));
 
-        _welcomeMessageOrchestrator
-            .Setup(x => x.ProcessAsync(It.IsAny<PlayerConnectedEvent>(), It.IsAny<GameType>(), It.IsAny<string[]>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
-            .Returns(Task.CompletedTask);
-
         await _sut.ProcessPlayerConnected(message, _functionContext.Object);
 
-        // Welcome orchestration stays in portal-server-events regardless of plugin source:
-        // the plugin only raises the connect event, it does not own welcome execution.
-        _welcomeMessageOrchestrator.Verify(
-            x => x.ProcessAsync(It.IsAny<PlayerConnectedEvent>(), It.IsAny<GameType>(), It.IsAny<string[]>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()),
-            Times.Once);
+        _rulesTriggerService.Verify(x => x.ProcessAsync(_prepared, null, It.IsAny<CancellationToken>()), Times.Once);
+        _serverConfigsApi.Verify(x => x.GetConfigurations(It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
-    public async Task ExistingPlayer_CoD4xPluginDisabled_ExecutesWelcomeOrchestration()
+    public async Task ExistingPlayer_CoD4xPluginDisabled_DelegatesOnlyToSharedRules()
     {
         var evt = CreateValidEvent(gameType: "CallOfDuty4x");
         var message = CreateMessage(evt);
@@ -723,21 +705,10 @@ public class PlayerConnectedProcessorTests
                                         """)
             ])));
 
-        _welcomeMessageOrchestrator
-            .Setup(x => x.ProcessAsync(It.IsAny<PlayerConnectedEvent>(), It.IsAny<GameType>(), It.IsAny<string[]>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
-            .Returns(Task.CompletedTask);
-
         await _sut.ProcessPlayerConnected(message, _functionContext.Object);
 
-        _welcomeMessageOrchestrator.Verify(
-            x => x.ProcessAsync(
-                It.Is<PlayerConnectedEvent>(e => e.ServerId == evt.ServerId &&
-                                             string.Equals(e.PlayerGuid, evt.PlayerGuid, StringComparison.Ordinal)),
-                GameType.CallOfDuty4x,
-                It.IsAny<string[]>(),
-                It.IsAny<string?>(),
-                It.IsAny<CancellationToken>()),
-            Times.Once);
+        _rulesTriggerService.Verify(x => x.ProcessAsync(_prepared, null, It.IsAny<CancellationToken>()), Times.Once);
+        _serverConfigsApi.Verify(x => x.GetConfigurations(It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     private static ConfigurationDto CreateConfigurationDto(string ns, string configurationJson)

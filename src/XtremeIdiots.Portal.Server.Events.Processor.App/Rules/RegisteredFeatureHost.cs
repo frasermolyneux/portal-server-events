@@ -5,6 +5,7 @@ using Microsoft.Extensions.Logging;
 using MX.GeoLocation.Abstractions.Models.V1_1;
 
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.RulesEngine;
+using XtremeIdiots.Portal.Settings.Contracts.V1.Contracts.RulesEngine;
 
 namespace XtremeIdiots.Portal.Server.Events.Processor.App.Rules;
 
@@ -15,6 +16,8 @@ internal sealed record RuleInvocation(RuleTriggerEnvelope Trigger, RuleFactSnaps
     public ConcurrentBag<Guid> PendingExecutionIds { get; } = [];
     public Lazy<Task<IpIntelligenceDto?>>? IntelligenceLookup { get; init; }
     public bool SuppressWelcome { get; set; }
+    public IReadOnlyList<FeatureProcessingResult> ProtectionResults { get; set; } = [];
+    public ConcurrentDictionary<RuleTextTokenSource, Lazy<Task<RuleTextSourceValues>>> TextLookups { get; } = new();
 }
 
 internal interface IRegisteredRuleFeature
@@ -28,20 +31,22 @@ internal sealed record FeatureProcessingResult(string FeatureId, Guid? Execution
 
 internal sealed class RegisteredFeatureHost
 {
+    private readonly IReadOnlyDictionary<string, IRegisteredRuleFeature> registrations;
     private readonly IReadOnlyDictionary<string, IRegisteredRuleFeature[]> subscriptions;
     private readonly ILogger<RegisteredFeatureHost> logger;
 
     public RegisteredFeatureHost(IEnumerable<IRegisteredRuleFeature> features, ILogger<RegisteredFeatureHost> logger)
     {
         this.logger = logger;
-        var registrations = features.ToArray();
-        if (registrations.Any(static feature => string.IsNullOrWhiteSpace(feature.FeatureId)) ||
-            registrations.Select(static feature => feature.FeatureId).Distinct(StringComparer.Ordinal).Count() != registrations.Length)
+        var registered = features.ToArray();
+        if (registered.Any(static feature => string.IsNullOrWhiteSpace(feature.FeatureId)) ||
+            registered.Select(static feature => feature.FeatureId).Distinct(StringComparer.Ordinal).Count() != registered.Length)
         {
             throw new ArgumentException("Rule features must have unique, nonempty IDs.", nameof(features));
         }
 
-        subscriptions = registrations
+        registrations = registered.ToDictionary(feature => feature.FeatureId, StringComparer.Ordinal);
+        subscriptions = registered
             .SelectMany(static feature => feature.TriggerIds.Select(triggerId => (triggerId, feature)))
             .GroupBy(static subscription => subscription.triggerId, StringComparer.Ordinal)
             .ToDictionary(
@@ -54,14 +59,29 @@ internal sealed class RegisteredFeatureHost
         RuleInvocation invocation, CancellationToken ct, string? featureId = null)
     {
         ct.ThrowIfCancellationRequested();
-        if (!subscriptions.TryGetValue(invocation.Trigger.TriggerId, out var features))
+        if (!subscriptions.TryGetValue(invocation.Trigger.TriggerId, out var features) && featureId is null)
         {
             return [];
         }
 
-        return await Task.WhenAll(features.Where(feature => featureId is null || feature.FeatureId == featureId)
-            .Select(feature => ProcessFeatureAsync(feature, invocation, ct))).ConfigureAwait(false);
+        var selected = featureId is null ? features! :
+            registrations.Values.Where(feature => feature.FeatureId == featureId ||
+                featureId == WelcomeFeatureRulesProvider.Id && IsProtection(feature)).ToArray();
+        var protectionTasks = selected.Where(IsProtection)
+            .Select(feature => ProcessFeatureAsync(feature, invocation, ct)).ToArray();
+        var otherTasks = selected.Where(feature => !IsProtection(feature)).Select(async feature =>
+        {
+            if (feature.FeatureId == WelcomeFeatureRulesProvider.Id)
+            {
+                invocation.ProtectionResults = await Task.WhenAll(protectionTasks).ConfigureAwait(false);
+            }
+            return await ProcessFeatureAsync(feature, invocation, ct).ConfigureAwait(false);
+        }).ToArray();
+        return await Task.WhenAll(protectionTasks.Concat(otherTasks)).ConfigureAwait(false);
     }
+
+    private static bool IsProtection(IRegisteredRuleFeature feature) =>
+        feature.FeatureId is RulesEngineCatalogueV1.VpnProtectionFeature or RulesEngineCatalogueV1.SiegeModeFeature;
 
     private async Task<FeatureProcessingResult> ProcessFeatureAsync(
         IRegisteredRuleFeature feature,

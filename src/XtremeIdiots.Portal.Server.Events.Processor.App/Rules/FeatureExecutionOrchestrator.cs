@@ -36,6 +36,11 @@ internal sealed class RuleExecutionProgress
     public DateTimeOffset? ContextWaitUntilUtc { get; set; }
     public DateTimeOffset ContextObservedAtUtc { get; set; }
     public RuleTriggerEnvelope? ContextTrigger { get; set; }
+    public Dictionary<string, RuleExecutionCoordination> RuleWindows { get; set; } = new(StringComparer.Ordinal);
+    public string? WaitingReason { get; set; }
+    public Dictionary<string, ActionExecutionResult> ActionOutcomes { get; set; } = new(StringComparer.Ordinal);
+    public RuleExecutionDiagnostics? Diagnostics { get; set; }
+    public Dictionary<string, DateTimeOffset> MessagePreparationExpiries { get; set; } = new(StringComparer.Ordinal);
 }
 
 internal sealed class RegisteredRuleFeature(
@@ -59,8 +64,13 @@ internal sealed class FeatureExecutionOrchestrator(
     IUniversalRuleActionExecutor executor,
     IRuleExecutionContinuationPublisher continuations,
     ILogger<FeatureExecutionOrchestrator> logger,
-    ILogger<OrderedActionDispatcher> dispatcherLogger)
+    ILogger<OrderedActionDispatcher> dispatcherLogger,
+    IRuleActionTextPreparer textPreparer,
+    IRuleMessageDeliveryService messages,
+    TimeProvider? timeProvider = null)
 {
+    private readonly TimeProvider clock = timeProvider ?? TimeProvider.System;
+
     public async Task<Guid> ProcessAsync(RuleInvocation invocation, FeatureRulesSnapshot configured, CancellationToken ct)
     {
         var trigger = invocation.Trigger;
@@ -71,7 +81,14 @@ internal sealed class FeatureExecutionOrchestrator(
             SiegeSessionId = configured.SiegeSessionId,
             RuleSetRevision = configured.Revision,
             FrozenRulesJson = configured.RulesJson,
-            FactSnapshotId = invocation.Facts.SnapshotId
+            FactSnapshotId = invocation.Facts.SnapshotId,
+            Coordination = configured.Timing is { } timing ? new()
+            {
+                DueAtUtc = trigger.OccurredAtUtc.AddSeconds(timing.ConnectionDelaySeconds),
+                ExpiresAtUtc = trigger.OccurredAtUtc.AddSeconds(timing.FreshnessSeconds),
+                PredecessorExecutionIds = invocation.ProtectionResults
+                    .Where(item => item.ExecutionId.HasValue).Select(item => item.ExecutionId!.Value).ToArray()
+            } : null
         }, ct).ConfigureAwait(false);
         var execution = Require(start, "start rules execution");
         invocation.ExecutionIds[execution.FeatureId] = execution.ExecutionId;
@@ -93,6 +110,15 @@ internal sealed class FeatureExecutionOrchestrator(
             ? new RuleExecutionProgress { Mode = configured.Mode, ExpiresAtUtc = configured.ExpiresAtUtc, Baseline = configured.Baseline }
             : JsonSerializer.Deserialize<RuleExecutionProgress>(execution.DecisionSnapshotJson, RulesSerialization.Options)
                 ?? throw new InvalidOperationException("Persisted rule progress is invalid.");
+        if (execution.State == RuleFeatureExecutionState.Waiting)
+        {
+            progress.WaitingReason = null;
+        }
+        var previousWaiting = progress.Diagnostics?.Waiting;
+        if (progress.Diagnostics is not null)
+        {
+            progress.Diagnostics.Waiting = null;
+        }
         if (progress.Baseline is { } frozenBaseline && configured.Baseline is { } supplementalBaseline)
         {
             progress.Baseline = new(
@@ -122,6 +148,38 @@ internal sealed class FeatureExecutionOrchestrator(
                 continue;
             }
 
+            RuleExecutionCoordination? window = null;
+            if (frozen.Timing is { } featureTiming)
+            {
+                if (!progress.RuleWindows.TryGetValue(rule.Id, out window))
+                {
+                    var effectiveTiming = featureTiming.Apply(rule.Timing);
+                    if (!effectiveTiming.IsValid)
+                    {
+                        throw new InvalidOperationException("Frozen timing leaves no valid delivery window.");
+                    }
+                    window = new()
+                    {
+                        DueAtUtc = execution.Trigger.OccurredAtUtc.AddSeconds(effectiveTiming.ConnectionDelaySeconds),
+                        ExpiresAtUtc = execution.Trigger.OccurredAtUtc.AddSeconds(effectiveTiming.FreshnessSeconds),
+                        PredecessorExecutionIds = execution.Coordination?.PredecessorExecutionIds ?? []
+                    };
+                    progress.RuleWindows.Add(rule.Id, window);
+                }
+                progress.ExpiresAtUtc = window.ExpiresAtUtc;
+                if (clock.GetUtcNow() >= window.ExpiresAtUtc &&
+                    !execution.PreparedActions.Any(item => item.RuleIndex == ruleIndex) &&
+                    !execution.Actions.Any(item => item.Correlation.RuleId == rule.Id &&
+                        item.Outcome is RuleActionExecutionOutcome.Claimed or RuleActionExecutionOutcome.Dispatched))
+                {
+                    progress.CompletedRuleIds.Add(rule.Id);
+                    progress.UnknownRuleIds.Remove(rule.Id);
+                    progress.WaitingReason = "Original connection freshness window expired.";
+                    AddDiagnostic(RuleExecutionDiagnosticCode.Expired, rule.Id, detail: progress.WaitingReason);
+                    continue;
+                }
+            }
+
             if (!progress.MatchedRuleIds.Contains(rule.Id))
             {
                 var intelligence = invocation.Intelligence;
@@ -137,6 +195,12 @@ internal sealed class FeatureExecutionOrchestrator(
                     progress.UnknownRuleIds.Add(rule.Id);
                     logger.LogInformation("Rules condition is unknown for feature {FeatureId}, rule {RuleId}: {Diagnostic}",
                         execution.FeatureId, rule.Id, match.Diagnostic);
+                    if (execution.FeatureId == WelcomeFeatureRulesProvider.Id && window is not null)
+                    {
+                        return await WaitAsync("Waiting for higher-priority rule context.",
+                            clock.GetUtcNow().AddSeconds(10), ruleIndex, RuleExecutionDiagnosticCode.WaitingForContext)
+                            .ConfigureAwait(false);
+                    }
                     continue;
                 }
 
@@ -144,20 +208,114 @@ internal sealed class FeatureExecutionOrchestrator(
                 if (match.Value == RuleTruthValue.False)
                 {
                     progress.CompletedRuleIds.Add(rule.Id);
+                    AddDiagnostic(RuleExecutionDiagnosticCode.NoMatch, rule.Id, detail: match.Diagnostic);
                     continue;
                 }
+
+                progress.WaitingReason = null;
 
                 progress.MatchedRuleIds.Add(rule.Id);
                 execution = await SaveProgressAsync(execution, progress, ruleIndex, 0,
                     RuleFeatureExecutionState.Evaluating, ct).ConfigureAwait(false);
             }
+            if (execution.State == RuleFeatureExecutionState.Waiting)
+            {
+                execution = await SaveProgressAsync(execution, progress, ruleIndex, execution.ActionIndex,
+                    RuleFeatureExecutionState.Evaluating, ct).ConfigureAwait(false);
+            }
 
             var store = new RepositoryRuleActionStore(repository, execution, rule, ruleIndex, progress, progress.ContextTrigger);
-            var planned = new List<PlannedRuleAction>(rule.Actions.Count);
-            foreach (var action in rule.Actions)
+            var outcomes = new Dictionary<string, ActionExecutionResult>(StringComparer.Ordinal);
+            ActionSequenceResult dispatched = new(false, outcomes);
+            string? pendingActionId = null;
+            foreach (var configuredAction in rule.Actions)
             {
+                var action = configuredAction;
+                var outcomeKey = JsonSerializer.Serialize(new[] { rule.Id, action.Id });
+                if (progress.ActionOutcomes.TryGetValue(outcomeKey, out var completedOutcome))
+                {
+                    outcomes.Add(action.Id, completedOutcome);
+                    continue;
+                }
+                if (window is not null && action.TypeId != "message.private-tagged" && clock.GetUtcNow() < window.DueAtUtc)
+                {
+                    execution = store.Execution;
+                    return await WaitAsync("Waiting for original connection delay.", window.DueAtUtc, ruleIndex,
+                        RuleExecutionDiagnosticCode.WaitingForDelay, action.Id).ConfigureAwait(false);
+                }
+                var legacyClaim = store.Execution.Actions.Any(item =>
+                    item.Correlation.RuleId == rule.Id && item.Correlation.ActionId == action.Id &&
+                    item.Command.DeliveryIdentity is null);
+                if (!legacyClaim && action.TypeId is ("message.public" or "message.private" or "message.private-tagged"))
+                {
+                    if (!action.DependsOnActionIds.Any(id => !outcomes[id].SatisfiesDependency) &&
+                        progress.ExpiresAtUtc is null &&
+                        !store.Execution.PreparedActions.Any(item => item.RuleIndex == ruleIndex &&
+                            item.ActionIndex == rule.Actions.IndexOf(configuredAction)) &&
+                        !progress.MessagePreparationExpiries.ContainsKey(outcomeKey))
+                    {
+                        progress.MessagePreparationExpiries.Add(outcomeKey, store.Command(action).ExpiresAtUtc);
+                        store.Execution = await SaveProgressAsync(store.Execution, progress, ruleIndex,
+                            store.Execution.ActionIndex, store.Execution.State, ct).ConfigureAwait(false);
+                        execution = store.Execution;
+                    }
+                    var messageResult = action.DependsOnActionIds.Any(id => !outcomes[id].SatisfiesDependency)
+                        ? new RuleMessageDispatchResult(store.Execution,
+                            new(ActionExecutionOutcome.SkippedDependency, "A prerequisite action did not succeed."))
+                        : await messages.DispatchAsync(store.Execution, rule, ruleIndex,
+                            rule.Actions.IndexOf(configuredAction), action, store.Command, invocation, progress, ct).ConfigureAwait(false);
+                    store.Execution = messageResult.Execution;
+                    execution = store.Execution;
+                    if (messageResult.ResumeAtUtc is { } resumeAtUtc)
+                    {
+                        foreach (var command in messageResult.Commands)
+                        {
+                            invocation.Commands.Add(command);
+                        }
+                        return await WaitAsync(messageResult.Detail ?? "Waiting for message delivery.", resumeAtUtc, ruleIndex,
+                            messageResult.DiagnosticCode ?? RuleExecutionDiagnosticCode.WaitingForDelivery, action.Id)
+                            .ConfigureAwait(false);
+                    }
+                    if (messageResult.AwaitingOutcome)
+                    {
+                        dispatched = new(true, outcomes);
+                        foreach (var command in messageResult.Commands)
+                        {
+                            invocation.Commands.Add(command);
+                        }
+                        pendingActionId = action.Id;
+                        break;
+                    }
+                    var messageOutcome = messageResult.Outcome
+                        ?? throw new InvalidOperationException("Message preparation returned no outcome or continuation.");
+                    if (messageResult.DiagnosticCode is { } messageDiagnostic)
+                    {
+                        AddDiagnostic(messageDiagnostic, rule.Id, action.Id, messageOutcome.Detail);
+                    }
+                    outcomes.Add(action.Id, messageOutcome);
+                    progress.ActionOutcomes[outcomeKey] = messageOutcome;
+                    store.Execution = await SaveProgressAsync(store.Execution, progress, ruleIndex,
+                        rule.Actions.IndexOf(configuredAction) + 1, RuleFeatureExecutionState.Evaluating, ct).ConfigureAwait(false);
+                    execution = store.Execution;
+                    continue;
+                }
+                if (action.TemplateParameters.Count != 0 &&
+                    !store.Execution.Actions.Any(item => item.Correlation.RuleId == rule.Id && item.Correlation.ActionId == action.Id))
+                {
+                    var prepared = await textPreparer.PrepareAsync(action, invocation, execution.Trigger.OccurredAtUtc,
+                        execution.FeatureId, rule.Id, ct).ConfigureAwait(false);
+                    if ((progress.Diagnostics is not null || prepared.Diagnostics.Count != 0) &&
+                        (progress.Diagnostics ??= new()).ReplaceActionText(rule.Id, action.Id, prepared.Diagnostics, clock.GetUtcNow(), logger))
+                    {
+                        store.Execution = await SaveProgressAsync(store.Execution, progress, ruleIndex,
+                            store.Execution.ActionIndex, store.Execution.State, ct).ConfigureAwait(false);
+                        execution = store.Execution;
+                    }
+                    action = prepared.Action;
+                    store.ResolvedActions[action.Id] = action;
+                }
                 var unsupported = await executor.UnsupportedReasonAsync(action, invocation, ct).ConfigureAwait(false);
-                planned.Add(new PlannedRuleAction(action.Id, action.DependsOnActionIds, unsupported, token =>
+                var planned = new PlannedRuleAction(action.Id, action.DependsOnActionIds, unsupported, token =>
                 {
                     var command = store.Command(action);
                     if (command.ExpiresAtUtc <= DateTimeOffset.UtcNow)
@@ -175,19 +333,33 @@ internal sealed class FeatureExecutionOrchestrator(
                     }
                     progress.ContextWaitUntilUtc ??= DateTimeOffset.UtcNow.AddMinutes(2);
                     return executor.AvailabilityAsync(action, store.Command(action), invocation, progress.ContextWaitUntilUtc.Value, token);
-                }));
+                });
+                dispatched = await new OrderedActionDispatcher(store, dispatcherLogger)
+                    .DispatchAsync(execution.ExecutionId, [planned], progress.Mode == RuleExecutionMode.DryRun, ct, outcomes)
+                    .ConfigureAwait(false);
+                foreach (var pair in dispatched.Outcomes)
+                {
+                    outcomes[pair.Key] = pair.Value;
+                }
+                if (dispatched.AwaitingContext || dispatched.AwaitingOutcome)
+                {
+                    pendingActionId = action.Id;
+                    break;
+                }
+                progress.ActionOutcomes[outcomeKey] = outcomes[action.Id] with { NativeCommand = null };
             }
-
-            var dispatched = await new OrderedActionDispatcher(store, dispatcherLogger)
-                .DispatchAsync(execution.ExecutionId, planned, progress.Mode == RuleExecutionMode.DryRun, ct).ConfigureAwait(false);
+            dispatched = dispatched with { Outcomes = outcomes };
             execution = store.Execution;
             if (dispatched.AwaitingContext)
             {
+                SetWaitingDiagnostic(RuleExecutionDiagnosticCode.WaitingForContext, rule.Id, pendingActionId,
+                    "Waiting for action context.");
                 execution = await SaveProgressAsync(execution, progress, ruleIndex, execution.ActionIndex,
                     RuleFeatureExecutionState.Evaluating, ct).ConfigureAwait(false);
                 if (invocation.Trigger.Runtime?.Id == "server-agent")
                 {
-                    await continuations.ScheduleAsync(execution.GameServerId, execution.ExecutionId, ct).ConfigureAwait(false);
+                    await continuations.ScheduleAsync(execution.GameServerId, execution.ExecutionId,
+                        clock.GetUtcNow().AddSeconds(10), ct).ConfigureAwait(false);
                 }
                 invocation.PendingExecutionIds.Add(execution.ExecutionId);
                 return execution.ExecutionId;
@@ -202,10 +374,19 @@ internal sealed class FeatureExecutionOrchestrator(
             }
             if (dispatched.AwaitingOutcome)
             {
+                SetWaitingDiagnostic(RuleExecutionDiagnosticCode.WaitingForDelivery, rule.Id, pendingActionId,
+                    "Waiting for the claimed action outcome.");
                 if (execution.DecisionSnapshotJson != JsonSerializer.Serialize(progress, RulesSerialization.Options))
                 {
                     execution = await SaveProgressAsync(execution, progress, execution.RuleIndex, execution.ActionIndex,
                         execution.State, ct).ConfigureAwait(false);
+                }
+                if (execution.Trigger.Runtime?.Id == "server-agent")
+                {
+                    var pending = execution.Actions.Single(item =>
+                        item.Outcome is RuleActionExecutionOutcome.Claimed or RuleActionExecutionOutcome.Dispatched);
+                    await continuations.ScheduleAsync(execution.GameServerId, execution.ExecutionId,
+                        pending.Command.ExpiresAtUtc, ct).ConfigureAwait(false);
                 }
                 invocation.PendingExecutionIds.Add(execution.ExecutionId);
                 return execution.ExecutionId;
@@ -226,14 +407,68 @@ internal sealed class FeatureExecutionOrchestrator(
         await SaveProgressAsync(execution, progress, rules.Length, 0,
             progress.UnknownRuleIds.Count == 0 ? RuleFeatureExecutionState.Completed : RuleFeatureExecutionState.Evaluating, ct).ConfigureAwait(false);
         return execution.ExecutionId;
+
+        async Task<Guid> WaitAsync(string reason, DateTimeOffset dueAtUtc, int ruleIndex,
+            RuleExecutionDiagnosticCode code, string? actionId = null)
+        {
+            progress.WaitingReason = reason;
+            SetWaitingDiagnostic(code, rules[ruleIndex].Id, actionId, reason);
+            execution = await SaveProgressAsync(execution, progress, ruleIndex, execution.ActionIndex,
+                RuleFeatureExecutionState.Waiting, ct).ConfigureAwait(false);
+            if (trigger.Runtime?.Id == "server-agent")
+            {
+                var expiresAtUtc = progress.ExpiresAtUtc ?? dueAtUtc;
+                await continuations.ScheduleAsync(execution.GameServerId, execution.ExecutionId,
+                    dueAtUtc < expiresAtUtc ? dueAtUtc : expiresAtUtc, ct).ConfigureAwait(false);
+            }
+            invocation.PendingExecutionIds.Add(execution.ExecutionId);
+            return execution.ExecutionId;
+        }
+
+        void SetWaitingDiagnostic(RuleExecutionDiagnosticCode code, string ruleId, string? actionId, string detail)
+        {
+            var diagnostic = NewDiagnostic(code, ruleId, actionId, detail);
+            (progress.Diagnostics ??= new()).Waiting =
+                previousWaiting is { } existing &&
+                RuleExecutionDiagnosticIdentity.From(existing) == RuleExecutionDiagnosticIdentity.From(diagnostic) &&
+                existing.Detail == diagnostic.Detail ? existing : diagnostic;
+        }
+
+        void AddDiagnostic(RuleExecutionDiagnosticCode code, string ruleId, string? actionId = null, string? detail = null) =>
+            (progress.Diagnostics ??= new()).Add(NewDiagnostic(code, ruleId, actionId, detail));
+
+        RuleExecutionDiagnostic NewDiagnostic(RuleExecutionDiagnosticCode code, string ruleId, string? actionId, string? detail) =>
+            new()
+            {
+                Code = code,
+                RuleId = ruleId,
+                ActionId = actionId,
+                Detail = RuleExecutionDiagnostics.SafeDetail(detail, logger),
+                ObservedAtUtc = clock.GetUtcNow()
+            };
     }
 
     private static bool UsesIntelligence(RuleConditionNode? condition) =>
         condition?.ConditionId == "vpn.intelligence" || condition?.Conditions?.Any(UsesIntelligence) == true;
 
-    private async Task<RuleFeatureExecutionDto> SaveProgressAsync(
+    private Task<RuleFeatureExecutionDto> SaveProgressAsync(
         RuleFeatureExecutionDto execution, RuleExecutionProgress progress, int ruleIndex, int actionIndex,
         RuleFeatureExecutionState state, CancellationToken ct) =>
+        PersistProgressAsync(repository, execution, progress, ruleIndex, actionIndex, state, logger, clock.GetUtcNow(), ct);
+
+    internal static async Task<RuleFeatureExecutionDto> PersistProgressAsync(
+        IRepositoryApiClient repository, RuleFeatureExecutionDto execution, RuleExecutionProgress progress,
+        int ruleIndex, int actionIndex, RuleFeatureExecutionState state, ILogger logger, DateTimeOffset now, CancellationToken ct)
+    {
+        var diagnostics = progress.Diagnostics?.Project(now);
+        if (diagnostics?.Any(item => item.Code == RuleExecutionDiagnosticCode.DiagnosticsOmitted) == true &&
+            progress.Diagnostics is { OverflowReported: false } diagnosticProgress)
+        {
+            logger.LogWarning("Execution {ExecutionId} has more diagnostic evidence than the API can expose.",
+                execution.ExecutionId);
+            diagnosticProgress.OverflowReported = true;
+        }
+        return
         Require(await repository.RuleExecutions.V1.UpdateProgress(execution.GameServerId, execution.ExecutionId,
             new UpdateRuleFeatureExecutionProgressDto
             {
@@ -242,8 +477,13 @@ internal sealed class FeatureExecutionOrchestrator(
                 ActionIndex = actionIndex,
                 State = state,
                 DecisionSnapshotJson = JsonSerializer.Serialize(progress, RulesSerialization.Options),
-                FactSnapshotId = execution.FactSnapshotId
+                FactSnapshotId = execution.FactSnapshotId,
+                Coordination = execution.Coordination is { } coordination
+                    ? coordination with { WaitingReason = progress.WaitingReason }
+                    : null,
+                Diagnostics = diagnostics
             }, ct).ConfigureAwait(false), "persist rules cursor");
+    }
 
     internal static T Require<T>(ApiResult<T> result, string operation) where T : class =>
         result.IsSuccess && result.Result?.Data is { } data ? data :
@@ -258,10 +498,12 @@ internal sealed class RepositoryRuleActionStore(
     RuleExecutionProgress progress,
     RuleTriggerEnvelope currentTrigger) : IRuleActionExecutionStore
 {
-    public RuleFeatureExecutionDto Execution { get; private set; } = execution;
+    public RuleFeatureExecutionDto Execution { get; set; } = execution;
+    public Dictionary<string, RuleActionDefinition> ResolvedActions { get; } = new(StringComparer.Ordinal);
 
     public RuleActionCommand Command(RuleActionDefinition action)
     {
+        action = ResolvedActions.GetValueOrDefault(action.Id) ?? action;
         var stored = Execution.Actions.SingleOrDefault(item =>
             item.Correlation.RuleId == rule.Id && item.Correlation.ActionId == action.Id);
         if (stored is not null)
@@ -324,7 +566,8 @@ internal sealed class RepositoryRuleActionStore(
 
     public async Task<ActionExecutionClaim> ClaimAsync(Guid executionId, string actionId, CancellationToken ct)
     {
-        var action = rule.Actions.Single(item => item.Id == actionId);
+        var configuredAction = rule.Actions.Single(item => item.Id == actionId);
+        var action = ResolvedActions.GetValueOrDefault(actionId) ?? configuredAction;
         var command = Command(action);
         var stored = Execution.Actions.SingleOrDefault(item => item.LogicalEffectId == command.LogicalEffectId);
         if (stored is not null)
@@ -345,9 +588,10 @@ internal sealed class RepositoryRuleActionStore(
             {
                 ExpectedVersion = Execution.Version,
                 RuleIndex = ruleIndex,
-                ActionIndex = rule.Actions.IndexOf(action),
+                ActionIndex = rule.Actions.IndexOf(configuredAction),
                 LogicalEffectId = command.LogicalEffectId,
-                Command = command
+                Command = command,
+                ResolvedParametersJson = JsonSerializer.Serialize(action.Parameters, RulesSerialization.Options)
             }, ct).ConfigureAwait(false);
         var claimed = FeatureExecutionOrchestrator.Require(response, "claim rules action");
         Execution = claimed.Execution;

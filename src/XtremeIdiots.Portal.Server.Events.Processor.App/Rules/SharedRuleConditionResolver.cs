@@ -36,6 +36,7 @@ internal sealed class SharedRuleConditionResolver(
         var operation = String(parameters, "operator");
         bool? result = id switch
         {
+            "always" => true,
             "player.tags" => EvaluateTags(parameters, operation),
             "player.first-seen-guid" => EvaluateIdentifier(parameters, operation, true, context.OccurredAtUtc),
             "player.first-seen-ip" => EvaluateIdentifier(parameters, operation, false, context.OccurredAtUtc),
