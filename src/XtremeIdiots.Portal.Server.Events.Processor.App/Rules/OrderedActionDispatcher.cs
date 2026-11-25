@@ -55,10 +55,13 @@ internal sealed class OrderedActionDispatcher(
         Guid executionId,
         IReadOnlyList<PlannedRuleAction> actions,
         bool dryRun,
-        CancellationToken ct)
+        CancellationToken ct,
+        IReadOnlyDictionary<string, ActionExecutionResult>? precedingOutcomes = null)
     {
-        ValidatePlan(actions);
-        var outcomes = new Dictionary<string, ActionExecutionResult>(StringComparer.Ordinal);
+        ValidatePlan(actions, precedingOutcomes?.Keys ?? []);
+        var outcomes = precedingOutcomes is null
+            ? new Dictionary<string, ActionExecutionResult>(StringComparer.Ordinal)
+            : new Dictionary<string, ActionExecutionResult>(precedingOutcomes, StringComparer.Ordinal);
         foreach (var action in actions)
         {
             ct.ThrowIfCancellationRequested();
@@ -147,9 +150,9 @@ internal sealed class OrderedActionDispatcher(
         }
     }
 
-    private static void ValidatePlan(IReadOnlyList<PlannedRuleAction> actions)
+    private static void ValidatePlan(IReadOnlyList<PlannedRuleAction> actions, IEnumerable<string> completedIds)
     {
-        var precedingIds = new HashSet<string>(StringComparer.Ordinal);
+        var precedingIds = new HashSet<string>(completedIds, StringComparer.Ordinal);
         foreach (var action in actions)
         {
             if (string.IsNullOrWhiteSpace(action.ActionId) ||

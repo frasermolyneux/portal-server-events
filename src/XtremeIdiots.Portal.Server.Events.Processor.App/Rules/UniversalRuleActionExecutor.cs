@@ -47,17 +47,11 @@ internal sealed class UniversalRuleActionExecutor(
         }
         if (runtime.Id == "cod4x-plugin" && runtime.IdentityModel == RuleRuntimeIdentityModel.PluginRuntimeGeneration)
         {
-            var textParameter = action.TypeId is "message.public" or "message.private" ? "message" : "reason";
-            if (action.Parameters.TryGetValue(textParameter, out var value) && value.ValueKind == JsonValueKind.String &&
-                value.GetString() is { } text &&
-                (Encoding.UTF8.GetByteCount(text) > 256 || text.Any(character => character < 32 || character == 127)))
-            {
-                return Task.FromResult<string?>($"The native plugin cannot deliver this {textParameter}: its limit is 256 UTF-8 bytes with no control characters.");
-            }
             var capability = action.TypeId switch
             {
                 "message.public" => RulesEngineCatalogueV1.Cod4xPublicChatCapability,
                 "message.private" => RulesEngineCatalogueV1.Cod4xPrivateChatCapability,
+                "message.private-tagged" => "cod4x.chat.private.recipient",
                 _ => RulesEngineCatalogueV1.Cod4xPlayerDropCapability
             };
             return Task.FromResult(invocation.Trigger.GameType == GameType.CallOfDuty4x &&
@@ -80,6 +74,17 @@ internal sealed class UniversalRuleActionExecutor(
     public async Task<ActionAvailability> AvailabilityAsync(
         RuleActionDefinition action, RuleActionCommand command, RuleInvocation invocation, DateTimeOffset waitUntilUtc, CancellationToken ct)
     {
+        if (InvalidRecipientTarget(command))
+        {
+            return new(Unavailable: new(ActionExecutionOutcome.SkippedUnsupported,
+                "A separate same-server recipient target is only valid for a private message."));
+        }
+        if (command.Effect.Type == RuleNativeEffectType.DropPlayer && command.Effect.Reason is { } reason &&
+            (Encoding.UTF8.GetByteCount(reason) > 256 || reason.Any(character => character < 32 || character == 127)))
+        {
+            return new(Unavailable: new(ActionExecutionOutcome.SkippedUnsupported,
+                "The resolved native reason exceeds 256 UTF-8 bytes or contains control characters."));
+        }
         if (command.Mode == RuleExecutionMode.Enforce &&
             RulesEngineCatalogueV1.Current.Actions.Single(item => item.ActionTypeId == action.TypeId).ProducesModerationRecord)
         {
@@ -134,18 +139,31 @@ internal sealed class UniversalRuleActionExecutor(
         {
             return new();
         }
+        var target = command.RecipientTarget ?? new RuleMessageRecipientTarget
+        {
+            GameServerId = command.GameServerId,
+            SlotId = command.SlotId,
+            PlayerGuid = command.PlayerGuid,
+            ConnectionId = command.ConnectionId,
+            ConnectionGeneration = command.ConnectionGeneration,
+            Runtime = command.Runtime
+        };
         var response = await repository.RuleConnectionBindings.V1.GetCurrentBinding(
-            command.GameServerId, command.SlotId, command.PlayerGuid, ct).ConfigureAwait(false);
+            target.GameServerId, target.SlotId, target.PlayerGuid, ct).ConfigureAwait(false);
         if (response.IsNotFound)
         {
+            if (command.RecipientTarget is not null)
+            {
+                return new(Unavailable: new(ActionExecutionOutcome.Stale, "The snapshotted recipient binding is no longer available."));
+            }
             return clock.GetUtcNow() < waitUntilUtc
                 ? new(Deferred: true)
                 : new(Unavailable: new(ActionExecutionOutcome.Stale, "No fresh authoritative connection binding became available."));
         }
         var binding = FeatureExecutionOrchestrator.Require(response, "verify current agent connection ownership");
         var now = clock.GetUtcNow();
-        if (binding.GameServerId != command.GameServerId || binding.SlotId != command.SlotId ||
-            !string.Equals(binding.PlayerGuid, command.PlayerGuid, StringComparison.Ordinal))
+        if (binding.GameServerId != target.GameServerId || target.GameServerId != command.GameServerId ||
+            binding.SlotId != target.SlotId || !string.Equals(binding.PlayerGuid, target.PlayerGuid, StringComparison.OrdinalIgnoreCase))
         {
             return new(Unavailable: new(ActionExecutionOutcome.Stale, "Authoritative observed connection ownership has changed or expired."));
         }
@@ -154,11 +172,11 @@ internal sealed class UniversalRuleActionExecutor(
         {
             return new(Unavailable: new(ActionExecutionOutcome.Stale, "Authoritative observed connection ownership has changed or expired."));
         }
-        if (binding.ConnectionId != command.ConnectionId || binding.ConnectionGeneration != command.ConnectionGeneration ||
-            binding.Runtime.Id != command.Runtime.Id || binding.Runtime.IdentityModel != RuleRuntimeIdentityModel.AgentObservedConnection ||
-            binding.Runtime.InstanceId != command.Runtime.InstanceId || binding.Runtime.StartedAtUtc != command.Runtime.StartedAtUtc)
+        if (binding.ConnectionId != target.ConnectionId || binding.ConnectionGeneration != target.ConnectionGeneration ||
+            binding.Runtime.Id != target.Runtime.Id || binding.Runtime.IdentityModel != RuleRuntimeIdentityModel.AgentObservedConnection ||
+            binding.Runtime.InstanceId != target.Runtime.InstanceId || binding.Runtime.StartedAtUtc != target.Runtime.StartedAtUtc)
         {
-            if (command.Correlation.TriggerOccurrenceId != Guid.Empty &&
+            if (command.RecipientTarget is null && command.Correlation.TriggerOccurrenceId != Guid.Empty &&
                 command.Correlation.TriggerOccurrenceId == invocation.Trigger.TriggerOccurrenceId &&
                 invocation.Trigger.OccurredAtUtc != default && binding.ObservedAtUtc < invocation.Trigger.OccurredAtUtc &&
                 now < waitUntilUtc)
@@ -178,10 +196,15 @@ internal sealed class UniversalRuleActionExecutor(
         {
             throw new InvalidOperationException("A dry-run action cannot dispatch effects.");
         }
+        if (InvalidRecipientTarget(command))
+        {
+            throw new InvalidOperationException("A moderation or public action cannot use a separate recipient target.");
+        }
         if (command.ExpiresAtUtc <= clock.GetUtcNow())
         {
             return new(ActionExecutionOutcome.Stale, "Action decision expired before execution.");
         }
+
         var definition = RulesEngineCatalogueV1.Current.Actions.Single(item => item.ActionTypeId == action.TypeId);
         Guid? adminActionId = null;
         if (definition.ProducesModerationRecord)
@@ -249,6 +272,11 @@ internal sealed class UniversalRuleActionExecutor(
         ActionExecutionResult Complete(ActionExecutionOutcome outcome, string? detail, RuleActionCommand? nativeCommand = null) =>
             new(outcome, detail, nativeCommand, adminActionId);
     }
+
+    private static bool InvalidRecipientTarget(RuleActionCommand command) =>
+        command.RecipientTarget is { } target &&
+        (command.Effect.Type != RuleNativeEffectType.PrivateMessage || target.GameServerId != command.GameServerId ||
+            target.ConnectionId == Guid.Empty || target.SlotId < 0 || string.IsNullOrWhiteSpace(target.PlayerGuid));
 
     private static bool Matches(RuleActionCommand command, RuleActionResult result) =>
         result.GameServerId == command.GameServerId && result.ExecutionId == command.ExecutionId &&

@@ -9,6 +9,7 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="XtremeIdiots.Portal.Server.Events.Processor.App.Tests" />
+    <InternalsVisibleTo Include="DynamicProxyGenAssembly2" />
   </ItemGroup>
 
   <ItemGroup>

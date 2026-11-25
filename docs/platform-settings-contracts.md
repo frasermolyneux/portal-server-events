@@ -38,6 +38,48 @@ admission ordering does not replace the durable pre-delivery enforcement check.
 Moderation records consume the reason frozen in the durable action claim, not
 the original template or refreshed settings.
 
+### Shared welcome execution and text
+
+`welcomeRules` uses the shared ordered rule schema, including `always` for a
+catch-all and per-rule timing overrides. Delay and freshness are derived from
+the original connection timestamp and frozen settings, never retry time.
+Unavailable higher-priority context waits within that original window instead
+of selecting a lower-priority greeting. IP enrichment resumes only an already
+pending welcome; it does not create another connection greeting.
+
+Only fields explicitly named in `templateParameters` are rendered. Existing
+strings remain literal. The shared typed token catalogue owns parsing, values,
+fallbacks and diagnostics; profile, tag, IP and server lookups run only when
+requested and are cached for the invocation. Missing provider facts remain
+unavailable, not invented zeros. Resolved moderation reasons are frozen before
+claiming their effects and creating matching audit records.
+
+Message actions append `messages` after an optional `message`. Rendering precedes
+channel-aware splitting. The complete ordered recipient/item/fragment plan is
+persisted before the first send and is never rerendered or resegmented on retry.
+Plugin prepared chat requires the bounded-fragment capability and uses its
+verified 149-byte native limit. RCON uses Integration's budget metadata and
+eligibility checks, including current prefix reservations and unsafe-character
+constraints. Other-game 149-byte budgets are an interim policy estimate, not a
+verified per-game cutoff. Every fragment is validated before any fragment sends;
+mutable transport eligibility is checked again for each child.
+
+`message.private-tagged` snapshots a complete authoritative roster using tag IDs
+with Any/All matching. An unavailable or partial roster waits; only a complete
+empty snapshot means no recipients. Recipients are deduplicated by connection,
+remain separate from the original trigger identity, and are checked again before
+dispatch. A replaced recipient is skipped without retargeting another occupant.
+Independent tagged alerts bypass greeting delay/protection suppression and can
+continue after the triggering player leaves.
+
+Children have stable canonical logical identities and one durable claim each.
+Continuations or native polls pace sends without worker sleeps. Completed,
+uncertain and terminally skipped children are not resent. A plugin message
+receipt means the native API was invoked, not that the player received or saw
+the text; its aggregate evidence remains unknown while later ordered fragments
+may proceed. Expiry or a later protection decision terminalizes remaining
+unsent greeting children without dispatch.
+
 ## VPN Protection and Siege rules
 
 Both features consume the universal schema version 1 rule documents from

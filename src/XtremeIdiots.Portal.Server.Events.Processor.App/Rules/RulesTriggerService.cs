@@ -45,8 +45,11 @@ internal sealed class RulesTriggerService(
             return new();
         }
 
-        var invocation = new RuleInvocation(prepared.Trigger, prepared.Facts, intelligence);
-        var results = await host.ProcessAsync(invocation, ct).ConfigureAwait(false);
+        var invocation = new RuleInvocation(prepared.Trigger, prepared.Facts, intelligence)
+        {
+            IntelligenceLookup = new(() => LookupIntelligenceAsync(prepared, ct))
+        };
+        var results = await ProcessFeaturesAsync(invocation, ct).ConfigureAwait(false);
         var failures = results.Where(item => item.Failure is not null).Select(item => item.Failure!).ToArray();
         if (failures.Length != 0)
         {
@@ -65,8 +68,27 @@ internal sealed class RulesTriggerService(
 
         var prepared = await PrepareCoreAsync(trigger, ct).ConfigureAwait(false);
         var invocation = await CreateInvocationAsync(prepared, ct).ConfigureAwait(false);
-        var results = await host.ProcessAsync(invocation, ct).ConfigureAwait(false);
+        var results = await ProcessFeaturesAsync(invocation, ct).ConfigureAwait(false);
         return Response(invocation, results, retryUnstartedFeatures: true);
+    }
+
+    private async Task<IReadOnlyList<FeatureProcessingResult>> ProcessFeaturesAsync(RuleInvocation invocation, CancellationToken ct)
+    {
+        var results = await host.ProcessAsync(invocation, ct).ConfigureAwait(false);
+        if (invocation.Trigger.TriggerId != "player.ip-resolved")
+        {
+            return results;
+        }
+        var existing = FeatureExecutionOrchestrator.Require(await repository.RuleExecutions.V1.GetConnectionExecutions(
+            invocation.Trigger.GameServerId, invocation.Trigger.ConnectionId, ct).ConfigureAwait(false),
+            "find pending welcome for connection enrichment");
+        if (!existing.Any(item => item.FeatureId == WelcomeFeatureRulesProvider.Id &&
+            item.State is not (RuleFeatureExecutionState.Completed or RuleFeatureExecutionState.Stopped)))
+        {
+            return results;
+        }
+        var resumed = await host.ProcessAsync(invocation, ct, WelcomeFeatureRulesProvider.Id).ConfigureAwait(false);
+        return results.Concat(resumed).ToArray();
     }
 
     public async Task<RuleEvaluationResponse> PollAsync(RulePollRequest request, CancellationToken ct)
@@ -90,6 +112,10 @@ internal sealed class RulesTriggerService(
                 !string.Equals(execution.Trigger.PlayerGuid, request.PlayerGuid, StringComparison.Ordinal))
             {
                 throw new ArgumentException("Poll identity does not match the execution.", nameof(request));
+            }
+            if (request.Runtime is not null && !SameRuntimeIdentity(request.Runtime, execution.Trigger.Runtime))
+            {
+                throw new ArgumentException("Poll runtime does not match the execution.", nameof(request));
             }
 
             var response = await ResumeAsync(execution, ct).ConfigureAwait(false);
@@ -157,6 +183,17 @@ internal sealed class RulesTriggerService(
             throw new ArgumentException("The native effect has no linked durable moderation record.", nameof(result));
         }
         var recorded = result;
+        var preparedMessageReceipt = result.Outcome == RuleActionExecutionOutcome.Dispatched &&
+            action.Command.DeliveryIdentity is not null &&
+            action.Command.Effect.Type is RuleNativeEffectType.PublicMessage or RuleNativeEffectType.PrivateMessage;
+        if (preparedMessageReceipt)
+        {
+            recorded = result with
+            {
+                Outcome = RuleActionExecutionOutcome.OutcomeUnknown,
+                Detail = "Native message API invoked once; receipt or display order cannot be confirmed."
+            };
+        }
         if (applied && compositeBan)
         {
             recorded = result with
@@ -201,9 +238,10 @@ internal sealed class RulesTriggerService(
                     AdminActionId = action.AdminActionId,
                     NativeEvidence = applied && compositeBan ? result : null,
                     NextRuleIndex = execution.RuleIndex,
-                    NextActionIndex = lateConfirmation || result.Outcome == RuleActionExecutionOutcome.Dispatched
+                    NextActionIndex = lateConfirmation || action.Command.DeliveryIdentity is not null ||
+                        result.Outcome == RuleActionExecutionOutcome.Dispatched
                         ? execution.ActionIndex : execution.ActionIndex + 1,
-                    NextState = lateConfirmation ? execution.State : result.Outcome == RuleActionExecutionOutcome.Dispatched
+                    NextState = lateConfirmation ? execution.State : recorded.Outcome == RuleActionExecutionOutcome.Dispatched
                         ? RuleFeatureExecutionState.AwaitingActionOutcome
                         : RuleFeatureExecutionState.Evaluating,
                     DecisionSnapshotJson = execution.DecisionSnapshotJson
@@ -309,7 +347,8 @@ internal sealed class RulesTriggerService(
 
     private static RuleEvaluationResponse PendingResponse(RuleFeatureExecutionDto execution) => new()
     {
-        ExecutionIds = execution.State == RuleFeatureExecutionState.AwaitingActionOutcome ? [execution.ExecutionId] : []
+        ExecutionIds = execution.State is not (RuleFeatureExecutionState.Completed or RuleFeatureExecutionState.Stopped)
+            ? [execution.ExecutionId] : []
     };
 
     public async Task ResumeAsync(Guid serverId, Guid executionId, CancellationToken ct)

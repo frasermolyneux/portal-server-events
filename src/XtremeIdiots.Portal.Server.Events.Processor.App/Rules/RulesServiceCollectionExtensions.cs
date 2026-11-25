@@ -11,6 +11,11 @@ internal static class RulesServiceCollectionExtensions
         services.AddTransient<ConfiguredFeatureRulesProvider>();
         services.AddTransient<VpnFeatureRulesProvider>();
         services.AddTransient<SiegeFeatureRulesProvider>();
+        services.AddTransient<WelcomeFeatureRulesProvider>();
+        services.AddTransient<IRuleTextContextHydrator, RuleTextContextHydrator>();
+        services.AddTransient<IRuleActionTextPreparer, RuleActionTextPreparer>();
+        services.AddTransient<IRuleMessageDeliveryService, RuleMessageDeliveryService>();
+        services.AddTransient<IRuleMessageBudgetProvider, RuleMessageBudgetProvider>();
         services.AddTransient<ISiegeActivationHistoryProvider, RepositorySiegeActivationHistoryProvider>();
         services.AddTransient<IRuleModerationRecordWriter, RepositoryRuleModerationRecordWriter>();
         services.AddTransient<FeatureExecutionOrchestrator>();
@@ -19,6 +24,8 @@ internal static class RulesServiceCollectionExtensions
             provider.GetRequiredService<VpnFeatureRulesProvider>(), provider.GetRequiredService<FeatureExecutionOrchestrator>()));
         services.AddTransient<IRegisteredRuleFeature>(provider => new RegisteredRuleFeature(
             provider.GetRequiredService<SiegeFeatureRulesProvider>(), provider.GetRequiredService<FeatureExecutionOrchestrator>()));
+        services.AddTransient<IRegisteredRuleFeature>(provider => new RegisteredRuleFeature(
+            provider.GetRequiredService<WelcomeFeatureRulesProvider>(), provider.GetRequiredService<FeatureExecutionOrchestrator>()));
         services.AddTransient<RegisteredFeatureHost>();
         services.AddTransient<RulesTriggerService>();
         services.AddTransient<IRulesTriggerService>(provider => provider.GetRequiredService<RulesTriggerService>());
