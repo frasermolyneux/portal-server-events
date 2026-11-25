@@ -33,11 +33,6 @@ internal sealed class RepositoryRuleModerationRecordWriter(
             "moderation.ban" => AdminActionType.Ban,
             _ => throw new InvalidOperationException("The action does not produce a moderation record.")
         };
-        if (!action.Parameters.TryGetValue("reason", out var reason) || reason.ValueKind != JsonValueKind.String ||
-            string.IsNullOrWhiteSpace(reason.GetString()))
-        {
-            throw new InvalidOperationException("A moderation record requires a reason.");
-        }
         var execution = FeatureExecutionOrchestrator.Require(await repository.RuleExecutions.V1.GetExecution(
             command.GameServerId, command.ExecutionId, ct).ConfigureAwait(false), "load moderation action claim");
         var claim = execution.Actions.SingleOrDefault(item => item.LogicalEffectId == command.LogicalEffectId);
@@ -46,6 +41,11 @@ internal sealed class RepositoryRuleModerationRecordWriter(
             claim.Mode != RuleExecutionMode.Enforce || claim.Outcome != RuleActionExecutionOutcome.Claimed)
         {
             throw new InvalidOperationException("The moderation record does not match a live action claim.");
+        }
+        var reason = claim.Command.Effect.Reason;
+        if (string.IsNullOrWhiteSpace(reason) || !string.Equals(reason, command.Effect.Reason, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("A moderation record requires the frozen action claim's reason.");
         }
         DateTime? expires = null;
         if (type == AdminActionType.TempBan)
@@ -72,7 +72,7 @@ internal sealed class RepositoryRuleModerationRecordWriter(
                 LogicalEffectId = command.LogicalEffectId,
                 AdminId = adminId,
                 Type = type,
-                Text = reason.GetString()!,
+                Text = reason,
                 Expires = expires
             }, ct).ConfigureAwait(false), "persist and link idempotent rule moderation record");
         var record = result.AdminAction;

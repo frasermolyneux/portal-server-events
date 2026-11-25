@@ -5,7 +5,7 @@ This document defines how `portal-server-events` consumes platform settings afte
 ## Architecture
 
 - Typed contract source: `XtremeIdiots.Portal.Settings.Contracts.V1`.
-- Processor provider paths for `chatCommands` and `welcomeMessages` deserialize typed documents and run typed validators.
+- The `chatCommands` processor provider deserializes typed documents and runs typed validators.
 - Effective settings behavior remains deterministic through provider + merger logic.
 - Repository persistence remains dynamic (`namespace + JSON string`) and is not re-shaped by processor code.
 
@@ -14,6 +14,29 @@ This document defines how `portal-server-events` consumes platform settings afte
 - Old approach: local contract/validator ownership for chat and welcome settings in processor-adjacent paths.
 - New approach: canonical contracts are owned in `portal-repository` via `XtremeIdiots.Portal.Settings.Contracts.V1`.
 - `XtremeIdiots.Portal.ChatCommands.Abstractions.V1` is compatibility-only and not canonical for new behavior.
+
+## Welcome cutover
+
+The legacy `welcomeMessages` runtime, its process-local deduplication, delayed
+worker sleeps and welcome-only template/settings providers are retired.
+Connection processing delegates to shared rules only. Old welcome documents are
+not converted or interpreted as rules; the replacement uses the distinct
+`welcomeRules` namespace and must remain disabled until its dependency rollout
+and clean configuration reset are complete.
+
+Retire Portal's legacy welcome writers before the final legacy global/server
+configuration cleanup, so unrelated settings saves cannot recreate them. Disable
+the old configurations before deploying the runtime replacement and allow for
+the old three-minute settings cache and any in-flight delayed work. Remove only
+the legacy welcome documents; unrelated settings, historical audit records,
+existing AdminActions and bans remain untouched. Recreate desired welcomes as
+ordered rules explicitly, never automatically.
+
+Protection features remain concurrent with each other. Welcome admission waits
+for their evaluations, while unrelated features remain independent; this
+admission ordering does not replace the durable pre-delivery enforcement check.
+Moderation records consume the reason frozen in the durable action claim, not
+the original template or refreshed settings.
 
 ## VPN Protection and Siege rules
 

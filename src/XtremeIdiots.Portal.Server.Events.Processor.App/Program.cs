@@ -121,14 +121,6 @@ var host = new HostBuilder()
         services.AddSingleton<IRegisterCommandRateLimiter, RegisterCommandRateLimiter>();
         services.AddSingleton<IChatCommandCatalog, ChatCommandCatalog>();
 
-        // Welcome message pipeline
-        services.AddSingleton<WelcomeMessageSettingsValidator>();
-        services.AddSingleton<WelcomeMessageSettingsMerger>();
-        services.AddSingleton<IWelcomeMessageSettingsProvider, WelcomeMessageSettingsProvider>();
-        services.AddSingleton<IWelcomeMessageIdempotencyStore, InMemoryWelcomeMessageIdempotencyStore>();
-        services.AddSingleton<WelcomeMessageTemplateRenderer>();
-        services.AddTransient<IWelcomeMessageOrchestrator, WelcomeMessageOrchestrator>();
-
         services.AddUniversalRules();
         services.AddTransient<IVpnDetectedTagService, VpnDetectedTagService>();
 

@@ -5,6 +5,7 @@ using Microsoft.Extensions.Logging;
 using MX.GeoLocation.Abstractions.Models.V1_1;
 
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.RulesEngine;
+using XtremeIdiots.Portal.Settings.Contracts.V1.Contracts.RulesEngine;
 
 namespace XtremeIdiots.Portal.Server.Events.Processor.App.Rules;
 
@@ -15,6 +16,7 @@ internal sealed record RuleInvocation(RuleTriggerEnvelope Trigger, RuleFactSnaps
     public ConcurrentBag<Guid> PendingExecutionIds { get; } = [];
     public Lazy<Task<IpIntelligenceDto?>>? IntelligenceLookup { get; init; }
     public bool SuppressWelcome { get; set; }
+    public IReadOnlyList<FeatureProcessingResult> ProtectionResults { get; set; } = [];
 }
 
 internal interface IRegisteredRuleFeature
@@ -59,9 +61,22 @@ internal sealed class RegisteredFeatureHost
             return [];
         }
 
-        return await Task.WhenAll(features.Where(feature => featureId is null || feature.FeatureId == featureId)
-            .Select(feature => ProcessFeatureAsync(feature, invocation, ct))).ConfigureAwait(false);
+        var selected = features.Where(feature => featureId is null || feature.FeatureId == featureId).ToArray();
+        var protectionTasks = selected.Where(IsProtection)
+            .Select(feature => ProcessFeatureAsync(feature, invocation, ct)).ToArray();
+        var otherTasks = selected.Where(feature => !IsProtection(feature)).Select(async feature =>
+        {
+            if (feature.FeatureId == "welcome-messages")
+            {
+                invocation.ProtectionResults = await Task.WhenAll(protectionTasks).ConfigureAwait(false);
+            }
+            return await ProcessFeatureAsync(feature, invocation, ct).ConfigureAwait(false);
+        }).ToArray();
+        return await Task.WhenAll(protectionTasks.Concat(otherTasks)).ConfigureAwait(false);
     }
+
+    private static bool IsProtection(IRegisteredRuleFeature feature) =>
+        feature.FeatureId is RulesEngineCatalogueV1.VpnProtectionFeature or RulesEngineCatalogueV1.SiegeModeFeature;
 
     private async Task<FeatureProcessingResult> ProcessFeatureAsync(
         IRegisteredRuleFeature feature,

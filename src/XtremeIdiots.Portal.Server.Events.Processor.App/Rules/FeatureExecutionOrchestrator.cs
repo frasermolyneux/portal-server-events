@@ -187,7 +187,8 @@ internal sealed class FeatureExecutionOrchestrator(
                     RuleFeatureExecutionState.Evaluating, ct).ConfigureAwait(false);
                 if (invocation.Trigger.Runtime?.Id == "server-agent")
                 {
-                    await continuations.ScheduleAsync(execution.GameServerId, execution.ExecutionId, ct).ConfigureAwait(false);
+                    await continuations.ScheduleAsync(execution.GameServerId, execution.ExecutionId,
+                        DateTimeOffset.UtcNow.AddSeconds(10), ct).ConfigureAwait(false);
                 }
                 invocation.PendingExecutionIds.Add(execution.ExecutionId);
                 return execution.ExecutionId;

@@ -427,7 +427,7 @@ public sealed class FeatureExecutionOrchestratorTests
     private sealed class Continuations : IRuleExecutionContinuationPublisher
     {
         public List<(Guid ServerId, Guid ExecutionId)> Scheduled { get; } = [];
-        public Task ScheduleAsync(Guid serverId, Guid executionId, CancellationToken ct)
+        public Task ScheduleAsync(Guid serverId, Guid executionId, DateTimeOffset scheduledAtUtc, CancellationToken ct)
         {
             Scheduled.Add((serverId, executionId));
             return Task.CompletedTask;

@@ -11,7 +11,7 @@ internal sealed record RuleExecutionContinuation(Guid GameServerId, Guid Executi
 
 internal interface IRuleExecutionContinuationPublisher
 {
-    Task ScheduleAsync(Guid serverId, Guid executionId, CancellationToken ct);
+    Task ScheduleAsync(Guid serverId, Guid executionId, DateTimeOffset scheduledAtUtc, CancellationToken ct);
 }
 
 internal sealed class RuleExecutionContinuationPublisher(ServiceBusClient client) : IRuleExecutionContinuationPublisher
@@ -19,14 +19,14 @@ internal sealed class RuleExecutionContinuationPublisher(ServiceBusClient client
     private readonly ServiceBusSender sender = client.CreateSender(Queues.RuleActionContinuations);
     public const string MessageKind = "rules-execution-resume";
 
-    public Task ScheduleAsync(Guid serverId, Guid executionId, CancellationToken ct)
+    public Task ScheduleAsync(Guid serverId, Guid executionId, DateTimeOffset scheduledAtUtc, CancellationToken ct)
     {
         var message = new ServiceBusMessage(BinaryData.FromString(
             JsonSerializer.Serialize(new RuleExecutionContinuation(serverId, executionId), JsonOptions.Default)))
         {
             MessageId = $"resume:{executionId:N}",
             ContentType = "application/json",
-            ScheduledEnqueueTime = DateTimeOffset.UtcNow.AddSeconds(10)
+            ScheduledEnqueueTime = scheduledAtUtc
         };
         message.ApplicationProperties["kind"] = MessageKind;
         return sender.SendMessageAsync(message, ct);
