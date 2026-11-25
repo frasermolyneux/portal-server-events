@@ -108,6 +108,10 @@ internal sealed class FeatureExecutionOrchestrator(
             ? new RuleExecutionProgress { Mode = configured.Mode, ExpiresAtUtc = configured.ExpiresAtUtc, Baseline = configured.Baseline }
             : JsonSerializer.Deserialize<RuleExecutionProgress>(execution.DecisionSnapshotJson, RulesSerialization.Options)
                 ?? throw new InvalidOperationException("Persisted rule progress is invalid.");
+        if (execution.State == RuleFeatureExecutionState.Waiting)
+        {
+            progress.WaitingReason = null;
+        }
         if (progress.Baseline is { } frozenBaseline && configured.Baseline is { } supplementalBaseline)
         {
             progress.Baseline = new(

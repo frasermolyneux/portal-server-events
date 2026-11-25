@@ -41,6 +41,7 @@ public sealed class FeatureExecutionOrchestratorTests
         Assert.Empty(messages.Deliveries);
         Assert.Empty(storage.Execution!.Actions);
         Assert.Equal(RuleFeatureExecutionState.Waiting, storage.Execution.State);
+        Assert.Equal("Waiting for original connection delay.", storage.Execution.Coordination!.WaitingReason);
         Assert.Equal(scheduledCount, continuation.Scheduled.Count);
         if (scheduledCount > 0)
         {
@@ -56,6 +57,8 @@ public sealed class FeatureExecutionOrchestratorTests
         var progress = JsonSerializer.Deserialize<RuleExecutionProgress>(
             storage.Execution.DecisionSnapshotJson!, RulesSerialization.Options)!;
         Assert.Equal(original.Trigger.OccurredAtUtc.AddSeconds(120), progress.RuleWindows["delayed"].ExpiresAtUtc);
+        Assert.Null(progress.WaitingReason);
+        Assert.Null(storage.Execution.Coordination!.WaitingReason);
     }
 
     [Fact]
