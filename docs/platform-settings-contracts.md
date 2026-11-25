@@ -78,7 +78,10 @@ uncertain and terminally skipped children are not resent. A plugin message
 receipt means the native API was invoked, not that the player received or saw
 the text; its aggregate evidence remains unknown while later ordered fragments
 may proceed. Expiry or a later protection decision terminalizes remaining
-unsent greeting children without dispatch.
+unsent greeting children without dispatch. Agent-owned pending claims schedule
+recovery at their original expiry. Message preparation without a feature expiry
+uses a per-action deadline that is persisted before waiting and never extended
+on retry.
 
 ## VPN Protection and Siege rules
 

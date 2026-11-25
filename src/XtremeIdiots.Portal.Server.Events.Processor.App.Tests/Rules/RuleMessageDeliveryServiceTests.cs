@@ -197,6 +197,27 @@ public sealed class RuleMessageDeliveryServiceTests
     }
 
     [Fact]
+    public async Task UnavailableBudgetCannotExtendPersistedPreparationDeadline()
+    {
+        var fixture = new Fixture();
+        var deadline = fixture.Clock.Now.AddSeconds(30);
+        fixture.Progress.ExpiresAtUtc = null;
+        fixture.Progress.MessagePreparationExpiries[JsonSerializer.Serialize(new[] { "rule", "action" })] = deadline;
+        fixture.Budget = new(null, "Unavailable.", Unavailable: true);
+
+        var waiting = await fixture.DispatchAsync();
+        fixture.Clock.Now = deadline;
+        fixture.Progress.ExpiresAtUtc = deadline.AddMinutes(2);
+        fixture.Budget = new(new("test", 4));
+        var expired = await fixture.DispatchAsync();
+
+        Assert.NotNull(waiting.ResumeAtUtc);
+        Assert.Equal(ActionExecutionOutcome.Stale, expired.Outcome!.Outcome);
+        Assert.Empty(fixture.Execution.PreparedActions);
+        Assert.Empty(fixture.Sent);
+    }
+
+    [Fact]
     public async Task FanoutDeduplicatesConnectionsAndSkipsReplacedRecipientWithoutResendingOthers()
     {
         var fixture = new Fixture(tagged: true);
@@ -360,6 +381,7 @@ public sealed class RuleMessageDeliveryServiceTests
         public RuleTaggedAudienceRequestDto? AudienceRequest { get; private set; }
         public int Preparations { get; private set; }
         public bool FailOutcomes { get; set; }
+        public RuleExecutionProgress Progress => progress;
         public RuleMessageBudgetResult Budget { get; set; } = new(new("test", 4));
         public RuleActionDefinition Action { get; } = new()
         {
@@ -515,7 +537,7 @@ public sealed class RuleMessageDeliveryServiceTests
                 ActionId = Action.Id,
                 LogicalEffectId = new string('a', 64),
                 Mode = RuleExecutionMode.Enforce,
-                ExpiresAtUtc = progress.ExpiresAtUtc!.Value
+                ExpiresAtUtc = progress.ExpiresAtUtc ?? Clock.Now.AddSeconds(30)
             }, invocation, progress, default);
 
         public async Task FinishAsync()

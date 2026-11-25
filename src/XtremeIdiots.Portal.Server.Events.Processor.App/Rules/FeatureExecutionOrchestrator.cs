@@ -39,6 +39,7 @@ internal sealed class RuleExecutionProgress
     public Dictionary<string, RuleExecutionCoordination> RuleWindows { get; set; } = new(StringComparer.Ordinal);
     public string? WaitingReason { get; set; }
     public Dictionary<string, ActionExecutionResult> ActionOutcomes { get; set; } = new(StringComparer.Ordinal);
+    public Dictionary<string, DateTimeOffset> MessagePreparationExpiries { get; set; } = new(StringComparer.Ordinal);
 }
 
 internal sealed class RegisteredRuleFeature(
@@ -236,6 +237,17 @@ internal sealed class FeatureExecutionOrchestrator(
                     item.Command.DeliveryIdentity is null);
                 if (!legacyClaim && action.TypeId is ("message.public" or "message.private" or "message.private-tagged"))
                 {
+                    if (!action.DependsOnActionIds.Any(id => !outcomes[id].SatisfiesDependency) &&
+                        progress.ExpiresAtUtc is null &&
+                        !store.Execution.PreparedActions.Any(item => item.RuleIndex == ruleIndex &&
+                            item.ActionIndex == rule.Actions.IndexOf(configuredAction)) &&
+                        !progress.MessagePreparationExpiries.ContainsKey(outcomeKey))
+                    {
+                        progress.MessagePreparationExpiries.Add(outcomeKey, store.Command(action).ExpiresAtUtc);
+                        store.Execution = await SaveProgressAsync(store.Execution, progress, ruleIndex,
+                            store.Execution.ActionIndex, store.Execution.State, ct).ConfigureAwait(false);
+                        execution = store.Execution;
+                    }
                     var messageResult = action.DependsOnActionIds.Any(id => !outcomes[id].SatisfiesDependency)
                         ? new RuleMessageDispatchResult(store.Execution,
                             new(ActionExecutionOutcome.SkippedDependency, "A prerequisite action did not succeed."))
@@ -338,6 +350,13 @@ internal sealed class FeatureExecutionOrchestrator(
                 {
                     execution = await SaveProgressAsync(execution, progress, execution.RuleIndex, execution.ActionIndex,
                         execution.State, ct).ConfigureAwait(false);
+                }
+                if (execution.Trigger.Runtime?.Id == "server-agent")
+                {
+                    var pending = execution.Actions.Single(item =>
+                        item.Outcome is RuleActionExecutionOutcome.Claimed or RuleActionExecutionOutcome.Dispatched);
+                    await continuations.ScheduleAsync(execution.GameServerId, execution.ExecutionId,
+                        pending.Command.ExpiresAtUtc, ct).ConfigureAwait(false);
                 }
                 invocation.PendingExecutionIds.Add(execution.ExecutionId);
                 return execution.ExecutionId;

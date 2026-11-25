@@ -55,8 +55,15 @@ internal sealed class RuleMessageDeliveryService(
         var tagged = action.TypeId == "message.private-tagged";
         var plan = execution.PreparedActions.SingleOrDefault(item =>
             item.RuleIndex == ruleIndex && item.ActionIndex == actionIndex);
-        var expiry = plan?.RuleCoordination?.ExpiresAtUtc ?? progress.ExpiresAtUtc ??
-            plan?.Commands.FirstOrDefault()?.ExpiresAtUtc ?? commandFactory(action).ExpiresAtUtc;
+        var preparationKey = JsonSerializer.Serialize(new[] { rule.Id, action.Id });
+        var featureExpiry = progress.ExpiresAtUtc;
+        if (progress.MessagePreparationExpiries.TryGetValue(preparationKey, out var preparationExpiry) &&
+            (featureExpiry is null || preparationExpiry < featureExpiry))
+        {
+            featureExpiry = preparationExpiry;
+        }
+        var expiry = plan?.RuleCoordination?.ExpiresAtUtc ?? plan?.Commands.FirstOrDefault()?.ExpiresAtUtc ??
+            featureExpiry ?? commandFactory(action).ExpiresAtUtc;
         (bool Deferred, string Detail)? protectionDecision = null;
         if (execution.FeatureId == WelcomeFeatureRulesProvider.Id && !tagged)
         {
