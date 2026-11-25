@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -17,6 +18,8 @@ using XtremeIdiots.Portal.Repository.Abstractions.Interfaces.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.GameServers;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.RulesEngine;
 using XtremeIdiots.Portal.Repository.Api.Client.V1;
+using XtremeIdiots.Portal.Server.Events.Abstractions.V1.Events;
+using XtremeIdiots.Portal.Server.Events.Processor.App.Functions;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Rules;
 
 namespace XtremeIdiots.Portal.Server.Events.Processor.App.Tests.Rules;
@@ -123,6 +126,176 @@ public sealed class RulesTriggerServiceTests
         Assert.False(result.SuppressWelcome);
         fixture.Api.VerifyNoOtherCalls();
         fixture.Audit.VerifyNoOtherCalls();
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task PluginConnectionWithoutTopLevelObservationSkipsMirrorButEvaluatesNatively(bool emptyObservation)
+    {
+        var featureCalls = 0;
+        var fixture = new Fixture(new Feature("vpn-protection", _ =>
+        {
+            featureCalls++;
+            return Guid.NewGuid();
+        }));
+        var trigger = fixture.Execution.Trigger;
+        var json = JsonSerializer.SerializeToNode(ConnectedEvent(trigger), JsonOptions.Default)!.AsObject();
+        json.Remove("observationId");
+        json["playtime"] = new JsonObject { ["observationId"] = Guid.NewGuid().ToString() };
+        if (emptyObservation)
+        {
+            json["observationId"] = Guid.Empty.ToString();
+        }
+        var source = json.Deserialize<PlayerConnectedEvent>(JsonOptions.Default)!;
+
+        var prepared = await fixture.Service.PrepareAsync(source, default);
+        await fixture.Service.ProcessAsync(prepared, null, default);
+
+        Assert.Null(prepared);
+        Assert.Equal(0, featureCalls);
+        Assert.DoesNotContain(fixture.Logger.Entries, item => item.Level == LogLevel.Warning);
+        fixture.Api.Verify(item => item.CreateFactSnapshot(
+            It.IsAny<Guid>(), It.IsAny<RuleFactSnapshotRequestDto>(), It.IsAny<CancellationToken>()), Times.Never);
+
+        await fixture.Service.EvaluateAsync(trigger, default);
+
+        Assert.Equal(1, featureCalls);
+        fixture.Api.Verify(item => item.CreateFactSnapshot(
+            It.IsAny<Guid>(), It.IsAny<RuleFactSnapshotRequestDto>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task PluginConnectionWithObservationStillCapturesFactsWithoutEvaluatingTheMirror()
+    {
+        var featureCalls = 0;
+        var fixture = new Fixture(new Feature("vpn-protection", _ =>
+        {
+            featureCalls++;
+            return Guid.NewGuid();
+        }));
+        var trigger = fixture.Execution.Trigger;
+
+        var prepared = await fixture.Service.PrepareAsync(ConnectedEvent(trigger, trigger.ObservationId), default);
+        await fixture.Service.ProcessAsync(prepared, null, default);
+
+        Assert.NotNull(prepared);
+        Assert.Equal(trigger.ObservationId, prepared.Trigger.ObservationId);
+        Assert.Equal(0, featureCalls);
+
+        await fixture.Service.EvaluateAsync(trigger, default);
+
+        Assert.Equal(1, featureCalls);
+        fixture.Api.Verify(item => item.CreateFactSnapshot(
+            It.IsAny<Guid>(), It.IsAny<RuleFactSnapshotRequestDto>(), It.IsAny<CancellationToken>()), Times.Exactly(2));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AgentConnectionStillRequiresObservationBeforeEvaluatingRules(bool hasObservation)
+    {
+        var featureCalls = 0;
+        var fixture = new Fixture(new Feature("vpn-protection", _ =>
+        {
+            featureCalls++;
+            return Guid.NewGuid();
+        }));
+        var source = ConnectedEvent(fixture.Execution.Trigger,
+            observationId: hasObservation ? Guid.NewGuid() : null,
+            connectionGeneration: null,
+            runtimeId: "server-agent");
+
+        var prepared = await fixture.Service.PrepareAsync(source, default);
+        await fixture.Service.ProcessAsync(prepared, null, default);
+
+        if (hasObservation)
+        {
+            Assert.NotNull(prepared);
+            Assert.Equal(1, featureCalls);
+            fixture.Api.Verify(item => item.CreateFactSnapshot(
+                It.IsAny<Guid>(), It.IsAny<RuleFactSnapshotRequestDto>(), It.IsAny<CancellationToken>()), Times.Once);
+        }
+        else
+        {
+            Assert.Null(prepared);
+            Assert.Equal(0, featureCalls);
+            Assert.Contains(fixture.Logger.Entries, item => item.Level == LogLevel.Warning &&
+                item.Message.Contains("without observation evidence"));
+            fixture.Api.Verify(item => item.CreateFactSnapshot(
+                It.IsAny<Guid>(), It.IsAny<RuleFactSnapshotRequestDto>(), It.IsAny<CancellationToken>()), Times.Never);
+        }
+    }
+
+    [Theory]
+    [InlineData("connection")]
+    [InlineData("generation")]
+    [InlineData("runtime")]
+    [InlineData("future")]
+    [InlineData("unmarked")]
+    [InlineData("not-evaluated")]
+    public async Task IncompletePluginConnectionStillWarns(string invalidEvidence)
+    {
+        var fixture = new Fixture();
+        var source = ConnectedEvent(fixture.Execution.Trigger,
+            connectionId: invalidEvidence == "connection" ? Guid.Empty : null,
+            connectionGeneration: invalidEvidence == "generation" ? 0UL : 1UL,
+            runtimeId: invalidEvidence == "runtime" ? null : "cod4x-plugin",
+            eventGeneratedUtc: invalidEvidence == "future" ? DateTime.UtcNow.AddMinutes(2) : null,
+            rulesEvaluatedByPlugin: invalidEvidence == "unmarked" ? null : invalidEvidence != "not-evaluated");
+
+        var prepared = await fixture.Service.PrepareAsync(source, default);
+
+        Assert.Null(prepared);
+        Assert.Contains(fixture.Logger.Entries, item => item.Level == LogLevel.Warning);
+        fixture.Api.Verify(item => item.CreateFactSnapshot(
+            It.IsAny<Guid>(), It.IsAny<RuleFactSnapshotRequestDto>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    public async Task PluginNativeEvaluationStillRejectsMissingObservation(bool hasObservation, bool hasOccurrence)
+    {
+        var fixture = new Fixture();
+        var trigger = fixture.Execution.Trigger with
+        {
+            ObservationId = hasObservation ? Guid.NewGuid() : Guid.Empty,
+            TriggerOccurrenceId = hasOccurrence ? Guid.NewGuid() : Guid.Empty
+        };
+
+        await Assert.ThrowsAsync<ArgumentException>(() => fixture.Service.EvaluateAsync(trigger, default));
+
+        fixture.Api.Verify(item => item.CreateFactSnapshot(
+            It.IsAny<Guid>(), It.IsAny<RuleFactSnapshotRequestDto>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task PluginIpResolvedEventStillWarnsWhenObservationIsMissing()
+    {
+        var fixture = new Fixture();
+        var connected = ConnectedEvent(fixture.Execution.Trigger);
+        var source = new PlayerIpResolvedEvent
+        {
+            ServerId = connected.ServerId,
+            GameType = connected.GameType,
+            SequenceId = connected.SequenceId,
+            EventGeneratedUtc = connected.EventGeneratedUtc,
+            EventPublishedUtc = connected.EventPublishedUtc,
+            PlayerGuid = connected.PlayerGuid,
+            IpAddress = connected.IpAddress,
+            SlotId = connected.SlotId,
+            ConnectionId = connected.ConnectionId,
+            ConnectionGeneration = connected.ConnectionGeneration,
+            Runtime = connected.Runtime
+        };
+
+        var prepared = await fixture.Service.PrepareAsync(source, default);
+
+        Assert.Null(prepared);
+        Assert.Contains(fixture.Logger.Entries, item => item.Level == LogLevel.Warning &&
+            item.Message.Contains("without observation evidence"));
     }
 
     [Fact]
@@ -855,6 +1028,38 @@ public sealed class RulesTriggerServiceTests
         fixture.Api.Verify(item => item.CreateFactSnapshot(
             It.IsAny<Guid>(), It.IsAny<RuleFactSnapshotRequestDto>(), It.IsAny<CancellationToken>()), Times.Never);
     }
+
+    private static PlayerConnectedEvent ConnectedEvent(
+        RuleTriggerEnvelope trigger,
+        Guid? observationId = null,
+        Guid? connectionId = null,
+        ulong? connectionGeneration = 1,
+        string? runtimeId = "cod4x-plugin",
+        DateTime? eventGeneratedUtc = null,
+        bool? rulesEvaluatedByPlugin = true) => new()
+        {
+            ServerId = trigger.GameServerId,
+            GameType = trigger.GameType.ToString(),
+            SequenceId = 1,
+            EventGeneratedUtc = eventGeneratedUtc ?? trigger.OccurredAtUtc.UtcDateTime,
+            EventPublishedUtc = trigger.OccurredAtUtc.UtcDateTime,
+            PlayerGuid = trigger.PlayerGuid ?? throw new ArgumentException("Player GUID is required.", nameof(trigger)),
+            Username = "Player",
+            IpAddress = trigger.PlayerIpAddress ?? string.Empty,
+            SlotId = trigger.SlotId!.Value,
+            ConnectionId = connectionId ?? trigger.ConnectionId,
+            ObservationId = observationId,
+            ConnectionGeneration = connectionGeneration,
+            Runtime = runtimeId is null ? null : new()
+            {
+                Id = runtimeId,
+                Version = trigger.Runtime!.Version,
+                ProtocolVersion = trigger.Runtime.ProtocolVersion,
+                InstanceId = trigger.Runtime.InstanceId,
+                StartedAtUtc = trigger.Runtime.StartedAtUtc
+            },
+            RulesEvaluatedByPlugin = runtimeId == "cod4x-plugin" ? rulesEvaluatedByPlugin : false
+        };
 
     private sealed class Feature(string featureId, Func<RuleInvocation, Guid?> process, string[]? triggerIds = null) : IRegisteredRuleFeature
     {
