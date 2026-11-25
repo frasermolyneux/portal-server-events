@@ -178,7 +178,7 @@ internal sealed class RuleTextContextHydrator(
                 }
                 break;
             case RuleTextTokenSource.ServerMetadata:
-                var metadata = await repository.GameServers.V1.GetGameServer(trigger.GameServerId).WaitAsync(ct).ConfigureAwait(false);
+                var metadata = await repository.GameServers.V1.GetGameServer(trigger.GameServerId, ct).WaitAsync(ct).ConfigureAwait(false);
                 if (metadata.IsSuccess && metadata.Result?.Data is { } gameServer &&
                     gameServer.GameServerId == trigger.GameServerId)
                 {

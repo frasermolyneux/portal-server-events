@@ -10,6 +10,7 @@ using Newtonsoft.Json;
 
 using XtremeIdiots.Portal.Integrations.Servers.Api.Client.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Constants.V1;
+using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.GameServers;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.Players;
 using XtremeIdiots.Portal.Repository.Api.Client.V1;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Rules;
@@ -66,6 +67,24 @@ public sealed class RuleTextContextHydratorTests
         Assert.Null(values.Player.Tags);
         Assert.Contains(RuleTextTokenSource.PlayerProfile, values.SourceDiagnostics.Keys);
         Assert.Contains(RuleTextTokenSource.PlayerTags, values.SourceDiagnostics.Keys);
+    }
+
+    [Fact]
+    public async Task ServerMetadataLookupPassesCancellationToRepository()
+    {
+        var serverId = Guid.NewGuid();
+        using var cancellation = new CancellationTokenSource();
+        var repository = new Mock<IRepositoryApiClient>();
+        repository.Setup(item => item.GameServers.V1.GetGameServer(serverId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<GameServerDto>(HttpStatusCode.NotFound));
+        var invocation = new RuleInvocation(new() { GameServerId = serverId }, new(), null);
+        var hydrator = new RuleTextContextHydrator(repository.Object, Mock.Of<IServersApiClient>(),
+            NullLogger<RuleTextContextHydrator>.Instance);
+
+        await hydrator.HydrateAsync(invocation, new HashSet<RuleTextTokenSource> { RuleTextTokenSource.ServerMetadata },
+            cancellation.Token);
+
+        repository.Verify(item => item.GameServers.V1.GetGameServer(serverId, cancellation.Token), Times.Once);
     }
 
     [Fact]
