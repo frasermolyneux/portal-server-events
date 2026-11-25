@@ -19,6 +19,256 @@ namespace XtremeIdiots.Portal.Server.Events.Processor.App.Tests.Rules;
 public sealed class FeatureExecutionOrchestratorTests
 {
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ExplicitFalseEvidenceSurvivesRetryUntilEveryEnabledRuleIsFalse(bool resume)
+    {
+        var storage = new Storage();
+        var invocation = Invocation();
+        var first = Rule("known", 0);
+        var second = Rule("needs-ip", 1, "player.first-seen-ip");
+        var disabled = Rule("disabled", 2);
+        disabled.Enabled = false;
+        var snapshot = Snapshot(first, second, disabled);
+        var engine = Create(storage, new Executor());
+        var facts = invocation.Facts with { GuidFirstSeenAtUtc = DateTimeOffset.UtcNow.AddDays(-1) };
+
+        await engine.ProcessAsync(invocation with { Facts = facts }, snapshot, default);
+
+        var evidence = Progress(storage).MatchEvidence!;
+        Assert.Equal(1, evidence.Version);
+        Assert.Equal(["known"], evidence.FalseRuleIds);
+        Assert.False(evidence.NoMatchConfirmed);
+        Assert.False(evidence.ObservedMatch);
+        Assert.Equal(RuleExecutionMatchStatus.Unknown, storage.Execution!.MatchStatus);
+        if (resume)
+        {
+            await Create(storage, new Executor()).ProcessAsync(invocation with
+            {
+                Facts = facts with { IpHistoryAvailable = true, IpFirstSeenAtUtc = DateTimeOffset.UtcNow.AddDays(-1) }
+            }, snapshot, default);
+
+            evidence = Progress(storage).MatchEvidence!;
+            Assert.True(evidence.NoMatchConfirmed);
+            Assert.Equal(2, evidence.FalseRuleIds.Count);
+            Assert.DoesNotContain("disabled", evidence.FalseRuleIds);
+            Assert.Equal(RuleFeatureExecutionState.Completed, storage.Execution!.State);
+            Assert.Equal(RuleExecutionMatchStatus.NoMatch, storage.Execution.MatchStatus);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ObservedTrueIsRecordedBeforeActionAndRetainedWhileWaiting(bool native)
+    {
+        var storage = new Storage();
+        var executor = new Executor { Deferred = !native, ReturnNativeCommand = native };
+
+        await Create(storage, executor).ProcessAsync(Invocation(), Snapshot(Rule("matched", 0)), default);
+
+        Assert.True(Progress(storage).MatchEvidence!.ObservedMatch);
+        Assert.False(Progress(storage).MatchEvidence!.NoMatchConfirmed);
+        Assert.Equal(RuleExecutionMatchStatus.Matched, storage.Execution!.MatchStatus);
+        if (native)
+        {
+            Assert.True(storage.MatchObservedAtClaim);
+            Assert.Equal(RuleExecutionMatchStatus.Matched, storage.MatchStatusAtClaim);
+        }
+        else
+        {
+            Assert.Empty(storage.Execution!.Actions);
+        }
+    }
+
+    [Fact]
+    public async Task UnknownRuleBecomesMatchedOnlyWhenLaterEvaluationIsTrue()
+    {
+        var storage = new Storage();
+        var invocation = Invocation();
+        var rule = Rule("needs-ip", 0, "player.first-seen-ip");
+        var snapshot = Snapshot(rule);
+        var engine = Create(storage, new Executor());
+
+        await engine.ProcessAsync(invocation, snapshot, default);
+
+        Assert.False(Progress(storage).MatchEvidence!.ObservedMatch);
+        Assert.False(Progress(storage).MatchEvidence!.NoMatchConfirmed);
+        Assert.Equal(RuleExecutionMatchStatus.Unknown, storage.Execution!.MatchStatus);
+        Assert.Contains(rule.Id, Progress(storage).UnknownRuleIds);
+
+        await Create(storage, new Executor()).ProcessAsync(invocation with
+        {
+            Facts = invocation.Facts with { IpHistoryAvailable = true }
+        }, snapshot, default);
+
+        Assert.True(Progress(storage).MatchEvidence!.ObservedMatch);
+        Assert.False(Progress(storage).MatchEvidence!.NoMatchConfirmed);
+        Assert.Equal(RuleFeatureExecutionState.Stopped, storage.Execution!.State);
+        Assert.Equal(RuleExecutionMatchStatus.Matched, storage.Execution.MatchStatus);
+    }
+
+    [Fact]
+    public async Task FalseRuleThenMatchedRuleKeepsMatchEvidenceAfterCompletion()
+    {
+        var storage = new Storage();
+        var invocation = Invocation();
+        var first = Rule("false", 0);
+        var second = Rule("matched", 1, "always");
+        second.Condition!.Parameters!.Clear();
+        second.AfterMatch = RuleAfterMatch.ContinueToNextRule;
+
+        await Create(storage, new Executor()).ProcessAsync(invocation with
+        {
+            Facts = invocation.Facts with { GuidFirstSeenAtUtc = DateTimeOffset.UtcNow.AddDays(-1) }
+        }, Snapshot(first, second), default);
+
+        Assert.True(Progress(storage).MatchEvidence!.ObservedMatch);
+        Assert.Contains("false", Progress(storage).MatchEvidence!.FalseRuleIds);
+        Assert.False(Progress(storage).MatchEvidence!.NoMatchConfirmed);
+        Assert.Equal(RuleFeatureExecutionState.Completed, storage.Execution!.State);
+        Assert.Equal(RuleExecutionMatchStatus.Matched, storage.Execution.MatchStatus);
+    }
+
+    [Theory]
+    [InlineData("matched")]
+    [InlineData("completed")]
+    [InlineData("no-match-diagnostic")]
+    public async Task LegacyProgressDoesNotEstablishMatchEvidence(string legacy)
+    {
+        var storage = new Storage();
+        var invocation = Invocation();
+        var rule = Rule("legacy", 0);
+        var snapshot = Snapshot(rule);
+        var progress = new RuleExecutionProgress
+        {
+            MatchedRuleIds = legacy == "matched" ? [rule.Id] : [],
+            CompletedRuleIds = legacy != "matched" ? [rule.Id] : [],
+            Diagnostics = new()
+        };
+        if (legacy == "no-match-diagnostic")
+        {
+            progress.Diagnostics.Add(new() { Code = RuleExecutionDiagnosticCode.NoMatch, RuleId = rule.Id });
+        }
+        storage.Execution = new()
+        {
+            ExecutionId = Guid.NewGuid(),
+            GameServerId = invocation.Trigger.GameServerId,
+            ConnectionId = invocation.Trigger.ConnectionId,
+            FeatureId = snapshot.FeatureId,
+            Trigger = invocation.Trigger,
+            FrozenRulesJson = snapshot.RulesJson,
+            DecisionSnapshotJson = JsonSerializer.Serialize(progress, RulesSerialization.Options)
+        };
+
+        await Create(storage, new Executor()).ProcessAsync(invocation, snapshot, default);
+
+        Assert.False(Progress(storage).MatchEvidence!.ObservedMatch);
+        Assert.False(Progress(storage).MatchEvidence!.NoMatchConfirmed);
+        Assert.Empty(Progress(storage).MatchEvidence!.FalseRuleIds);
+        Assert.Equal(RuleExecutionMatchStatus.Unknown, storage.Execution!.MatchStatus);
+    }
+
+    [Fact]
+    public async Task ExpiredUnevaluatedRulesDoNotBecomeFalseEvidence()
+    {
+        var storage = new Storage();
+        var invocation = Invocation();
+        var clock = new Clock(invocation.Trigger.OccurredAtUtc.AddMinutes(3));
+        var snapshot = Snapshot(WelcomeRule("expired", 0)) with
+        {
+            FeatureId = WelcomeFeatureRulesProvider.Id,
+            Timing = new() { ConnectionDelaySeconds = 0, FreshnessSeconds = 120 }
+        };
+
+        await Create(storage, new Executor(), clock: clock).ProcessAsync(invocation, snapshot, default);
+
+        Assert.False(Progress(storage).MatchEvidence!.ObservedMatch);
+        Assert.False(Progress(storage).MatchEvidence!.NoMatchConfirmed);
+        Assert.Empty(Progress(storage).MatchEvidence!.FalseRuleIds);
+        Assert.Equal(RuleExecutionMatchStatus.Unknown, storage.Execution!.MatchStatus);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task OnlyExplicitFalseForEveryEligibleRuleConfirmsNoMatch(bool enabled)
+    {
+        var storage = new Storage();
+        var invocation = Invocation();
+        var rule = Rule("false", 0);
+        rule.Enabled = enabled;
+
+        await Create(storage, new Executor()).ProcessAsync(invocation with
+        {
+            Facts = invocation.Facts with { GuidFirstSeenAtUtc = DateTimeOffset.UtcNow.AddDays(-1) }
+        }, Snapshot(rule), default);
+
+        Assert.False(Progress(storage).MatchEvidence!.ObservedMatch);
+        Assert.Equal(enabled, Progress(storage).MatchEvidence!.NoMatchConfirmed);
+        Assert.Equal(enabled ? RuleExecutionMatchStatus.NoMatch : RuleExecutionMatchStatus.Unknown,
+            storage.Execution!.MatchStatus);
+    }
+
+    [Fact]
+    public async Task FalseRuleFollowedByExpiredUnknownRuleRemainsUnconfirmed()
+    {
+        var storage = new Storage();
+        var invocation = Invocation();
+        var clock = new Clock(invocation.Trigger.OccurredAtUtc);
+        var first = WelcomeRule("false", 0);
+        first.Condition = Rule("false", 0).Condition;
+        var second = WelcomeRule("unknown", 1);
+        second.Condition = Rule("unknown", 1, "player.first-seen-ip").Condition;
+        var snapshot = Snapshot(first, second) with
+        {
+            FeatureId = WelcomeFeatureRulesProvider.Id,
+            Timing = new() { ConnectionDelaySeconds = 0, FreshnessSeconds = 120 }
+        };
+        var facts = invocation.Facts with { GuidFirstSeenAtUtc = DateTimeOffset.UtcNow.AddDays(-1) };
+
+        await Create(storage, new Executor(), clock: clock).ProcessAsync(invocation with { Facts = facts }, snapshot, default);
+        Assert.Equal(RuleFeatureExecutionState.Waiting, storage.Execution!.State);
+        Assert.Equal(["false"], Progress(storage).MatchEvidence!.FalseRuleIds);
+
+        clock.Now = invocation.Trigger.OccurredAtUtc.AddMinutes(3);
+        await Create(storage, new Executor(), clock: clock).ProcessAsync(invocation with { Facts = facts }, snapshot, default);
+
+        Assert.Equal(RuleFeatureExecutionState.Completed, storage.Execution.State);
+        Assert.False(Progress(storage).MatchEvidence!.NoMatchConfirmed);
+        Assert.Equal(["false"], Progress(storage).MatchEvidence!.FalseRuleIds);
+        Assert.Equal(RuleExecutionMatchStatus.Unknown, storage.Execution.MatchStatus);
+    }
+
+    [Fact]
+    public async Task RecordedMatchCannotBeDowngradedByLaterFalseEvidence()
+    {
+        var storage = new Storage();
+        var invocation = Invocation();
+        var snapshot = Snapshot(Rule("false", 0));
+        storage.Execution = new()
+        {
+            ExecutionId = Guid.NewGuid(),
+            GameServerId = invocation.Trigger.GameServerId,
+            ConnectionId = invocation.Trigger.ConnectionId,
+            FeatureId = snapshot.FeatureId,
+            Trigger = invocation.Trigger,
+            FrozenRulesJson = snapshot.RulesJson,
+            MatchStatus = RuleExecutionMatchStatus.Matched
+        };
+
+        await Create(storage, new Executor()).ProcessAsync(invocation with
+        {
+            Facts = invocation.Facts with { GuidFirstSeenAtUtc = DateTimeOffset.UtcNow.AddDays(-1) }
+        }, snapshot, default);
+
+        Assert.Equal(RuleExecutionMatchStatus.Matched, storage.Execution.MatchStatus);
+    }
+
+    private static RuleExecutionProgress Progress(Storage storage) =>
+        JsonSerializer.Deserialize<RuleExecutionProgress>(storage.Execution!.DecisionSnapshotJson!, RulesSerialization.Options)!;
+
+    [Theory]
     [InlineData("server-agent", 1)]
     [InlineData("cod4x-plugin", 0)]
     public async Task OriginalConnectionDelaySurvivesRestartAndConfigurationChanges(string runtimeId, int scheduledCount)
@@ -836,6 +1086,8 @@ public sealed class FeatureExecutionOrchestratorTests
         public bool FailOutcomes { get; set; }
         public bool ClaimAlreadyOwned { get; init; }
         public RuleExecutionDiagnostic[]? DiagnosticsAtClaim { get; private set; }
+        public bool MatchObservedAtClaim { get; private set; }
+        public RuleExecutionMatchStatus MatchStatusAtClaim { get; private set; }
 
         public Storage()
         {
@@ -866,6 +1118,15 @@ public sealed class FeatureExecutionOrchestratorTests
                 .Returns((Guid _, Guid _, UpdateRuleFeatureExecutionProgressDto request, CancellationToken _) =>
                 {
                     Assert.Equal(Execution!.Version, request.ExpectedVersion);
+                    if (request.MatchStatus is not (null or RuleExecutionMatchStatus.Unknown))
+                    {
+                        Assert.NotNull(request.DecisionSnapshotJson);
+                    }
+                    if (request.MatchStatus == RuleExecutionMatchStatus.NoMatch)
+                    {
+                        Assert.Equal(RuleFeatureExecutionState.Completed, request.State);
+                        Assert.NotEqual(RuleExecutionMatchStatus.Matched, Execution.MatchStatus);
+                    }
                     if (Execution.Actions.Any(action => action.Outcome is RuleActionExecutionOutcome.Claimed or RuleActionExecutionOutcome.Dispatched))
                     {
                         Assert.Equal(Execution.RuleIndex, request.RuleIndex);
@@ -879,6 +1140,8 @@ public sealed class FeatureExecutionOrchestratorTests
                         ActionIndex = request.ActionIndex,
                         State = request.State,
                         DecisionSnapshotJson = request.DecisionSnapshotJson,
+                        MatchStatus = request.MatchStatus is null or RuleExecutionMatchStatus.Unknown
+                            ? Execution.MatchStatus : request.MatchStatus.Value,
                         Coordination = request.Coordination,
                         Diagnostics = request.Diagnostics ?? Execution.Diagnostics
                     };
@@ -890,6 +1153,8 @@ public sealed class FeatureExecutionOrchestratorTests
                 {
                     Assert.Equal(Execution!.Version, request.ExpectedVersion);
                     DiagnosticsAtClaim = Execution.Diagnostics;
+                    MatchObservedAtClaim = Progress(this).MatchEvidence?.ObservedMatch is true;
+                    MatchStatusAtClaim = Execution.MatchStatus;
                     using var frozen = JsonDocument.Parse(Execution.FrozenRulesJson);
                     var frozenRule = frozen.RootElement.GetProperty("rules")[request.RuleIndex];
                     Assert.Equal(request.Command.Correlation.RuleId, frozenRule.GetProperty("id").GetString());

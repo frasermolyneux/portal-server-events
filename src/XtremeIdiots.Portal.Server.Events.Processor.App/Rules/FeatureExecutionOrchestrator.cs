@@ -27,6 +27,7 @@ internal interface IUniversalRuleActionExecutor
 
 internal sealed class RuleExecutionProgress
 {
+    public RuleMatchEvidence? MatchEvidence { get; set; }
     public HashSet<string> MatchedRuleIds { get; set; } = new(StringComparer.Ordinal);
     public HashSet<string> CompletedRuleIds { get; set; } = new(StringComparer.Ordinal);
     public HashSet<string> UnknownRuleIds { get; set; } = new(StringComparer.Ordinal);
@@ -41,6 +42,14 @@ internal sealed class RuleExecutionProgress
     public Dictionary<string, ActionExecutionResult> ActionOutcomes { get; set; } = new(StringComparer.Ordinal);
     public RuleExecutionDiagnostics? Diagnostics { get; set; }
     public Dictionary<string, DateTimeOffset> MessagePreparationExpiries { get; set; } = new(StringComparer.Ordinal);
+}
+
+internal sealed class RuleMatchEvidence
+{
+    public int Version { get; set; }
+    public bool ObservedMatch { get; set; }
+    public HashSet<string> FalseRuleIds { get; set; } = new(StringComparer.Ordinal);
+    public bool NoMatchConfirmed { get; set; }
 }
 
 internal sealed class RegisteredRuleFeature(
@@ -110,6 +119,11 @@ internal sealed class FeatureExecutionOrchestrator(
             ? new RuleExecutionProgress { Mode = configured.Mode, ExpiresAtUtc = configured.ExpiresAtUtc, Baseline = configured.Baseline }
             : JsonSerializer.Deserialize<RuleExecutionProgress>(execution.DecisionSnapshotJson, RulesSerialization.Options)
                 ?? throw new InvalidOperationException("Persisted rule progress is invalid.");
+        var matchEvidence = progress.MatchEvidence ??= new() { Version = 1 };
+        if (matchEvidence.Version != 1)
+        {
+            throw new InvalidOperationException("Persisted rule match evidence version is unsupported.");
+        }
         if (execution.State == RuleFeatureExecutionState.Waiting)
         {
             progress.WaitingReason = null;
@@ -207,6 +221,7 @@ internal sealed class FeatureExecutionOrchestrator(
                 progress.UnknownRuleIds.Remove(rule.Id);
                 if (match.Value == RuleTruthValue.False)
                 {
+                    matchEvidence.FalseRuleIds.Add(rule.Id);
                     progress.CompletedRuleIds.Add(rule.Id);
                     AddDiagnostic(RuleExecutionDiagnosticCode.NoMatch, rule.Id, detail: match.Diagnostic);
                     continue;
@@ -214,6 +229,7 @@ internal sealed class FeatureExecutionOrchestrator(
 
                 progress.WaitingReason = null;
 
+                matchEvidence.ObservedMatch = true;
                 progress.MatchedRuleIds.Add(rule.Id);
                 execution = await SaveProgressAsync(execution, progress, ruleIndex, 0,
                     RuleFeatureExecutionState.Evaluating, ct).ConfigureAwait(false);
@@ -404,6 +420,9 @@ internal sealed class FeatureExecutionOrchestrator(
             }
         }
 
+        var eligibleRules = rules.Where(rule => rule.Enabled).ToArray();
+        matchEvidence.NoMatchConfirmed = !matchEvidence.ObservedMatch && eligibleRules.Length != 0 &&
+            eligibleRules.All(rule => matchEvidence.FalseRuleIds.Contains(rule.Id));
         await SaveProgressAsync(execution, progress, rules.Length, 0,
             progress.UnknownRuleIds.Count == 0 ? RuleFeatureExecutionState.Completed : RuleFeatureExecutionState.Evaluating, ct).ConfigureAwait(false);
         return execution.ExecutionId;
@@ -477,6 +496,12 @@ internal sealed class FeatureExecutionOrchestrator(
                 ActionIndex = actionIndex,
                 State = state,
                 DecisionSnapshotJson = JsonSerializer.Serialize(progress, RulesSerialization.Options),
+                MatchStatus = execution.MatchStatus == RuleExecutionMatchStatus.Matched ||
+                    progress.MatchEvidence?.ObservedMatch is true
+                    ? RuleExecutionMatchStatus.Matched
+                    : state == RuleFeatureExecutionState.Completed && progress.MatchEvidence?.NoMatchConfirmed is true
+                        ? RuleExecutionMatchStatus.NoMatch
+                        : null,
                 FactSnapshotId = execution.FactSnapshotId,
                 Coordination = execution.Coordination is { } coordination
                     ? coordination with { WaitingReason = progress.WaitingReason }

@@ -60,6 +60,12 @@ are persisted before the corresponding action is frozen or claimed; waiting
 markers clear on resume. The projection contains at most 256 entries and reports
 an exact count of any omitted diagnostics.
 
+The feature-level match status is `Matched` only after a rule's aggregate
+condition evaluates true. `NoMatch` requires at least one enabled rule and
+explicit false results for every enabled rule in the frozen ruleset. Unknown,
+expired, unevaluated, and legacy evidence does not establish a match status.
+Match status does not establish that an action succeeded.
+
 Message actions append `messages` after an optional `message`. Rendering precedes
 channel-aware splitting. The complete ordered recipient/item/fragment plan is
 persisted before the first send and is never rerendered or resegmented on retry.
