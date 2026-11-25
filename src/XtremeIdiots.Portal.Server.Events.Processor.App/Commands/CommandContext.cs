@@ -15,6 +15,9 @@ public sealed record CommandContext
     public required DateTime EventPublishedUtc { get; init; }
     public required long SequenceId { get; init; }
     public string? SourceMessageId { get; init; }
+    public DateTimeOffset? ResponseDeadlineUtc { get; init; }
+    public DateTimeOffset ResponseDeadline => ResponseDeadlineUtc ??
+        new DateTimeOffset(DateTime.SpecifyKind(EventGeneratedUtc, DateTimeKind.Utc)).AddSeconds(5);
 
     /// <summary>
     /// The player's Repository API ID (resolved from GameType + PlayerGuid).

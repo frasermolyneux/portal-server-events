@@ -120,7 +120,6 @@ public sealed class ChatCommandProcessor : IChatCommandProcessor
         _logger.LogInformation("Command {CommandPrefix} matched for player {Username} on server {ServerId}",
             command.Prefix, context.Username, context.ServerId);
 
-        var dispatchTimestamp = _clock.UtcNow;
         var commandSettings = await _settingsProvider
             .GetEffectiveSettingsAsync(context.ServerId, command.Metadata.Name, command.Metadata.IsMutating, ct)
             .ConfigureAwait(false);
@@ -136,7 +135,7 @@ public sealed class ChatCommandProcessor : IChatCommandProcessor
         }
 
         var threshold = TimeSpan.FromSeconds(Math.Max(0, commandSettings.FreshnessSeconds));
-        var age = dispatchTimestamp - context.EventGeneratedUtc;
+        var age = _clock.UtcNow - context.EventGeneratedUtc;
         if (age > threshold)
         {
             _logger.LogInformation(
@@ -160,6 +159,12 @@ public sealed class ChatCommandProcessor : IChatCommandProcessor
             return CommandResult.Failed("Command expired. Please run it again.");
         }
 
+        context = context with
+        {
+            ResponseDeadlineUtc = new DateTimeOffset(DateTime.SpecifyKind(context.EventGeneratedUtc, DateTimeKind.Utc))
+                .Add(threshold)
+        };
+
         var authorizationResult = await _authorizationService.AuthorizeAsync(new CommandAuthorizationContext
         {
             CommandPrefix = command.Prefix,
@@ -182,13 +187,13 @@ public sealed class ChatCommandProcessor : IChatCommandProcessor
                 context.SlotId,
                 denialMessage,
                 context.Username,
-                context.EventGeneratedUtc,
+                context.ResponseDeadlineUtc.Value,
                 ct).ConfigureAwait(false);
 
             if (!denialSent)
             {
                 _logger.LogWarning(
-                    "Private authorization denial response not delivered for {Username} on server {ServerId} (player {PlayerGuid}, slot {SlotId})",
+                    "Private authorization denial response dispatch not confirmed for {Username} on server {ServerId} (player {PlayerGuid}, slot {SlotId})",
                     context.Username,
                     context.ServerId,
                     context.PlayerGuid,

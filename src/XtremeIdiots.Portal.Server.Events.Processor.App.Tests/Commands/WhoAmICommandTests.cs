@@ -49,7 +49,7 @@ public class WhoAmICommandTests
                 It.IsAny<int>(),
                 It.IsAny<string>(),
                 It.IsAny<string?>(),
-                It.IsAny<DateTime>(),
+                It.IsAny<DateTimeOffset>(),
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(true);
 
@@ -99,7 +99,7 @@ public class WhoAmICommandTests
 
         Assert.True(result.Handled);
         Assert.True(result.Success);
-        Assert.Equal("WhoAmI response delivered.", result.ResponseMessage);
+        Assert.Equal("WhoAmI response dispatch accepted.", result.ResponseMessage);
 
         _rconResponseService.Verify(x => x.TryTellAsync(
             TestServerId,
@@ -108,7 +108,7 @@ public class WhoAmICommandTests
             7,
             "Your name is ProfileName, ip is 203.0.113.50, location is London, United Kingdom, your roles are GameAdmin, HeadAdmin.",
             "PlayerFromChat",
-            It.IsAny<DateTime>(),
+            It.IsAny<DateTimeOffset>(),
             It.IsAny<CancellationToken>()), Times.Once);
     }
 
@@ -130,7 +130,7 @@ public class WhoAmICommandTests
             7,
             "Usage: !whoami",
             "PlayerFromChat",
-            It.IsAny<DateTime>(),
+            It.IsAny<DateTimeOffset>(),
             It.IsAny<CancellationToken>()), Times.Once);
     }
 
@@ -159,7 +159,7 @@ public class WhoAmICommandTests
 
         Assert.True(result.Handled);
         Assert.True(result.Success);
-        Assert.Equal("WhoAmI response delivered.", result.ResponseMessage);
+        Assert.Equal("WhoAmI response dispatch accepted.", result.ResponseMessage);
 
         _rconResponseService.Verify(x => x.TryTellAsync(
             TestServerId,
@@ -168,7 +168,7 @@ public class WhoAmICommandTests
             7,
             "Your name is ProfileName, ip is 198.51.100.10, location is unknown, your roles are none.",
             "PlayerFromChat",
-            It.IsAny<DateTime>(),
+            It.IsAny<DateTimeOffset>(),
             It.IsAny<CancellationToken>()), Times.Once);
     }
 
@@ -220,7 +220,7 @@ public class WhoAmICommandTests
                 It.IsAny<int>(),
                 It.IsAny<string>(),
                 It.IsAny<string?>(),
-                It.IsAny<DateTime>(),
+                It.IsAny<DateTimeOffset>(),
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(false);
 

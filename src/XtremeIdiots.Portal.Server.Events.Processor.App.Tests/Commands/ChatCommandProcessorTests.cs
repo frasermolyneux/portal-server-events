@@ -34,7 +34,7 @@ public class ChatCommandProcessorTests
                 It.IsAny<int>(),
                 It.IsAny<string>(),
                 It.IsAny<string?>(),
-                It.IsAny<DateTime>(),
+                It.IsAny<DateTimeOffset>(),
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(true);
 
@@ -311,7 +311,7 @@ public class ChatCommandProcessorTests
                 It.IsAny<int>(),
             "You are not authorized to use this command.",
             It.IsAny<string?>(),
-            It.IsAny<DateTime>(),
+            It.IsAny<DateTimeOffset>(),
             It.IsAny<CancellationToken>()), Times.Once);
     }
 
@@ -504,7 +504,79 @@ public class ChatCommandProcessorTests
         var result = await sut.ProcessAsync(CreateContext("!test") with { EventGeneratedUtc = now.AddSeconds(-8) });
 
         Assert.True(result.Success);
+        command.Verify(c => c.ExecuteAsync(
+            It.Is<CommandContext>(ctx => ctx.ResponseDeadlineUtc == new DateTimeOffset(now.AddSeconds(2))),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task ProcessAsync_WhenSettingsLookupExhaustsFreshness_DoesNotExecute()
+    {
+        var eventTime = new DateTime(2026, 6, 3, 10, 0, 0, DateTimeKind.Utc);
+        _clock.SetupGet(x => x.UtcNow).Returns(eventTime.AddSeconds(1));
+        _settingsProvider
+            .Setup(x => x.GetEffectiveSettingsAsync(It.IsAny<Guid>(), "test", false, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() =>
+            {
+                _clock.SetupGet(x => x.UtcNow).Returns(eventTime.AddSeconds(6));
+                return new EffectiveChatCommandSettings
+                {
+                    CommandName = "test",
+                    Enabled = true,
+                    FreshnessSeconds = 5,
+                    EnabledSource = SettingsValueSource.Hardcoded,
+                    FreshnessSource = SettingsValueSource.Hardcoded,
+                    AuthorizationSource = SettingsValueSource.Hardcoded,
+                    PayloadSource = SettingsValueSource.Hardcoded
+                };
+            });
+        var command = new Mock<IChatCommand>();
+        command.Setup(c => c.Prefix).Returns("!test");
+        command.Setup(c => c.Metadata).Returns(new ChatCommandMetadata { Name = "test", Prefix = "!test", Usage = "!test" });
+        var sut = new ChatCommandProcessor([command.Object], _parser, _authorizationService.Object, _idempotencyStore.Object, _clock.Object, _settingsProvider.Object, _rconResponseService.Object, _auditLogger.Object, _logger.Object);
+
+        var result = await sut.ProcessAsync(CreateContext() with { EventGeneratedUtc = eventTime });
+
+        Assert.False(result.Success);
+        Assert.Equal("Command expired. Please run it again.", result.ResponseMessage);
+        command.Verify(c => c.ExecuteAsync(It.IsAny<CommandContext>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task ProcessAsync_WhenRedeliveredAfterDeadline_DoesNotRestartFreshness()
+    {
+        var eventTime = new DateTime(2026, 6, 3, 10, 0, 0, DateTimeKind.Utc);
+        _clock.SetupSequence(x => x.UtcNow).Returns(eventTime.AddSeconds(1)).Returns(eventTime.AddSeconds(6));
+        var command = new Mock<IChatCommand>();
+        command.Setup(c => c.Prefix).Returns("!test");
+        command.Setup(c => c.Metadata).Returns(new ChatCommandMetadata { Name = "test", Prefix = "!test", Usage = "!test" });
+        command.Setup(c => c.ExecuteAsync(It.IsAny<CommandContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(CommandResult.Ok());
+        var sut = new ChatCommandProcessor([command.Object], _parser, _authorizationService.Object, _idempotencyStore.Object, _clock.Object, _settingsProvider.Object, _rconResponseService.Object, _auditLogger.Object, _logger.Object);
+        var context = CreateContext() with { EventGeneratedUtc = eventTime };
+
+        Assert.True((await sut.ProcessAsync(context)).Success);
+        Assert.False((await sut.ProcessAsync(context)).Success);
         command.Verify(c => c.ExecuteAsync(It.IsAny<CommandContext>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task ProcessAsync_WhenDenied_UsesOriginalEventDeadline()
+    {
+        var eventTime = new DateTime(2026, 6, 3, 10, 0, 0, DateTimeKind.Utc);
+        _clock.SetupGet(x => x.UtcNow).Returns(eventTime.AddSeconds(2));
+        _authorizationService.Setup(x => x.AuthorizeAsync(It.IsAny<CommandAuthorizationContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(CommandAuthorizationResult.Deny("Denied"));
+        var command = new Mock<IChatCommand>();
+        command.Setup(c => c.Prefix).Returns("!test");
+        command.Setup(c => c.Metadata).Returns(new ChatCommandMetadata { Name = "test", Prefix = "!test", Usage = "!test" });
+        var sut = new ChatCommandProcessor([command.Object], _parser, _authorizationService.Object, _idempotencyStore.Object, _clock.Object, _settingsProvider.Object, _rconResponseService.Object, _auditLogger.Object, _logger.Object);
+
+        await sut.ProcessAsync(CreateContext() with { EventGeneratedUtc = eventTime });
+
+        _rconResponseService.Verify(x => x.TryTellAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<string>(),
+            It.IsAny<int>(), It.IsAny<string>(), It.IsAny<string?>(), new DateTimeOffset(eventTime.AddSeconds(5)),
+            It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -618,7 +690,7 @@ public class ChatCommandProcessorTests
                 It.IsAny<int>(),
             "Available commands: !commands, !register",
             It.IsAny<string?>(),
-            It.IsAny<DateTime>(),
+            It.IsAny<DateTimeOffset>(),
             It.IsAny<CancellationToken>()), Times.Once);
     }
 

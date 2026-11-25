@@ -110,7 +110,7 @@ public class MapVoteDislikeCommandTests
                 TestServerId,
                 It.IsAny<string>(),
                 It.IsAny<string>(),
-                It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
+                It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(true);
 
         var result = await _sut.ExecuteAsync(CreateContext());
@@ -126,7 +126,7 @@ public class MapVoteDislikeCommandTests
             TestServerId,
                 It.IsAny<string>(),
             It.Is<string>(s => s.StartsWith("^1[ServerBot]^7 ") && s.Contains("DISLIKE")),
-            It.IsAny<DateTime>(),
+            It.IsAny<DateTimeOffset>(),
             It.IsAny<CancellationToken>()), Times.Once);
     }
 
@@ -188,7 +188,7 @@ public class MapVoteDislikeCommandTests
             TestServerId,
                 It.IsAny<string>(),
             It.Is<string>(s => s.Contains("DISLIKE")),
-            It.IsAny<DateTime>(),
+            It.IsAny<DateTimeOffset>(),
             It.IsAny<CancellationToken>()), Times.Once);
     }
 
@@ -210,7 +210,7 @@ public class MapVoteDislikeCommandTests
                 TestServerId,
                 It.IsAny<string>(),
                 It.IsAny<string>(),
-                It.IsAny<DateTime>(), It.IsAny<CancellationToken>()))
+                It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(false);
 
         var result = await _sut.ExecuteAsync(CreateContext());

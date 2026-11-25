@@ -98,8 +98,15 @@ public abstract class MapVoteCommandBase : IChatCommand
 
         var mapId = repoMapResult.Result.Data.MapId;
 
-        await _repositoryClient.Maps.V1.UpsertMapVote(
+        var voteResult = await _repositoryClient.Maps.V1.UpsertMapVote(
             new UpsertMapVoteDto(mapId, context.PlayerId.Value, context.ServerId, like: IsLike), ct);
+
+        if (voteResult is null || !voteResult.IsSuccess)
+        {
+            _logger.LogWarning("Map vote could not be recorded for server {ServerId}: {StatusCode}",
+                context.ServerId, voteResult?.StatusCode);
+            return CommandResult.Failed("Unable to record the map vote.");
+        }
 
         _auditLogger.LogAudit(AuditEvent.ServerAction("MapVoteRecorded", AuditAction.Create)
             .WithGameContext(context.GameType, context.ServerId)
@@ -112,14 +119,19 @@ public abstract class MapVoteCommandBase : IChatCommand
         var agentNamePrefix = await AgentNamePrefixResolver.ResolveAsync(_repositoryClient, _logger, context.ServerId, ct).ConfigureAwait(false);
         var responseMessage = BuildPrefixedMessage(agentNamePrefix, FormatRconMessage(context.Username));
 
-        await _rconService.TrySayAsync(
+        var responseSent = await _rconService.TrySayAsync(
             context.ServerId,
             context.GameType,
             responseMessage,
-            context.EventGeneratedUtc,
+            context.ResponseDeadline,
             ct);
 
-        return CommandResult.Ok();
+        if (!responseSent)
+        {
+            _logger.LogWarning("Map vote recorded for server {ServerId}, but response dispatch was not confirmed", context.ServerId);
+        }
+
+        return CommandResult.Ok(responseSent ? null : "Vote recorded; response dispatch was not confirmed.");
     }
 
     private static string BuildPrefixedMessage(string agentNamePrefix, string message)
