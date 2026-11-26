@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text;
 using System.Text.Json;
 
 using Microsoft.Extensions.Logging.Abstractions;
@@ -10,6 +11,7 @@ using MX.Api.Abstractions;
 using XtremeIdiots.Portal.Integrations.Servers.Abstractions.Models.V1.Rcon;
 using XtremeIdiots.Portal.Integrations.Servers.Api.Client.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Interfaces.V1;
+using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.Configurations;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.RulesEngine;
 using XtremeIdiots.Portal.Repository.Api.Client.V1;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Rules;
@@ -70,11 +72,182 @@ public sealed class RuleMessageDeliveryServiceTests
         servers.VerifyNoOtherCalls();
     }
 
+    [Theory]
+    [InlineData("message.public", "^2[ServerBot]^7 Hello", RuleNativeEffectType.PublicMessage)]
+    [InlineData("message.private", "^5(PM)^7 ^2[ServerBot]^7 Hello", RuleNativeEffectType.PrivateMessage)]
+    public async Task NativeMessagesUseConfiguredPrefixAndPreserveDeliveryChannel(
+        string actionType, string expected, RuleNativeEffectType effectType)
+    {
+        var fixture = new Fixture(native: true) { Budget = new(new("native", 149)) };
+        fixture.Action.TypeId = actionType;
+        fixture.Action.Parameters["message"] = JsonSerializer.SerializeToElement("Hello");
+
+        await fixture.FinishAsync();
+
+        var sent = Assert.Single(fixture.Sent);
+        Assert.Equal(expected, sent.Effect.Message);
+        Assert.Equal(effectType, sent.Effect.Type);
+    }
+
+    [Fact]
+    public async Task MessagesWithoutCodColoursUsePlainPublicHeader()
+    {
+        var fixture = new Fixture
+        {
+            Budget = new(new MessageChannelBudget("source", 149) { UseCodColorCodes = false })
+        };
+        fixture.Action.TypeId = "message.public";
+        fixture.Action.Parameters["message"] = JsonSerializer.SerializeToElement("Hello");
+
+        await fixture.FinishAsync();
+
+        Assert.Equal("[ServerBot] Hello", Assert.Single(fixture.Sent).Effect.Message);
+    }
+
+    [Fact]
+    public async Task NativeMessagesUseGlobalNameWhenServerHasNoOverride()
+    {
+        var fixture = new Fixture(native: true)
+        {
+            Budget = new(new("native", 149)),
+            ServerAgentName = null
+        };
+        fixture.Action.TypeId = "message.public";
+        fixture.Action.Parameters["message"] = JsonSerializer.SerializeToElement("Hello");
+
+        await fixture.FinishAsync();
+
+        Assert.Equal("^5[GlobalBot]^7 Hello", Assert.Single(fixture.Sent).Effect.Message);
+    }
+
+    [Theory]
+    [InlineData("message.public", "^2[ServerBot]^7 Hello", "^2[ServerBot]^7 ^2[ServerBot]^7 Hello")]
+    [InlineData("message.private", "^2[ServerBot]^7 Hello", "^5(PM)^7 ^2[ServerBot]^7 ^2[ServerBot]^7 Hello")]
+    [InlineData("message.private", "^5(PM)^7 ^2[ServerBot]^7 Hello", "^5(PM)^7 ^2[ServerBot]^7 ^5(PM)^7 ^2[ServerBot]^7 Hello")]
+    public async Task NativeMessagesPreserveLiteralTemplateTextAfterStructuralPrefix(
+        string actionType, string message, string expected)
+    {
+        var fixture = new Fixture(native: true) { Budget = new(new("native", 149)) };
+        fixture.Action.TypeId = actionType;
+        fixture.Action.Parameters["message"] = JsonSerializer.SerializeToElement(message);
+
+        await fixture.FinishAsync();
+
+        Assert.Equal(expected, Assert.Single(fixture.Sent).Effect.Message);
+    }
+
+    [Fact]
+    public async Task NativeTaggedMessagesPrefixEachItemOnceForEveryRecipient()
+    {
+        const string header = "^5(PM)^7 ^2[ServerBot]^7 ";
+        const int payloadLimit = 30;
+        var fixture = new Fixture(tagged: true, native: true) { Budget = new(new("native", payloadLimit)) };
+        var first = fixture.Recipient();
+        var second = fixture.Recipient();
+        fixture.Audience = fixture.Audience with { Recipients = [first, second] };
+        var firstBodyBytes = payloadLimit - Encoding.UTF8.GetByteCount(header);
+        var body = new string('x', firstBodyBytes + 3);
+        fixture.Action.Parameters["message"] = JsonSerializer.SerializeToElement(body);
+        fixture.Action.Parameters["messages"] = JsonSerializer.SerializeToElement(new[] { "tail" });
+
+        await fixture.FinishAsync();
+
+        Assert.Equal(6, fixture.Sent.Count);
+        foreach (var recipient in new[] { first, second })
+        {
+            var commands = fixture.Sent.Where(command => command.RecipientTarget!.ConnectionId == recipient.ConnectionId).ToArray();
+            Assert.Equal(
+                [header + body[..firstBodyBytes], "^7" + body[firstBodyBytes..], header + "tail"],
+                commands.Select(command => command.Effect.Message));
+            Assert.Equal([(0, 0), (0, 1), (1, 0)],
+                commands.Select(command => (command.DeliveryIdentity!.MessageIndex, command.DeliveryIdentity.FragmentIndex)));
+            Assert.All(commands, command => Assert.Equal(RuleNativeEffectType.PrivateMessage, command.Effect.Type));
+            Assert.All(commands, command => Assert.InRange(Encoding.UTF8.GetByteCount(command.Effect.Message!), 1, payloadLimit));
+        }
+    }
+
+    [Theory]
+    [InlineData(0, 1)]
+    [InlineData(1, 2)]
+    public async Task RuleMessageHeaderAndProviderReservationRespectExactByteLimit(int excessBytes, int fragments)
+    {
+        const string header = "^5(PM)^7 ^2[ServerBot]^7 ";
+        const int payloadLimit = 149;
+        const int reservedBytes = 5;
+        var fixture = new Fixture
+        {
+            Budget = new(new("rcon", payloadLimit, ReservedPrefixUtf8Bytes: reservedBytes))
+        };
+        var availableBodyBytes = payloadLimit - reservedBytes - Encoding.UTF8.GetByteCount(header);
+        fixture.Action.Parameters["message"] = JsonSerializer.SerializeToElement(new string('x', availableBodyBytes + excessBytes));
+
+        await fixture.FinishAsync();
+
+        Assert.Equal(fragments, fixture.Sent.Count);
+        Assert.Equal(header + new string('x', availableBodyBytes), fixture.Sent[0].Effect.Message);
+        Assert.Equal(payloadLimit, Encoding.UTF8.GetByteCount(fixture.Sent[0].Effect.Message!) + reservedBytes);
+        Assert.All(fixture.Sent, command =>
+            Assert.InRange(Encoding.UTF8.GetByteCount(command.Effect.Message!) + reservedBytes, 1, payloadLimit));
+        if (excessBytes != 0)
+        {
+            Assert.Equal("^7x", fixture.Sent[1].Effect.Message);
+        }
+    }
+
+    [Fact]
+    public async Task NativeMessagePreservesUtf8AndActiveColourAcrossFragments()
+    {
+        const string header = "^5(PM)^7 ^2[ServerBot]^7 ";
+        var fixture = new Fixture(native: true)
+        {
+            Budget = new(new("native", Encoding.UTF8.GetByteCount(header) + 8))
+        };
+        fixture.Action.Parameters["message"] = JsonSerializer.SerializeToElement("^1éééééé");
+
+        await fixture.FinishAsync();
+
+        Assert.Equal([header + "^1ééé", "^1ééé"], fixture.Sent.Select(command => command.Effect.Message));
+    }
+
+    [Fact]
+    public async Task NativeMessageRejectsHeaderWithoutRoomForBodyBeforeDispatch()
+    {
+        const string header = "^5(PM)^7 ^2[ServerBot]^7 ";
+        var fixture = new Fixture(native: true) { Budget = new(new("native", Encoding.UTF8.GetByteCount(header))) };
+
+        var result = await fixture.DispatchAsync();
+
+        Assert.Equal(ActionExecutionOutcome.SkippedUnsupported, result.Outcome!.Outcome);
+        Assert.Empty(fixture.Sent);
+        Assert.Empty(fixture.Execution.PreparedActions);
+    }
+
+    [Fact]
+    public async Task NativeMessageKeepsFrozenPrefixAndFragmentsWhenSettingsChangeDuringResume()
+    {
+        const string header = "^5(PM)^7 ^2[ServerBot]^7 ";
+        var fixture = new Fixture(native: true)
+        {
+            Budget = new(new("native", Encoding.UTF8.GetByteCount(header) + 5))
+        };
+        fixture.Action.Parameters["message"] = JsonSerializer.SerializeToElement("abcdefgh");
+
+        var first = await fixture.DispatchAsync();
+        fixture.ServerAgentName = "^3[ChangedBot]^7";
+        await fixture.FinishAsync();
+
+        Assert.NotNull(first.ResumeAtUtc);
+        Assert.Equal([header + "abcde", "^7fgh"], fixture.Sent.Select(command => command.Effect.Message));
+        Assert.Equal(1, fixture.Preparations);
+        Assert.Equal(fixture.Sent.Select(command => command.Effect.Message),
+            Assert.Single(fixture.Execution.PreparedActions).Commands.Select(command => command.Effect.Message));
+    }
+
     [Fact]
     public async Task UnsafeLocalizationInLaterItemIsRejectedBeforeAnyFragmentDispatch()
     {
         var fixture = new Fixture();
-        fixture.Budget = new(new("test", 4), Constraints: new() { DisallowLocalizationInserts = true });
+        fixture.Budget = new(new("test", 40), Constraints: new() { DisallowLocalizationInserts = true });
         fixture.Action.Parameters["message"] = JsonSerializer.SerializeToElement("safe");
         fixture.Action.Parameters["messages"] = JsonSerializer.SerializeToElement(new[] { "ab&&1" });
 
@@ -94,7 +267,7 @@ public sealed class RuleMessageDeliveryServiceTests
     public async Task TransportConstraintsRejectAnyUnsafeItemBeforeDispatch(string unsafeText, bool asciiOnly, string forbidden)
     {
         var fixture = new Fixture();
-        fixture.Budget = new(new("test", 8), Constraints: new()
+        fixture.Budget = new(new("test", 40), Constraints: new()
         {
             AsciiOnly = asciiOnly,
             ControlsDisallowed = true,
@@ -114,7 +287,7 @@ public sealed class RuleMessageDeliveryServiceTests
     public async Task UnsafeExpandedTextIsTerminalRatherThanRetried()
     {
         var fixture = new Fixture();
-        fixture.Budget = new(new("rcon", 8, RconSafePrintableAscii: true));
+        fixture.Budget = new(new("rcon", 40, RconSafePrintableAscii: true));
         fixture.Action.Parameters["message"] = JsonSerializer.SerializeToElement("bad;");
 
         var result = await fixture.DispatchAsync();
@@ -131,7 +304,7 @@ public sealed class RuleMessageDeliveryServiceTests
         fixture.Action.Parameters["message"] = JsonSerializer.SerializeToElement("good");
         fixture.Action.Parameters["messages"] = JsonSerializer.SerializeToElement(new[] { "bad;" });
         fixture.Executor.Setup(item => item.AvailabilityAsync(It.IsAny<RuleActionDefinition>(),
-                It.Is<RuleActionCommand>(command => command.Effect.Message == "bad;"),
+                It.Is<RuleActionCommand>(command => command.Effect.Message!.EndsWith("bad;")),
                 It.IsAny<RuleInvocation>(), It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new ActionAvailability(Unavailable: new(ActionExecutionOutcome.SkippedUnsupported, "Unsafe text.")));
 
@@ -156,11 +329,12 @@ public sealed class RuleMessageDeliveryServiceTests
         await fixture.FinishAsync();
         await fixture.DispatchAsync();
 
-        Assert.Equal(["abcd", "efgh", "tail"], fixture.Sent.Select(item => item.Effect.Message));
+        Assert.Equal(["^5(PM)^7 ^2[ServerBot]^7 abcd", "^7efgh", "^5(PM)^7 ^2[ServerBot]^7 tail"],
+            fixture.Sent.Select(item => item.Effect.Message));
         Assert.Equal(1, fixture.Preparations);
         Assert.Equal(3, fixture.Execution.Actions.Select(item => item.LogicalEffectId).Distinct().Count());
         Assert.All(fixture.Sent, command => Assert.Equal(command.DeliveryIdentity!.ToLogicalEffectId(), command.LogicalEffectId));
-        Assert.Equal(["abcd", "efgh", "tail"],
+        Assert.Equal(["^5(PM)^7 ^2[ServerBot]^7 abcd", "^7efgh", "^5(PM)^7 ^2[ServerBot]^7 tail"],
             Assert.Single(fixture.Execution.PreparedActions).Commands.Select(item => item.Effect.Message));
     }
 
@@ -235,7 +409,7 @@ public sealed class RuleMessageDeliveryServiceTests
         var waiting = await fixture.DispatchAsync();
         fixture.Clock.Now = deadline;
         fixture.Progress.ExpiresAtUtc = deadline.AddMinutes(2);
-        fixture.Budget = new(new("test", 4));
+        fixture.Budget = new(new("test", 29));
         var expired = await fixture.DispatchAsync();
 
         Assert.NotNull(waiting.ResumeAtUtc);
@@ -260,7 +434,7 @@ public sealed class RuleMessageDeliveryServiceTests
 
         await fixture.FinishAsync();
 
-        Assert.Equal(["abcd", "efgh"], fixture.Sent.Select(item => item.Effect.Message));
+        Assert.Equal(["^5(PM)^7 ^2[ServerBot]^7 abcd", "^7efgh"], fixture.Sent.Select(item => item.Effect.Message));
         Assert.All(fixture.Sent, command =>
         {
             Assert.Equal(current.ConnectionId, command.RecipientTarget!.ConnectionId);
@@ -458,7 +632,8 @@ public sealed class RuleMessageDeliveryServiceTests
         public RuleTextDiagnostic[] TextDiagnostics { get; init; } = [];
         public RuleExecutionDiagnostic[]? DiagnosticsAtPreparation { get; private set; }
         public RuleExecutionProgress Progress => progress;
-        public RuleMessageBudgetResult Budget { get; set; } = new(new("test", 4));
+        public RuleMessageBudgetResult Budget { get; set; } = new(new("test", 29));
+        public string? ServerAgentName { get; set; } = "^2[ServerBot]^7";
         public RuleActionDefinition Action { get; } = new()
         {
             Id = "action",
@@ -469,7 +644,7 @@ public sealed class RuleMessageDeliveryServiceTests
         private readonly RuleInvocation invocation;
         private readonly RuleExecutionProgress progress;
 
-        public Fixture(bool tagged = false)
+        public Fixture(bool tagged = false, bool native = false)
         {
             Execution = new()
             {
@@ -480,7 +655,13 @@ public sealed class RuleMessageDeliveryServiceTests
                 Trigger = new() { OccurredAtUtc = Clock.Now },
                 FrozenRulesJson = "{}"
             };
-            invocation = new(new(), new(), null);
+            invocation = native
+                ? new(new()
+                {
+                    GameServerId = Execution.GameServerId,
+                    Runtime = new() { Id = "cod4x-plugin", Capabilities = ["cod4x.chat.fragments"] }
+                }, new(), null)
+                : new(new(), new(), null);
             progress = new() { Mode = RuleExecutionMode.Enforce, ExpiresAtUtc = Clock.Now.AddSeconds(120) };
             Audience = new()
             {
@@ -498,6 +679,20 @@ public sealed class RuleMessageDeliveryServiceTests
             var versions = new Mock<IVersionedRuleExecutionsApi>();
             versions.Setup(item => item.V1).Returns(api.Object);
             repository.Setup(item => item.RuleExecutions).Returns(versions.Object);
+            var globalConfigurations = new Mock<IGlobalConfigurationsApi>();
+            var globalConfigurationVersions = new Mock<IVersionedGlobalConfigurationsApi>();
+            globalConfigurationVersions.Setup(item => item.V1).Returns(globalConfigurations.Object);
+            repository.Setup(item => item.GlobalConfigurations).Returns(globalConfigurationVersions.Object);
+            globalConfigurations.Setup(item => item.GetConfigurations(It.IsAny<CancellationToken>()))
+                .Returns(() => Task.FromResult(Ok(new CollectionModel<ConfigurationDto>(
+                    [AgentConfiguration("^5[GlobalBot]^7")]))));
+            var serverConfigurations = new Mock<IGameServerConfigurationsApi>();
+            var serverConfigurationVersions = new Mock<IVersionedGameServerConfigurationsApi>();
+            serverConfigurationVersions.Setup(item => item.V1).Returns(serverConfigurations.Object);
+            repository.Setup(item => item.GameServerConfigurations).Returns(serverConfigurationVersions.Object);
+            serverConfigurations.Setup(item => item.GetConfigurations(Execution.GameServerId, It.IsAny<CancellationToken>()))
+                .Returns(() => Task.FromResult(Ok(new CollectionModel<ConfigurationDto>(
+                    [AgentConfiguration(ServerAgentName)]))));
             api.Setup(item => item.GetExecution(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
                 .Returns(() => Task.FromResult(Ok(Execution)));
             api.Setup(item => item.GetConnectionExecutions(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
@@ -647,6 +842,15 @@ public sealed class RuleMessageDeliveryServiceTests
                 Clock.Now = result.ResumeAtUtc.Value;
             }
             Assert.Fail("Message plan did not finish within its expected fragment count.");
+        }
+
+        private static ConfigurationDto AgentConfiguration(string? agentName)
+        {
+            var configuration = new ConfigurationDto();
+            typeof(ConfigurationDto).GetProperty(nameof(ConfigurationDto.Namespace))!.SetValue(configuration, "agent");
+            typeof(ConfigurationDto).GetProperty(nameof(ConfigurationDto.Configuration))!.SetValue(configuration,
+                JsonSerializer.Serialize(new { agentName }));
+            return configuration;
         }
 
         private static ApiResult<T> Ok<T>(T value) => new(HttpStatusCode.OK, new ApiResponse<T>(value));

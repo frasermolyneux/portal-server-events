@@ -1,4 +1,6 @@
+using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 using Moq;
 
@@ -7,6 +9,9 @@ using MX.Api.Abstractions;
 using XtremeIdiots.Portal.Integrations.Servers.Abstractions.Interfaces.V1;
 using XtremeIdiots.Portal.Integrations.Servers.Abstractions.Models.V1.Rcon;
 using XtremeIdiots.Portal.Integrations.Servers.Api.Client.V1;
+using XtremeIdiots.Portal.Repository.Abstractions.Interfaces.V1;
+using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.Configurations;
+using XtremeIdiots.Portal.Repository.Api.Client.V1;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Commands;
 
 namespace XtremeIdiots.Portal.Server.Events.Processor.App.Tests.Commands;
@@ -22,6 +27,11 @@ public class RconResponseServiceTests
     private readonly Mock<ICod5RconApi> _cod5RconApi = new();
     private readonly Mock<IVersionedCoD4xRconApi> _versionedCoD4xRconApi = new();
     private readonly Mock<ICoD4xRconApi> _coD4xRconApi = new();
+    private readonly Mock<IRepositoryApiClient> _repositoryClient = new();
+    private readonly Mock<IVersionedGlobalConfigurationsApi> _versionedGlobalConfigs = new();
+    private readonly Mock<IGlobalConfigurationsApi> _globalConfigsApi = new();
+    private readonly Mock<IVersionedGameServerConfigurationsApi> _versionedServerConfigs = new();
+    private readonly Mock<IGameServerConfigurationsApi> _serverConfigsApi = new();
     private readonly Mock<ILogger<RconResponseService>> _logger = new();
     private readonly RconResponseService _sut;
 
@@ -41,7 +51,16 @@ public class RconResponseServiceTests
         _versionedCoD4xRconApi.Setup(x => x.V1).Returns(_coD4xRconApi.Object);
         _serversApiClient.Setup(x => x.CoD4xRcon).Returns(_versionedCoD4xRconApi.Object);
 
-        _sut = new RconResponseService(_serversApiClient.Object, _logger.Object);
+        _versionedGlobalConfigs.Setup(x => x.V1).Returns(_globalConfigsApi.Object);
+        _repositoryClient.Setup(x => x.GlobalConfigurations).Returns(_versionedGlobalConfigs.Object);
+        _versionedServerConfigs.Setup(x => x.V1).Returns(_serverConfigsApi.Object);
+        _repositoryClient.Setup(x => x.GameServerConfigurations).Returns(_versionedServerConfigs.Object);
+        _globalConfigsApi.Setup(x => x.GetConfigurations(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Configurations(AgentConfiguration("^5[GlobalBot]^7")));
+        _serverConfigsApi.Setup(x => x.GetConfigurations(TestServerId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Configurations(AgentConfiguration("^2[ServerBot]^7")));
+
+        _sut = new RconResponseService(_serversApiClient.Object, _repositoryClient.Object, _logger.Object);
     }
 
     [Fact]
@@ -55,8 +74,132 @@ public class RconResponseServiceTests
         Assert.True(result);
         _coD4xRconApi.Verify(x => x.Say(
             TestServerId,
-            It.Is<CoD4xMessageRequestDto>(r => r.Message == "Hello"),
+            It.Is<CoD4xMessageRequestDto>(r => r.Message == "Hello" && r.FirstFragmentHeader == "^2[ServerBot]^7 "),
             It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Theory]
+    [InlineData(true, "^5[GlobalBot]^7 ")]
+    [InlineData(false, "^4[^1>XI< BOT^4]^7 ")]
+    public async Task TrySayAsync_UsesGlobalOrDefaultNameWhenServerOverrideIsMissing(bool globalConfigured, string expected)
+    {
+        _serverConfigsApi.Setup(x => x.GetConfigurations(TestServerId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Configurations());
+        if (!globalConfigured)
+        {
+            _globalConfigsApi.Setup(x => x.GetConfigurations(It.IsAny<CancellationToken>()))
+                .ReturnsAsync(Configurations());
+        }
+        _coD4xRconApi.Setup(x => x.Say(TestServerId, It.IsAny<CoD4xMessageRequestDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<string>(System.Net.HttpStatusCode.OK, new ApiResponse<string>("ok")));
+
+        var result = await _sut.TrySayAsync(TestServerId, "Hello", DateTime.UtcNow);
+
+        Assert.True(result);
+        _coD4xRconApi.Verify(x => x.Say(TestServerId,
+            It.Is<CoD4xMessageRequestDto>(r => r.Message == "Hello" && r.FirstFragmentHeader == expected),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task SayWithOutcomeAsync_UsesSuppliedHeaderWithoutResolvingOrDuplicatingIt()
+    {
+        _coD4xRconApi.Setup(x => x.Say(TestServerId, It.IsAny<CoD4xMessageRequestDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<string>(System.Net.HttpStatusCode.OK, new ApiResponse<string>("ok")));
+
+        var result = await _sut.SayWithOutcomeAsync(
+            TestServerId, "CallOfDuty4x", "Hello", "^3[SavedBot]^7 ", DateTimeOffset.UtcNow.AddSeconds(5));
+
+        Assert.Equal(RconSayOutcome.Accepted, result);
+        _coD4xRconApi.Verify(x => x.Say(TestServerId,
+            It.Is<CoD4xMessageRequestDto>(r => r.Message == "Hello" && r.FirstFragmentHeader == "^3[SavedBot]^7 "),
+            It.IsAny<CancellationToken>()), Times.Once);
+        _globalConfigsApi.Verify(x => x.GetConfigurations(It.IsAny<CancellationToken>()), Times.Never);
+        _serverConfigsApi.Verify(x => x.GetConfigurations(It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task TrySayAsync_CachesSuccessfulPrefixButNotFailedLookup()
+    {
+        _globalConfigsApi.SetupSequence(x => x.GetConfigurations(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<CollectionModel<ConfigurationDto>>(System.Net.HttpStatusCode.ServiceUnavailable,
+                new ApiResponse<CollectionModel<ConfigurationDto>>(new ApiError("ERROR", "unavailable"))))
+            .ReturnsAsync(Configurations());
+        _coD4xRconApi.Setup(x => x.Say(TestServerId, It.IsAny<CoD4xMessageRequestDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<string>(System.Net.HttpStatusCode.OK, new ApiResponse<string>("ok")));
+        using var cache = new MemoryCache(Options.Create(new MemoryCacheOptions()));
+        var service = new RconResponseService(_serversApiClient.Object, _repositoryClient.Object, _logger.Object, cache);
+
+        Assert.True(await service.TrySayAsync(TestServerId, "Hello", DateTime.UtcNow));
+        Assert.True(await service.TrySayAsync(TestServerId, "Hello", DateTime.UtcNow));
+        Assert.True(await service.TrySayAsync(TestServerId, "Hello", DateTime.UtcNow));
+
+        _globalConfigsApi.Verify(x => x.GetConfigurations(It.IsAny<CancellationToken>()), Times.Exactly(2));
+        _serverConfigsApi.Verify(x => x.GetConfigurations(TestServerId, It.IsAny<CancellationToken>()), Times.Exactly(2));
+    }
+
+    [Fact]
+    public async Task TrySayAsync_WhenDeadlinePassesDuringPrefixLookup_DoesNotSend()
+    {
+        var lookup = new TaskCompletionSource<ApiResult<CollectionModel<ConfigurationDto>>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _globalConfigsApi.Setup(x => x.GetConfigurations(It.IsAny<CancellationToken>())).Returns(lookup.Task);
+        var pending = _sut.TrySayAsync(TestServerId, "CallOfDuty4x", "Hello", DateTimeOffset.UtcNow.AddMilliseconds(200));
+        await Task.Delay(350);
+        lookup.SetResult(Configurations(AgentConfiguration("^5[GlobalBot]^7")));
+
+        Assert.False(await pending);
+        _coD4xRconApi.Verify(x => x.Say(It.IsAny<Guid>(), It.IsAny<CoD4xMessageRequestDto>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task TryTellAsync_ResolvesPrefixBeforeCheckingCurrentRecipient(bool withSlot)
+    {
+        var lookup = new TaskCompletionSource<ApiResult<CollectionModel<ConfigurationDto>>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _globalConfigsApi.Setup(x => x.GetConfigurations(It.IsAny<CancellationToken>())).Returns(lookup.Task);
+        _coD4xRconApi.Setup(x => x.Status(TestServerId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<CoD4xStatusResponseDto>(System.Net.HttpStatusCode.OK,
+                new ApiResponse<CoD4xStatusResponseDto>(new CoD4xStatusResponseDto
+                {
+                    Players = [new CoD4xStatusPlayerDto { Num = 5, PlayerIdentifier = "guid-1", Name = "PlayerOne" }]
+                })));
+        _coD4xRconApi.Setup(x => x.Tell(TestServerId, It.IsAny<CoD4xTargetMessageRequestDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<string>(System.Net.HttpStatusCode.OK, new ApiResponse<string>("ok")));
+
+        var pending = withSlot
+            ? _sut.TryTellAsync(TestServerId, "CallOfDuty4x", "guid-1", 5, "Hello", "PlayerOne", DateTimeOffset.UtcNow.AddSeconds(5))
+            : _sut.TryTellAsync(TestServerId, "CallOfDuty4x", "guid-1", "Hello", "PlayerOne", DateTime.UtcNow);
+
+        try
+        {
+            _coD4xRconApi.Verify(x => x.Status(It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+        }
+        finally
+        {
+            lookup.TrySetResult(Configurations(AgentConfiguration("^5[GlobalBot]^7")));
+        }
+
+        Assert.True(await pending);
+        _coD4xRconApi.Verify(x => x.Status(TestServerId, It.IsAny<CancellationToken>()), Times.Once);
+        _coD4xRconApi.Verify(x => x.Tell(TestServerId, It.IsAny<CoD4xTargetMessageRequestDto>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task TryTellAsync_WithSlot_PropagatesCancellationDuringPrefixLookup()
+    {
+        var lookup = new TaskCompletionSource<ApiResult<CollectionModel<ConfigurationDto>>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _globalConfigsApi.Setup(x => x.GetConfigurations(It.IsAny<CancellationToken>()))
+            .Returns((CancellationToken ct) => lookup.Task.WaitAsync(ct));
+        using var cancellation = new CancellationTokenSource();
+
+        var pending = _sut.TryTellAsync(TestServerId, "CallOfDuty4x", "guid-1", 5, "Hello", "PlayerOne",
+            DateTimeOffset.UtcNow.AddSeconds(5), cancellation.Token);
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending);
+        _coD4xRconApi.Verify(x => x.Status(It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+        _coD4xRconApi.Verify(x => x.Tell(It.IsAny<Guid>(), It.IsAny<CoD4xTargetMessageRequestDto>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -189,7 +332,7 @@ public class RconResponseServiceTests
         Assert.True(result);
         _cod4RconApi.Verify(x => x.Say(
             TestServerId,
-            It.Is<SayRequest>(r => r.Message == "Hello"),
+            It.Is<SayRequest>(r => r.Message == "Hello" && r.FirstFragmentHeader == "^2[ServerBot]^7 "),
             It.IsAny<CancellationToken>()), Times.Once);
         _coD4xRconApi.Verify(x => x.Say(It.IsAny<Guid>(), It.IsAny<CoD4xMessageRequestDto>(), It.IsAny<CancellationToken>()), Times.Never);
     }
@@ -205,7 +348,7 @@ public class RconResponseServiceTests
         Assert.True(result);
         _cod2RconApi.Verify(x => x.Say(
             TestServerId,
-            It.Is<SayRequest>(r => r.Message == "Hello"),
+            It.Is<SayRequest>(r => r.Message == "Hello" && r.FirstFragmentHeader == "^2[ServerBot]^7 "),
             It.IsAny<CancellationToken>()), Times.Once);
         _cod4RconApi.Verify(x => x.Say(It.IsAny<Guid>(), It.IsAny<SayRequest>(), It.IsAny<CancellationToken>()), Times.Never);
         _cod5RconApi.Verify(x => x.Say(It.IsAny<Guid>(), It.IsAny<SayRequest>(), It.IsAny<CancellationToken>()), Times.Never);
@@ -223,7 +366,7 @@ public class RconResponseServiceTests
         Assert.True(result);
         _cod5RconApi.Verify(x => x.Say(
             TestServerId,
-            It.Is<SayRequest>(r => r.Message == "Hello"),
+            It.Is<SayRequest>(r => r.Message == "Hello" && r.FirstFragmentHeader == "^2[ServerBot]^7 "),
             It.IsAny<CancellationToken>()), Times.Once);
         _cod2RconApi.Verify(x => x.Say(It.IsAny<Guid>(), It.IsAny<SayRequest>(), It.IsAny<CancellationToken>()), Times.Never);
         _cod4RconApi.Verify(x => x.Say(It.IsAny<Guid>(), It.IsAny<SayRequest>(), It.IsAny<CancellationToken>()), Times.Never);
@@ -259,7 +402,8 @@ public class RconResponseServiceTests
         Assert.True(result);
         _coD4xRconApi.Verify(x => x.Tell(
             TestServerId,
-            It.Is<CoD4xTargetMessageRequestDto>(r => r.Target == "5" && r.Message == "Hello"),
+            It.Is<CoD4xTargetMessageRequestDto>(r => r.Target == "5" && r.Message == "Hello" &&
+                r.FirstFragmentHeader == "^5(PM)^7 ^2[ServerBot]^7 "),
             It.IsAny<CancellationToken>()), Times.Once);
     }
 
@@ -586,8 +730,11 @@ public class RconResponseServiceTests
         _coD4xRconApi.Verify(x => x.Status(TestServerId, It.IsAny<CancellationToken>()), Times.Exactly(2));
         _coD4xRconApi.Verify(x => x.Tell(
             TestServerId,
-            It.Is<CoD4xTargetMessageRequestDto>(r => r.Target == "7" && r.Message == "Hello"),
+            It.Is<CoD4xTargetMessageRequestDto>(r => r.Target == "7" && r.Message == "Hello" &&
+                r.FirstFragmentHeader == "^5(PM)^7 ^2[ServerBot]^7 "),
             It.IsAny<CancellationToken>()), Times.Once);
+        _globalConfigsApi.Verify(x => x.GetConfigurations(It.IsAny<CancellationToken>()), Times.Once);
+        _serverConfigsApi.Verify(x => x.GetConfigurations(TestServerId, It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -642,5 +789,17 @@ public class RconResponseServiceTests
         _cod4RconApi.Verify(x => x.Status(It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
         _cod5RconApi.Verify(x => x.Status(It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
         _coD4xRconApi.Verify(x => x.Status(It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    private static ApiResult<CollectionModel<ConfigurationDto>> Configurations(params ConfigurationDto[] configurations) =>
+        new(System.Net.HttpStatusCode.OK, new ApiResponse<CollectionModel<ConfigurationDto>>(new CollectionModel<ConfigurationDto>(configurations)));
+
+    private static ConfigurationDto AgentConfiguration(string agentName)
+    {
+        var configuration = new ConfigurationDto();
+        typeof(ConfigurationDto).GetProperty(nameof(ConfigurationDto.Namespace))!.SetValue(configuration, "agent");
+        typeof(ConfigurationDto).GetProperty(nameof(ConfigurationDto.Configuration))!.SetValue(configuration,
+            System.Text.Json.JsonSerializer.Serialize(new { agentName }));
+        return configuration;
     }
 }

@@ -116,8 +116,7 @@ public abstract class MapVoteCommandBase : IChatCommand
             .WithProperty("VoteType", IsLike ? "Like" : "Dislike")
             .Build());
 
-        var agentNamePrefix = await AgentNamePrefixResolver.ResolveAsync(_repositoryClient, _logger, context.ServerId, ct).ConfigureAwait(false);
-        var responseMessage = BuildPrefixedMessage(agentNamePrefix, FormatRconMessage(context.Username));
+        var responseMessage = FormatRconMessage(context.Username);
 
         var responseSent = await _rconService.TrySayAsync(
             context.ServerId,
@@ -132,17 +131,6 @@ public abstract class MapVoteCommandBase : IChatCommand
         }
 
         return CommandResult.Ok(responseSent ? null : "Vote recorded; response dispatch was not confirmed.");
-    }
-
-    private static string BuildPrefixedMessage(string agentNamePrefix, string message)
-    {
-        var trimmedPrefix = agentNamePrefix?.Trim() ?? string.Empty;
-        if (string.IsNullOrWhiteSpace(trimmedPrefix))
-        {
-            return message;
-        }
-
-        return $"{trimmedPrefix} {message}";
     }
 
     private Task<ApiResult<RconCurrentMapDto>> GetCurrentMapAsync(Guid serverId, GameType gameType, CancellationToken ct)
