@@ -125,10 +125,11 @@ public sealed class FuCommand : IChatCommand
         var renderedMessage = _messageTemplateRenderer.Render(template, resolvedName);
 
         var prefix = await AgentNamePrefixResolver.ResolveAsync(_repositoryClient, _logger, context.ServerId, ct, _cache).ConfigureAwait(false);
-        var response = BuildPrefixedMessage(prefix, renderedMessage);
+        var header = BotMessageHeader.Create(prefix, privateMessage: false, useCodColorCodes: true);
+        var response = header + renderedMessage;
 
         var outcome = await _rconResponseService
-            .SayWithOutcomeAsync(context.ServerId, context.GameType, response, context.ResponseDeadline, ct)
+            .SayWithOutcomeAsync(context.ServerId, context.GameType, renderedMessage, header, context.ResponseDeadline, ct)
             .ConfigureAwait(false);
 
         if (outcome == RconSayOutcome.Unknown)
@@ -183,14 +184,6 @@ public sealed class FuCommand : IChatCommand
         }
 
         return CommandResult.Failed(reason);
-    }
-
-    private static string BuildPrefixedMessage(string prefix, string message)
-    {
-        var trimmedPrefix = prefix?.Trim() ?? string.Empty;
-        return string.IsNullOrWhiteSpace(trimmedPrefix)
-            ? message
-            : $"{trimmedPrefix} {message}";
     }
 
     private async Task<IReadOnlyList<CoD4xStatusPlayerDto>?> GetStatusPlayersAsync(Guid serverId, string gameType, CancellationToken ct)

@@ -1,11 +1,13 @@
 using System.Net;
 using System.Text.Json;
 
+using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
 
 using XtremeIdiots.Portal.Integrations.Servers.Abstractions.Models.V1.Rcon;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.RulesEngine;
 using XtremeIdiots.Portal.Repository.Api.Client.V1;
+using XtremeIdiots.Portal.Server.Events.Processor.App.Commands;
 using XtremeIdiots.Portal.Settings.Contracts.V1.Contracts.RulesEngine;
 
 namespace XtremeIdiots.Portal.Server.Events.Processor.App.Rules;
@@ -44,7 +46,8 @@ internal sealed class RuleMessageDeliveryService(
     IRuleActionTextPreparer text,
     IRuleMessageBudgetProvider budgets,
     ILogger<RuleMessageDeliveryService> logger,
-    TimeProvider? timeProvider = null) : IRuleMessageDeliveryService
+    TimeProvider? timeProvider = null,
+    IMemoryCache? cache = null) : IRuleMessageDeliveryService
 {
     private readonly TimeProvider clock = timeProvider ?? TimeProvider.System;
 
@@ -134,7 +137,10 @@ internal sealed class RuleMessageDeliveryService(
                     execution.RuleIndex, execution.ActionIndex, execution.State, logger, clock.GetUtcNow(), ct).ConfigureAwait(false);
             }
             var resolved = preparedText.Action;
-            var prepared = MessagePreparation.Prepare(String(resolved, "message"), Strings(resolved, "messages"), budget.Budget);
+            var agentName = await AgentNamePrefixResolver.ResolveAsync(repository, logger, execution.GameServerId, ct, cache)
+                .ConfigureAwait(false);
+            var header = BotMessageHeader.Create(agentName, action.TypeId != "message.public", budget.Budget.UseCodColorCodes);
+            var prepared = MessagePreparation.Prepare(String(resolved, "message"), Strings(resolved, "messages"), budget.Budget, header);
             if (!prepared.IsValid)
             {
                 if (prepared.Errors.All(error => error.Code != "InvalidBudget"))

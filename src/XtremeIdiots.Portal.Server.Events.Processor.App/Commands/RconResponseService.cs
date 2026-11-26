@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text.RegularExpressions;
 
+using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
 
 using MX.Api.Abstractions;
@@ -8,6 +9,7 @@ using MX.Api.Abstractions;
 using XtremeIdiots.Portal.Integrations.Servers.Abstractions.Models.V1.Rcon;
 using XtremeIdiots.Portal.Integrations.Servers.Api.Client.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Constants.V1;
+using XtremeIdiots.Portal.Repository.Api.Client.V1;
 
 namespace XtremeIdiots.Portal.Server.Events.Processor.App.Commands;
 
@@ -18,12 +20,20 @@ public sealed class RconResponseService : IRconResponseService
     private static readonly Regex NonAlphaNumericRegex = new(@"[^a-z0-9]+", RegexOptions.Compiled, TimeSpan.FromSeconds(1));
 
     private readonly IServersApiClient _serversApiClient;
+    private readonly IRepositoryApiClient _repositoryClient;
     private readonly ILogger<RconResponseService> _logger;
+    private readonly IMemoryCache? _cache;
 
-    public RconResponseService(IServersApiClient serversApiClient, ILogger<RconResponseService> logger)
+    public RconResponseService(
+        IServersApiClient serversApiClient,
+        IRepositoryApiClient repositoryClient,
+        ILogger<RconResponseService> logger,
+        IMemoryCache? cache = null)
     {
         _serversApiClient = serversApiClient;
+        _repositoryClient = repositoryClient;
         _logger = logger;
+        _cache = cache;
     }
 
     public Task<bool> TrySayAsync(
@@ -42,7 +52,7 @@ public sealed class RconResponseService : IRconResponseService
         string message,
         DateTime eventGeneratedUtc,
         CancellationToken ct = default) =>
-        await TrySayCoreAsync(serverId, gameType, message, Deadline(eventGeneratedUtc), ct).ConfigureAwait(false) == RconSayOutcome.Accepted;
+        await TrySayCoreAsync(serverId, gameType, message, null, Deadline(eventGeneratedUtc), ct).ConfigureAwait(false) == RconSayOutcome.Accepted;
 
     public async Task<bool> TrySayAsync(
         Guid serverId,
@@ -58,13 +68,21 @@ public sealed class RconResponseService : IRconResponseService
         Guid serverId, string gameType, string message, DateTimeOffset deadlineUtc, CancellationToken ct = default)
     {
         using var deadlineCancellation = CreateDeadlineCancellation(deadlineUtc, ct);
-        return await TrySayCoreAsync(serverId, gameType, message, deadlineUtc, deadlineCancellation.Token).ConfigureAwait(false);
+        return await TrySayCoreAsync(serverId, gameType, message, null, deadlineUtc, deadlineCancellation.Token).ConfigureAwait(false);
+    }
+
+    public async Task<RconSayOutcome> SayWithOutcomeAsync(
+        Guid serverId, string gameType, string message, string firstFragmentHeader, DateTimeOffset deadlineUtc, CancellationToken ct = default)
+    {
+        using var deadlineCancellation = CreateDeadlineCancellation(deadlineUtc, ct);
+        return await TrySayCoreAsync(serverId, gameType, message, firstFragmentHeader, deadlineUtc, deadlineCancellation.Token).ConfigureAwait(false);
     }
 
     private async Task<RconSayOutcome> TrySayCoreAsync(
         Guid serverId,
         string gameType,
         string message,
+        string? firstFragmentHeader,
         DateTimeOffset deadlineUtc,
         CancellationToken ct)
     {
@@ -87,10 +105,16 @@ public sealed class RconResponseService : IRconResponseService
 
         try
         {
+            var header = firstFragmentHeader ?? await CreateHeaderAsync(serverId, privateMessage: false, ct).ConfigureAwait(false);
+            if (!IsFresh(serverId, deadlineUtc))
+            {
+                return RconSayOutcome.NotAttempted;
+            }
+
             if (parsedGameType == GameType.CallOfDuty4x)
             {
                 var cod4xResult = await _serversApiClient.CoD4xRcon.V1.Say(
-                    serverId, new CoD4xMessageRequestDto { Message = message }, ct).ConfigureAwait(false);
+                    serverId, new CoD4xMessageRequestDto { Message = message, FirstFragmentHeader = header }, ct).ConfigureAwait(false);
                 if (!cod4xResult.IsSuccess)
                 {
                     _logger.LogWarning("RCON Say failed for server {ServerId} ({GameType}): {StatusCode}",
@@ -111,15 +135,15 @@ public sealed class RconResponseService : IRconResponseService
             {
                 GameType.CallOfDuty2 => await _serversApiClient.Cod2Rcon.V1.Say(
                     serverId,
-                    new SayRequest { Message = message },
+                    new SayRequest { Message = message, FirstFragmentHeader = header },
                     ct).ConfigureAwait(false),
                 GameType.CallOfDuty4 => await _serversApiClient.Cod4Rcon.V1.Say(
                     serverId,
-                    new SayRequest { Message = message },
+                    new SayRequest { Message = message, FirstFragmentHeader = header },
                     ct).ConfigureAwait(false),
                 GameType.CallOfDuty5 => await _serversApiClient.Cod5Rcon.V1.Say(
                     serverId,
-                    new SayRequest { Message = message },
+                    new SayRequest { Message = message, FirstFragmentHeader = header },
                     ct).ConfigureAwait(false),
                 _ => throw new UnreachableException()
             };
@@ -180,7 +204,8 @@ public sealed class RconResponseService : IRconResponseService
         string message,
         string? expectedPlayerName,
         DateTimeOffset deadlineUtc,
-        CancellationToken ct)
+        CancellationToken ct,
+        string? firstFragmentHeader = null)
     {
         if (!IsFresh(serverId, deadlineUtc))
         {
@@ -199,6 +224,12 @@ public sealed class RconResponseService : IRconResponseService
 
         try
         {
+            var header = firstFragmentHeader ?? await CreateHeaderAsync(serverId, privateMessage: true, ct).ConfigureAwait(false);
+            if (!IsFresh(serverId, deadlineUtc))
+            {
+                return false;
+            }
+
             var player = await ResolvePlayerByGuidAsync(serverId, parsedGameType, playerGuid, ct).ConfigureAwait(false);
             if (player is null)
             {
@@ -227,7 +258,7 @@ public sealed class RconResponseService : IRconResponseService
                 return false;
             }
 
-            var result = await SendTellAsync(serverId, parsedGameType, player.Slot, message, ct).ConfigureAwait(false);
+            var result = await SendTellAsync(serverId, parsedGameType, player.Slot, message, header, ct).ConfigureAwait(false);
 
             if (!result.IsSuccess)
             {
@@ -333,6 +364,23 @@ public sealed class RconResponseService : IRconResponseService
             return false;
         }
 
+        string header;
+        try
+        {
+            header = await CreateHeaderAsync(serverId, privateMessage: true, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "RCON Tell skipped for server {ServerId}, client {ClientId}: unable to prepare message header.",
+                serverId, slotId);
+            return false;
+        }
+
+        if (!IsFresh(serverId, deadlineUtc))
+        {
+            return false;
+        }
+
         ResolvedPlayer? player;
         try
         {
@@ -342,13 +390,13 @@ public sealed class RconResponseService : IRconResponseService
         {
             _logger.LogWarning(ex, "RCON slot lookup failed for server {ServerId}, client {ClientId}; falling back to guid lookup.",
                 serverId, slotId);
-            return await TryTellByGuidAsync(serverId, gameType, playerGuid, message, expectedPlayerName, deadlineUtc, ct)
+            return await TryTellByGuidAsync(serverId, gameType, playerGuid, message, expectedPlayerName, deadlineUtc, ct, header)
                 .ConfigureAwait(false);
         }
 
         if (player is null || !NamesMatch(expectedPlayerName, player.Name))
         {
-            return await TryTellByGuidAsync(serverId, gameType, playerGuid, message, expectedPlayerName, deadlineUtc, ct)
+            return await TryTellByGuidAsync(serverId, gameType, playerGuid, message, expectedPlayerName, deadlineUtc, ct, header)
                 .ConfigureAwait(false);
         }
 
@@ -356,7 +404,7 @@ public sealed class RconResponseService : IRconResponseService
         {
             if (IsFresh(serverId, deadlineUtc))
             {
-                var sendResult = await SendTellAsync(serverId, parsedGameType, player.Slot, message, ct).ConfigureAwait(false);
+                var sendResult = await SendTellAsync(serverId, parsedGameType, player.Slot, message, header, ct).ConfigureAwait(false);
 
                 if (sendResult.IsSuccess)
                 {
@@ -507,12 +555,14 @@ public sealed class RconResponseService : IRconResponseService
         GameType gameType,
         int slotId,
         string message,
+        string firstFragmentHeader,
         CancellationToken ct)
     {
         var request = new CoD4xTargetMessageRequestDto
         {
             Target = slotId.ToString(System.Globalization.CultureInfo.InvariantCulture),
-            Message = message
+            Message = message,
+            FirstFragmentHeader = firstFragmentHeader
         };
 
         return gameType switch
@@ -523,6 +573,12 @@ public sealed class RconResponseService : IRconResponseService
             GameType.CallOfDuty4x => _serversApiClient.CoD4xRcon.V1.Tell(serverId, request, ct),
             _ => throw new InvalidOperationException($"Unsupported game type: {gameType}")
         };
+    }
+
+    private async Task<string> CreateHeaderAsync(Guid serverId, bool privateMessage, CancellationToken ct)
+    {
+        var prefix = await AgentNamePrefixResolver.ResolveAsync(_repositoryClient, _logger, serverId, ct, _cache).ConfigureAwait(false);
+        return BotMessageHeader.Create(prefix, privateMessage, useCodColorCodes: true);
     }
 
     private static string SummarizeApiErrors(ApiResult result)

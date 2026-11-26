@@ -11,8 +11,6 @@ using XtremeIdiots.Portal.Integrations.Servers.Abstractions.Interfaces.V1;
 using XtremeIdiots.Portal.Integrations.Servers.Abstractions.Models.V1.Rcon;
 using XtremeIdiots.Portal.Integrations.Servers.Api.Client.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Constants.V1;
-using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.Configurations;
-using XtremeIdiots.Portal.Repository.Abstractions.Interfaces.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.Maps;
 using XtremeIdiots.Portal.Repository.Api.Client.V1;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Commands;
@@ -27,10 +25,6 @@ public class MapVoteDislikeCommandTests
     private readonly Mock<ICod4RconApi> _cod4RconApi = new();
     private readonly Mock<Repository.Api.Client.V1.IVersionedMapsApi> _versionedMaps = new();
     private readonly Mock<Repository.Abstractions.Interfaces.V1.IMapsApi> _mapsApi = new();
-    private readonly Mock<IVersionedGlobalConfigurationsApi> _versionedGlobalConfigs = new();
-    private readonly Mock<IGlobalConfigurationsApi> _globalConfigsApi = new();
-    private readonly Mock<IVersionedGameServerConfigurationsApi> _versionedServerConfigs = new();
-    private readonly Mock<IGameServerConfigurationsApi> _serverConfigsApi = new();
     private readonly Mock<ICommandSafetyService> _commandSafetyService = new();
     private readonly Mock<IRconResponseService> _rconService = new();
     private readonly Mock<IAuditLogger> _auditLogger = new();
@@ -48,29 +42,6 @@ public class MapVoteDislikeCommandTests
 
         _versionedMaps.Setup(x => x.V1).Returns(_mapsApi.Object);
         _repoClient.Setup(x => x.Maps).Returns(_versionedMaps.Object);
-        _versionedGlobalConfigs.Setup(x => x.V1).Returns(_globalConfigsApi.Object);
-        _repoClient.Setup(x => x.GlobalConfigurations).Returns(_versionedGlobalConfigs.Object);
-        _versionedServerConfigs.Setup(x => x.V1).Returns(_serverConfigsApi.Object);
-        _repoClient.Setup(x => x.GameServerConfigurations).Returns(_versionedServerConfigs.Object);
-
-        _globalConfigsApi
-            .Setup(x => x.GetConfigurations(It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new ApiResult<CollectionModel<ConfigurationDto>>(
-                HttpStatusCode.OK,
-                new ApiResponse<CollectionModel<ConfigurationDto>>(new CollectionModel<ConfigurationDto>(new[]
-                {
-                    CreateConfigurationDto("agent", /*lang=json,strict*/ "{\"agentName\":\"^5[GlobalBot]^7\"}")
-                }))));
-
-        _serverConfigsApi
-            .Setup(x => x.GetConfigurations(TestServerId, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new ApiResult<CollectionModel<ConfigurationDto>>(
-                HttpStatusCode.OK,
-                new ApiResponse<CollectionModel<ConfigurationDto>>(new CollectionModel<ConfigurationDto>(new[]
-                {
-                    CreateConfigurationDto("agent", /*lang=json,strict*/ "{\"agentName\":\"^1[ServerBot]^7\"}")
-                }))));
-
         _commandSafetyService
             .Setup(x => x.ValidateMapTargetAsync(TestServerId, It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new MapValidationResult(true));
@@ -125,7 +96,7 @@ public class MapVoteDislikeCommandTests
         _rconService.Verify(x => x.TrySayAsync(
             TestServerId,
                 It.IsAny<string>(),
-            It.Is<string>(s => s.StartsWith("^1[ServerBot]^7 ") && s.Contains("DISLIKE")),
+            "^1TestPlayer ^7voted to ^1DISLIKE ^7the current map",
             It.IsAny<DateTimeOffset>(),
             It.IsAny<CancellationToken>()), Times.Once);
     }
@@ -229,15 +200,4 @@ public class MapVoteDislikeCommandTests
         });
         return Newtonsoft.Json.JsonConvert.DeserializeObject<MapDto>(json)!;
     }
-
-    private static ConfigurationDto CreateConfigurationDto(string ns, string configurationJson)
-    {
-        var dto = new ConfigurationDto();
-        SetConfigProperty(dto, nameof(ConfigurationDto.Namespace), ns);
-        SetConfigProperty(dto, nameof(ConfigurationDto.Configuration), configurationJson);
-        return dto;
-    }
-
-    private static void SetConfigProperty(ConfigurationDto dto, string propertyName, object? value) =>
-        typeof(ConfigurationDto).GetProperty(propertyName)!.SetValue(dto, value);
 }

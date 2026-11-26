@@ -16,6 +16,10 @@ public interface IRconResponseService
 {
     Task<RconSayOutcome> SayWithOutcomeAsync(
         Guid serverId, string gameType, string message, DateTimeOffset deadlineUtc, CancellationToken ct = default);
+
+    Task<RconSayOutcome> SayWithOutcomeAsync(
+        Guid serverId, string gameType, string message, string firstFragmentHeader, DateTimeOffset deadlineUtc, CancellationToken ct = default);
+
     /// <summary>
     /// Send a broadcast message to a game server via RCON for a specific game type,
     /// but only if the event is fresh.

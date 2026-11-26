@@ -5,9 +5,7 @@ using Microsoft.Extensions.Logging;
 
 using Moq;
 
-using MX.Api.Abstractions;
 using XtremeIdiots.Portal.Repository.Abstractions.Interfaces.V1;
-using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.Configurations;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.GameServers;
 using XtremeIdiots.Portal.Repository.Api.Client.V1;
 using XtremeIdiots.Portal.Server.Events.Abstractions.V1.Events;
@@ -24,10 +22,6 @@ public class ServerConnectedProcessorTests
     private readonly Mock<IRepositoryApiClient> _repoClient = new();
     private readonly Mock<IVersionedGameServersEventsApi> _versionedEvents = new();
     private readonly Mock<IGameServersEventsApi> _eventsApi = new();
-    private readonly Mock<IVersionedGlobalConfigurationsApi> _versionedGlobalConfigs = new();
-    private readonly Mock<IGlobalConfigurationsApi> _globalConfigsApi = new();
-    private readonly Mock<IVersionedGameServerConfigurationsApi> _versionedServerConfigs = new();
-    private readonly Mock<IGameServerConfigurationsApi> _serverConfigsApi = new();
     private readonly Mock<IRconResponseService> _rconResponseService = new();
     private readonly Mock<IAuditLogger> _auditLogger = new();
     private readonly Mock<FunctionContext> _functionContext = new();
@@ -39,28 +33,6 @@ public class ServerConnectedProcessorTests
     {
         _versionedEvents.Setup(x => x.V1).Returns(_eventsApi.Object);
         _repoClient.Setup(x => x.GameServersEvents).Returns(_versionedEvents.Object);
-
-        _versionedGlobalConfigs.Setup(x => x.V1).Returns(_globalConfigsApi.Object);
-        _repoClient.Setup(x => x.GlobalConfigurations).Returns(_versionedGlobalConfigs.Object);
-        _globalConfigsApi
-            .Setup(x => x.GetConfigurations(It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new ApiResult<CollectionModel<ConfigurationDto>>(
-                System.Net.HttpStatusCode.OK,
-                new ApiResponse<CollectionModel<ConfigurationDto>>(new CollectionModel<ConfigurationDto>(new[]
-                {
-                    CreateConfigurationDto("agent", /*lang=json,strict*/ "{\"agentName\":\"^5[GlobalBot]^7\"}")
-                }))));
-
-        _versionedServerConfigs.Setup(x => x.V1).Returns(_serverConfigsApi.Object);
-        _repoClient.Setup(x => x.GameServerConfigurations).Returns(_versionedServerConfigs.Object);
-        _serverConfigsApi
-            .Setup(x => x.GetConfigurations(TestServerId, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new ApiResult<CollectionModel<ConfigurationDto>>(
-                System.Net.HttpStatusCode.OK,
-                new ApiResponse<CollectionModel<ConfigurationDto>>(new CollectionModel<ConfigurationDto>(new[]
-                {
-                    CreateConfigurationDto("agent", /*lang=json,strict*/ "{\"agentName\":\"^2[ServerBot]^7\"}")
-                }))));
 
         _rconResponseService
             .Setup(x => x.TrySayAsync(
@@ -102,7 +74,7 @@ public class ServerConnectedProcessorTests
         _rconResponseService.Verify(x => x.TrySayAsync(
             TestServerId,
             evt.GameType,
-            It.Is<string>(s => s.StartsWith("^2[ServerBot]^7 Server Events is now online (version ")),
+            It.Is<string>(s => s.StartsWith("Server Events is now online (version ")),
             evt.EventGeneratedUtc,
             It.IsAny<CancellationToken>()), Times.Once);
     }
@@ -153,71 +125,4 @@ public class ServerConnectedProcessorTests
                 It.IsAny<string>(),
                 It.IsAny<DateTime>(), It.IsAny<CancellationToken>()), Times.Never);
     }
-
-    [Fact]
-    public async Task ValidEvent_UsesGlobalPrefix_WhenServerOverrideMissing()
-    {
-        var evt = CreateValidEvent();
-        var message = CreateMessage(evt);
-
-        _serverConfigsApi
-            .Setup(x => x.GetConfigurations(TestServerId, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new ApiResult<CollectionModel<ConfigurationDto>>(
-                System.Net.HttpStatusCode.OK,
-                new ApiResponse<CollectionModel<ConfigurationDto>>(new CollectionModel<ConfigurationDto>(Array.Empty<ConfigurationDto>()))));
-
-        _eventsApi.Setup(x => x.CreateGameServerEvent(It.IsAny<CreateGameServerEventDto>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(SuccessResult());
-
-        await _sut.ProcessServerConnected(message, _functionContext.Object);
-
-        _rconResponseService.Verify(x => x.TrySayAsync(
-            TestServerId,
-            evt.GameType,
-            It.Is<string>(s => s.StartsWith("^5[GlobalBot]^7 Server Events is now online (version ")),
-            evt.EventGeneratedUtc,
-            It.IsAny<CancellationToken>()), Times.Once);
-    }
-
-    [Fact]
-    public async Task ValidEvent_UsesDefaultPrefix_WhenGlobalAndServerOverridesMissing()
-    {
-        var evt = CreateValidEvent();
-        var message = CreateMessage(evt);
-
-        _globalConfigsApi
-            .Setup(x => x.GetConfigurations(It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new ApiResult<CollectionModel<ConfigurationDto>>(
-                System.Net.HttpStatusCode.OK,
-                new ApiResponse<CollectionModel<ConfigurationDto>>(new CollectionModel<ConfigurationDto>(Array.Empty<ConfigurationDto>()))));
-
-        _serverConfigsApi
-            .Setup(x => x.GetConfigurations(TestServerId, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new ApiResult<CollectionModel<ConfigurationDto>>(
-                System.Net.HttpStatusCode.OK,
-                new ApiResponse<CollectionModel<ConfigurationDto>>(new CollectionModel<ConfigurationDto>(Array.Empty<ConfigurationDto>()))));
-
-        _eventsApi.Setup(x => x.CreateGameServerEvent(It.IsAny<CreateGameServerEventDto>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(SuccessResult());
-
-        await _sut.ProcessServerConnected(message, _functionContext.Object);
-
-        _rconResponseService.Verify(x => x.TrySayAsync(
-            TestServerId,
-            evt.GameType,
-            It.Is<string>(s => s.StartsWith("^4[^1>XI< BOT^4]^7 Server Events is now online (version ")),
-            evt.EventGeneratedUtc,
-            It.IsAny<CancellationToken>()), Times.Once);
-    }
-
-    private static ConfigurationDto CreateConfigurationDto(string ns, string configurationJson)
-    {
-        var dto = new ConfigurationDto();
-        SetConfigProperty(dto, nameof(ConfigurationDto.Namespace), ns);
-        SetConfigProperty(dto, nameof(ConfigurationDto.Configuration), configurationJson);
-        return dto;
-    }
-
-    private static void SetConfigProperty(ConfigurationDto dto, string propertyName, object? value) =>
-        typeof(ConfigurationDto).GetProperty(propertyName)!.SetValue(dto, value);
 }

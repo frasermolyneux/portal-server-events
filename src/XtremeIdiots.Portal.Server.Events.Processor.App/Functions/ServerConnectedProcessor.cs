@@ -74,27 +74,18 @@ public class ServerConnectedProcessor(
             .CreateGameServerEvent(gameServerEventDto)
             .ConfigureAwait(false);
 
-        var prefix = await AgentNamePrefixResolver.ResolveAsync(repositoryApiClient, logger, serverEvent.ServerId, context.CancellationToken).ConfigureAwait(false);
         var version = typeof(ServerConnectedProcessor).Assembly
             .GetCustomAttribute<AssemblyInformationalVersionAttribute>()
             ?.InformationalVersion
             ?? typeof(ServerConnectedProcessor).Assembly.GetName().Version?.ToString()
             ?? "unknown";
 
-        var startupMessage = BuildPrefixedMessage(prefix, $"Server Events is now online (version {version})");
+        var startupMessage = $"Server Events is now online (version {version})";
         await rconResponseService.TrySayAsync(serverEvent.ServerId, serverEvent.GameType, startupMessage, serverEvent.EventGeneratedUtc, context.CancellationToken)
             .ConfigureAwait(false);
 
         auditLogger.LogAudit(AuditEvent.ServerAction("ServerConnected", AuditAction.Connect)
             .WithGameContext(serverEvent.GameType, serverEvent.ServerId)
             .Build());
-    }
-
-    private static string BuildPrefixedMessage(string prefix, string message)
-    {
-        var trimmedPrefix = prefix?.Trim() ?? string.Empty;
-        return string.IsNullOrWhiteSpace(trimmedPrefix)
-            ? message
-            : $"{trimmedPrefix} {message}";
     }
 }
