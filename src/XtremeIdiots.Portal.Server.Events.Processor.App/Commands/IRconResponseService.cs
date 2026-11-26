@@ -1,10 +1,21 @@
 namespace XtremeIdiots.Portal.Server.Events.Processor.App.Commands;
 
+public enum RconSayOutcome
+{
+    Accepted,
+    NotAttempted,
+    Rejected,
+    InvalidMessage,
+    Unknown
+}
+
 /// <summary>
 /// Sends RCON responses to game servers. Only sends if the event is recent (within threshold).
 /// </summary>
 public interface IRconResponseService
 {
+    Task<RconSayOutcome> SayWithOutcomeAsync(
+        Guid serverId, string gameType, string message, DateTimeOffset deadlineUtc, CancellationToken ct = default);
     /// <summary>
     /// Send a broadcast message to a game server via RCON for a specific game type,
     /// but only if the event is fresh.
@@ -70,7 +81,7 @@ public interface IRconResponseService
 
     /// <summary>
     /// Send a private message to a specific player using a known slot id, but only if the event is fresh.
-    /// Implementations should gracefully fall back to guid-based lookup if slot delivery fails.
+    /// Implementations may fall back to guid-based lookup before a delivery is attempted.
     /// </summary>
     /// <param name="serverId">Game server ID.</param>
     /// <param name="gameType">Game type for endpoint routing.</param>

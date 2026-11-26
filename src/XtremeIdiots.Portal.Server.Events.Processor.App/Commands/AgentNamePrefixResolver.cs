@@ -1,5 +1,6 @@
 using System.Text.Json;
 
+using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
 
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.Configurations;
@@ -20,49 +21,70 @@ internal static class AgentNamePrefixResolver
         IRepositoryApiClient repositoryClient,
         ILogger logger,
         Guid serverId,
-        CancellationToken ct)
+        CancellationToken ct,
+        IMemoryCache? cache = null)
     {
-        var globalPrefix = DefaultAgentNamePrefix;
-
-        try
+        var cacheKey = $"agent-name-prefix:{serverId}";
+        if (cache?.TryGetValue(cacheKey, out string? cached) == true && cached is not null)
         {
-            var globalConfigs = await repositoryClient.GlobalConfigurations.V1
-                .GetConfigurations(ct)
-                .ConfigureAwait(false);
+            return cached;
+        }
 
-            var globalAgentConfig = globalConfigs.Result?.Data?.Items?
-                .FirstOrDefault(x => string.Equals(x.Namespace, AgentSettingsConstants.Namespace, StringComparison.OrdinalIgnoreCase));
-
-            if (TryReadAgentName(globalAgentConfig, out var parsedGlobalPrefix))
+        async Task<(bool Success, string? Prefix)> ReadGlobalAsync()
+        {
+            try
             {
-                globalPrefix = parsedGlobalPrefix;
+                var result = await repositoryClient.GlobalConfigurations.V1.GetConfigurations(ct).ConfigureAwait(false);
+                if (!result.IsSuccess)
+                {
+                    logger.LogWarning("Unable to resolve global agent prefix for server {ServerId}: {StatusCode}", serverId, result.StatusCode);
+                    return (false, null);
+                }
+                var config = result.Result?.Data?.Items?.FirstOrDefault(x =>
+                    string.Equals(x.Namespace, AgentSettingsConstants.Namespace, StringComparison.OrdinalIgnoreCase));
+                var parsed = TryReadAgentName(config, out var prefix);
+                return (config is null || parsed, parsed ? prefix : null);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                logger.LogWarning(ex, "Unable to resolve global agent prefix for server {ServerId}; using default", serverId);
+                return (false, null);
             }
         }
-        catch (Exception ex)
+
+        async Task<(bool Success, string? Prefix)> ReadServerAsync()
         {
-            logger.LogWarning(ex, "Unable to resolve global agent prefix for server {ServerId}; using default", serverId);
-        }
-
-        try
-        {
-            var serverConfigs = await repositoryClient.GameServerConfigurations.V1
-                .GetConfigurations(serverId, ct)
-                .ConfigureAwait(false);
-
-            var serverAgentConfig = serverConfigs.Result?.Data?.Items?
-                .FirstOrDefault(x => string.Equals(x.Namespace, AgentSettingsConstants.Namespace, StringComparison.OrdinalIgnoreCase));
-
-            if (TryReadAgentName(serverAgentConfig, out var parsedServerPrefix))
+            try
             {
-                return parsedServerPrefix;
+                var result = await repositoryClient.GameServerConfigurations.V1.GetConfigurations(serverId, ct).ConfigureAwait(false);
+                if (!result.IsSuccess)
+                {
+                    logger.LogWarning("Unable to resolve server agent prefix for server {ServerId}: {StatusCode}", serverId, result.StatusCode);
+                    return (false, null);
+                }
+                var config = result.Result?.Data?.Items?.FirstOrDefault(x =>
+                    string.Equals(x.Namespace, AgentSettingsConstants.Namespace, StringComparison.OrdinalIgnoreCase));
+                var parsed = TryReadAgentName(config, out var prefix);
+                return (config is null || parsed, parsed ? prefix : null);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                logger.LogWarning(ex, "Unable to resolve server agent prefix for server {ServerId}; using global/default", serverId);
+                return (false, null);
             }
         }
-        catch (Exception ex)
-        {
-            logger.LogWarning(ex, "Unable to resolve server agent prefix for server {ServerId}; using global/default", serverId);
-        }
 
-        return globalPrefix;
+        var globalTask = ReadGlobalAsync();
+        var serverTask = ReadServerAsync();
+        await Task.WhenAll(globalTask, serverTask).ConfigureAwait(false);
+        var global = await globalTask.ConfigureAwait(false);
+        var server = await serverTask.ConfigureAwait(false);
+        var resolved = server.Prefix ?? global.Prefix ?? DefaultAgentNamePrefix;
+        if (global.Success && server.Success)
+        {
+            cache?.Set(cacheKey, resolved, TimeSpan.FromSeconds(30));
+        }
+        return resolved;
     }
 
     private static bool TryReadAgentName(ConfigurationDto? config, out string agentName)

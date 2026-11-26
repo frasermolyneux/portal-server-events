@@ -93,8 +93,11 @@ public sealed class ChatCommandSettingsProvider : IChatCommandSettingsProvider
 
     private async Task<CachedDocuments> LoadDocumentsAsync(Guid serverId, CancellationToken ct)
     {
-        var globalConfig = await GetGlobalChatCommandsConfigAsync(ct).ConfigureAwait(false);
-        var serverConfig = await GetServerChatCommandsConfigAsync(serverId, ct).ConfigureAwait(false);
+        var globalTask = GetGlobalChatCommandsConfigAsync(ct);
+        var serverTask = GetServerChatCommandsConfigAsync(serverId, ct);
+        await Task.WhenAll(globalTask, serverTask).ConfigureAwait(false);
+        var globalConfig = await globalTask.ConfigureAwait(false);
+        var serverConfig = await serverTask.ConfigureAwait(false);
 
         var globalDocument = Deserialize(globalConfig, "global", serverId);
         var serverDocument = Deserialize(serverConfig, "server", serverId);

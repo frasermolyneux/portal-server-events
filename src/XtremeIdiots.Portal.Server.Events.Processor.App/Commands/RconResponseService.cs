@@ -36,13 +36,13 @@ public sealed class RconResponseService : IRconResponseService
         return TrySayAsync(serverId, GameType.CallOfDuty4x.ToString(), message, eventGeneratedUtc, ct);
     }
 
-    public Task<bool> TrySayAsync(
+    public async Task<bool> TrySayAsync(
         Guid serverId,
         string gameType,
         string message,
         DateTime eventGeneratedUtc,
         CancellationToken ct = default) =>
-        TrySayCoreAsync(serverId, gameType, message, Deadline(eventGeneratedUtc), ct);
+        await TrySayCoreAsync(serverId, gameType, message, Deadline(eventGeneratedUtc), ct).ConfigureAwait(false) == RconSayOutcome.Accepted;
 
     public async Task<bool> TrySayAsync(
         Guid serverId,
@@ -51,11 +51,17 @@ public sealed class RconResponseService : IRconResponseService
         DateTimeOffset deadlineUtc,
         CancellationToken ct = default)
     {
+        return await SayWithOutcomeAsync(serverId, gameType, message, deadlineUtc, ct).ConfigureAwait(false) == RconSayOutcome.Accepted;
+    }
+
+    public async Task<RconSayOutcome> SayWithOutcomeAsync(
+        Guid serverId, string gameType, string message, DateTimeOffset deadlineUtc, CancellationToken ct = default)
+    {
         using var deadlineCancellation = CreateDeadlineCancellation(deadlineUtc, ct);
         return await TrySayCoreAsync(serverId, gameType, message, deadlineUtc, deadlineCancellation.Token).ConfigureAwait(false);
     }
 
-    private async Task<bool> TrySayCoreAsync(
+    private async Task<RconSayOutcome> TrySayCoreAsync(
         Guid serverId,
         string gameType,
         string message,
@@ -64,23 +70,43 @@ public sealed class RconResponseService : IRconResponseService
     {
         if (!IsFresh(serverId, deadlineUtc))
         {
-            return false;
+            return RconSayOutcome.NotAttempted;
         }
 
         if (!TryParseGameType(gameType, out var parsedGameType))
         {
             _logger.LogWarning("RCON Say skipped for server {ServerId}: unsupported game type '{GameType}'", serverId, gameType);
-            return false;
+            return RconSayOutcome.NotAttempted;
         }
 
         if (!IsSupportedGameType(parsedGameType))
         {
             _logger.LogWarning("RCON Say skipped for server {ServerId}: unsupported game type '{GameType}'", serverId, parsedGameType);
-            return false;
+            return RconSayOutcome.NotAttempted;
         }
 
         try
         {
+            if (parsedGameType == GameType.CallOfDuty4x)
+            {
+                var cod4xResult = await _serversApiClient.CoD4xRcon.V1.Say(
+                    serverId, new CoD4xMessageRequestDto { Message = message }, ct).ConfigureAwait(false);
+                if (!cod4xResult.IsSuccess)
+                {
+                    _logger.LogWarning("RCON Say failed for server {ServerId} ({GameType}): {StatusCode}",
+                        serverId, parsedGameType, cod4xResult.StatusCode);
+                    if (cod4xResult.StatusCode == System.Net.HttpStatusCode.BadRequest &&
+                        cod4xResult.Result?.Errors?.Any(error => error?.Code == "INVALID_REQUEST") == true)
+                    {
+                        return cod4xResult.Result.Errors.Any(error => error?.Message ==
+                            "A message contains characters that cannot be safely represented by this RCON transport.")
+                            ? RconSayOutcome.InvalidMessage : RconSayOutcome.Rejected;
+                    }
+                    return RconSayOutcome.Unknown;
+                }
+                _logger.LogInformation("RCON Say request accepted for server {ServerId} ({GameType}); player delivery unconfirmed", serverId, parsedGameType);
+                return RconSayOutcome.Accepted;
+            }
             ApiResult result = parsedGameType switch
             {
                 GameType.CallOfDuty2 => await _serversApiClient.Cod2Rcon.V1.Say(
@@ -95,10 +121,6 @@ public sealed class RconResponseService : IRconResponseService
                     serverId,
                     new SayRequest { Message = message },
                     ct).ConfigureAwait(false),
-                GameType.CallOfDuty4x => await _serversApiClient.CoD4xRcon.V1.Say(
-                    serverId,
-                    new CoD4xMessageRequestDto { Message = message },
-                    ct).ConfigureAwait(false),
                 _ => throw new UnreachableException()
             };
 
@@ -109,16 +131,16 @@ public sealed class RconResponseService : IRconResponseService
                     serverId,
                     parsedGameType,
                     result.StatusCode);
-                return false;
+                return RconSayOutcome.Unknown;
             }
 
             _logger.LogInformation("RCON Say request accepted for server {ServerId} ({GameType}); player delivery unconfirmed", serverId, parsedGameType);
-            return true;
+            return RconSayOutcome.Accepted;
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "RCON Say threw for server {ServerId} ({GameType})", serverId, parsedGameType);
-            return false;
+            return RconSayOutcome.Unknown;
         }
     }
 
@@ -311,19 +333,30 @@ public sealed class RconResponseService : IRconResponseService
             return false;
         }
 
+        ResolvedPlayer? player;
         try
         {
-            var slotPlayer = await ResolvePlayerBySlotAsync(serverId, parsedGameType, slotId, ct).ConfigureAwait(false);
-            if (slotPlayer is not null
-                && string.Equals(slotPlayer.Guid, playerGuid, StringComparison.OrdinalIgnoreCase)
-                && NamesMatch(expectedPlayerName, slotPlayer.Name))
-            {
-                if (!IsFresh(serverId, deadlineUtc))
-                {
-                    return false;
-                }
+            player = await ResolvePlayerFromStatusAsync(serverId, parsedGameType, slotId, playerGuid, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "RCON slot lookup failed for server {ServerId}, client {ClientId}; falling back to guid lookup.",
+                serverId, slotId);
+            return await TryTellByGuidAsync(serverId, gameType, playerGuid, message, expectedPlayerName, deadlineUtc, ct)
+                .ConfigureAwait(false);
+        }
 
-                var sendResult = await SendTellAsync(serverId, parsedGameType, slotId, message, ct).ConfigureAwait(false);
+        if (player is null || !NamesMatch(expectedPlayerName, player.Name))
+        {
+            return await TryTellByGuidAsync(serverId, gameType, playerGuid, message, expectedPlayerName, deadlineUtc, ct)
+                .ConfigureAwait(false);
+        }
+
+        try
+        {
+            if (IsFresh(serverId, deadlineUtc))
+            {
+                var sendResult = await SendTellAsync(serverId, parsedGameType, player.Slot, message, ct).ConfigureAwait(false);
 
                 if (sendResult.IsSuccess)
                 {
@@ -331,16 +364,16 @@ public sealed class RconResponseService : IRconResponseService
                         "RCON Tell request accepted for server {ServerId} ({GameType}), client {ClientId}; player delivery unconfirmed",
                         serverId,
                         parsedGameType,
-                        slotId);
+                        player.Slot);
                     return true;
                 }
 
                 var sendErrorSummary = SummarizeApiErrors(sendResult);
                 _logger.LogWarning(
-                    "RCON Tell failed for server {ServerId} ({GameType}), client {ClientId}: {StatusCode}. Errors: {ErrorSummary}. Falling back to guid lookup.",
+                    "RCON Tell failed for server {ServerId} ({GameType}), client {ClientId}: {StatusCode}. Errors: {ErrorSummary}; dispatch is unconfirmed.",
                     serverId,
                     parsedGameType,
-                    slotId,
+                    player.Slot,
                     sendResult.StatusCode,
                     sendErrorSummary);
             }
@@ -348,14 +381,12 @@ public sealed class RconResponseService : IRconResponseService
         catch (Exception ex)
         {
             _logger.LogWarning(ex,
-                "RCON Tell threw for server {ServerId} ({GameType}), client {ClientId}. Falling back to guid lookup.",
+                "RCON Tell threw for server {ServerId} ({GameType}), client {ClientId}; dispatch is unconfirmed.",
                 serverId,
                 parsedGameType,
                 slotId);
         }
-
-        return await TryTellByGuidAsync(serverId, gameType, playerGuid, message, expectedPlayerName, deadlineUtc, ct)
-            .ConfigureAwait(false);
+        return false;
     }
 
     private Task<ResolvedPlayer?> ResolvePlayerByGuidAsync(
@@ -437,48 +468,38 @@ public sealed class RconResponseService : IRconResponseService
         return new ResolvedPlayer(player.Num, player.PlayerIdentifier, resolvedName);
     }
 
-    private Task<ResolvedPlayer?> ResolvePlayerBySlotAsync(
+    private async Task<ResolvedPlayer?> ResolvePlayerFromStatusAsync(
         Guid serverId,
         GameType gameType,
         int slotId,
-        CancellationToken ct) =>
-        gameType switch
-        {
-            GameType.CallOfDuty2 or GameType.CallOfDuty4 or GameType.CallOfDuty5 =>
-                ResolveStandardPlayerBySlotAsync(serverId, gameType, slotId, ct),
-            GameType.CallOfDuty4x => ResolveCoD4xPlayerBySlotAsync(serverId, slotId, ct),
-            _ => Task.FromResult<ResolvedPlayer?>(null)
-        };
-
-    private async Task<ResolvedPlayer?> ResolveStandardPlayerBySlotAsync(
-        Guid serverId,
-        GameType gameType,
-        int slotId,
+        string playerGuid,
         CancellationToken ct)
     {
+        if (gameType == GameType.CallOfDuty4x)
+        {
+            var cod4xStatus = await _serversApiClient.CoD4xRcon.V1.Status(serverId, ct).ConfigureAwait(false);
+            if (!cod4xStatus.IsSuccess || cod4xStatus.Result?.Data is null)
+            {
+                return null;
+            }
+            var cod4xPlayers = cod4xStatus.Result.Data.Players;
+            var match = cod4xPlayers.FirstOrDefault(p => p.Num == slotId && string.Equals(p.PlayerIdentifier, playerGuid, StringComparison.OrdinalIgnoreCase))
+                ?? cod4xPlayers.FirstOrDefault(p => string.Equals(p.PlayerIdentifier, playerGuid, StringComparison.OrdinalIgnoreCase));
+            return match is null ? null : ToResolvedPlayer(match);
+        }
+        if (!IsSupportedGameType(gameType))
+        {
+            return null;
+        }
         var status = await GetStandardStatusAsync(serverId, gameType, ct).ConfigureAwait(false);
         if (!status.IsSuccess || status.Result?.Data is null)
         {
             return null;
         }
-
-        var player = status.Result.Data.Players.FirstOrDefault(p => p.Num == slotId);
+        var players = status.Result.Data.Players;
+        var player = players.FirstOrDefault(p => p.Num == slotId && string.Equals(p.Guid, playerGuid, StringComparison.OrdinalIgnoreCase))
+            ?? players.FirstOrDefault(p => string.Equals(p.Guid, playerGuid, StringComparison.OrdinalIgnoreCase));
         return player is null ? null : new ResolvedPlayer(player.Num, player.Guid, player.Name);
-    }
-
-    private async Task<ResolvedPlayer?> ResolveCoD4xPlayerBySlotAsync(
-        Guid serverId,
-        int slotId,
-        CancellationToken ct)
-    {
-        var status = await _serversApiClient.CoD4xRcon.V1.Status(serverId, ct).ConfigureAwait(false);
-        if (!status.IsSuccess || status.Result?.Data is null)
-        {
-            return null;
-        }
-
-        var player = status.Result.Data.Players.FirstOrDefault(p => p.Num == slotId);
-        return player is null ? null : ToResolvedPlayer(player);
     }
 
     private Task<ApiResult<string>> SendTellAsync(
