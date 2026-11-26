@@ -60,6 +60,64 @@ public class RconResponseServiceTests
     }
 
     [Fact]
+    public async Task SayWithOutcomeAsync_WhenTransportTimesOut_ReportsUnknown()
+    {
+        _coD4xRconApi.Setup(x => x.Say(TestServerId, It.IsAny<CoD4xMessageRequestDto>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new TimeoutException());
+
+        var result = await _sut.SayWithOutcomeAsync(TestServerId, "CallOfDuty4x", "Hello", DateTimeOffset.UtcNow.AddSeconds(5));
+
+        Assert.Equal(RconSayOutcome.Unknown, result);
+        _coD4xRconApi.Verify(x => x.Say(TestServerId, It.IsAny<CoD4xMessageRequestDto>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task SayWithOutcomeAsync_IdentifiesUnsupportedCharacters()
+    {
+        _coD4xRconApi.Setup(x => x.Say(TestServerId, It.IsAny<CoD4xMessageRequestDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<string>(System.Net.HttpStatusCode.BadRequest,
+                new ApiResponse<string>(new ApiError("INVALID_REQUEST", "A message contains characters that cannot be safely represented by this RCON transport."))));
+
+        var result = await _sut.SayWithOutcomeAsync(TestServerId, "CallOfDuty4x", "Hello", DateTimeOffset.UtcNow.AddSeconds(5));
+
+        Assert.Equal(RconSayOutcome.InvalidMessage, result);
+    }
+
+    [Fact]
+    public async Task TryTellAsync_WhenSendFails_DoesNotResend()
+    {
+        _coD4xRconApi.Setup(x => x.Status(TestServerId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<CoD4xStatusResponseDto>(System.Net.HttpStatusCode.OK,
+                new ApiResponse<CoD4xStatusResponseDto>(new CoD4xStatusResponseDto
+                {
+                    Players = [new CoD4xStatusPlayerDto { Num = 5, PlayerIdentifier = "guid-1", Name = "PlayerOne" }]
+                })));
+        _coD4xRconApi.Setup(x => x.Tell(TestServerId, It.IsAny<CoD4xTargetMessageRequestDto>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new TimeoutException());
+
+        Assert.False(await _sut.TryTellAsync(TestServerId, "CallOfDuty4x", "guid-1", 5, "Hello", "PlayerOne", DateTimeOffset.UtcNow.AddSeconds(5)));
+        _coD4xRconApi.Verify(x => x.Status(TestServerId, It.IsAny<CancellationToken>()), Times.Once);
+        _coD4xRconApi.Verify(x => x.Tell(TestServerId, It.IsAny<CoD4xTargetMessageRequestDto>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task TryTellAsync_WhenPlayerMoved_UsesSameRoster()
+    {
+        _coD4xRconApi.Setup(x => x.Status(TestServerId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<CoD4xStatusResponseDto>(System.Net.HttpStatusCode.OK,
+                new ApiResponse<CoD4xStatusResponseDto>(new CoD4xStatusResponseDto
+                {
+                    Players = [new CoD4xStatusPlayerDto { Num = 7, PlayerIdentifier = "guid-1", Name = "PlayerOne" }]
+                })));
+        _coD4xRconApi.Setup(x => x.Tell(TestServerId, It.IsAny<CoD4xTargetMessageRequestDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<string>(System.Net.HttpStatusCode.OK, new ApiResponse<string>("ok")));
+
+        Assert.True(await _sut.TryTellAsync(TestServerId, "CallOfDuty4x", "guid-1", 5, "Hello", "PlayerOne", DateTimeOffset.UtcNow.AddSeconds(5)));
+        _coD4xRconApi.Verify(x => x.Status(TestServerId, It.IsAny<CancellationToken>()), Times.Once);
+        _coD4xRconApi.Verify(x => x.Tell(TestServerId, It.Is<CoD4xTargetMessageRequestDto>(r => r.Target == "7"), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
     public async Task TrySayAsync_WhenStale_SkipsMessage()
     {
         var staleTime = DateTime.UtcNow.AddSeconds(-10);

@@ -1,5 +1,6 @@
 using System.Text.Json;
 
+using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
 
 using XtremeIdiots.Portal.Integrations.Servers.Abstractions.Models.V1.Rcon;
@@ -19,6 +20,7 @@ public sealed class FuCommand : IChatCommand
     private readonly IRepositoryApiClient _repositoryClient;
     private readonly IRconResponseService _rconResponseService;
     private readonly ILogger<FuCommand> _logger;
+    private readonly IMemoryCache? _cache;
 
     public FuCommand(
         IChatCommandSettingsProvider settingsProvider,
@@ -26,7 +28,8 @@ public sealed class FuCommand : IChatCommand
         IServersApiClient serversClient,
         IRepositoryApiClient repositoryClient,
         IRconResponseService rconResponseService,
-        ILogger<FuCommand> logger)
+        ILogger<FuCommand> logger,
+        IMemoryCache? cache = null)
     {
         _settingsProvider = settingsProvider;
         _messageTemplateRenderer = messageTemplateRenderer;
@@ -34,6 +37,7 @@ public sealed class FuCommand : IChatCommand
         _repositoryClient = repositoryClient;
         _rconResponseService = rconResponseService;
         _logger = logger;
+        _cache = cache;
     }
 
     public string Prefix => Descriptor.Prefix;
@@ -120,16 +124,24 @@ public sealed class FuCommand : IChatCommand
         var template = effectiveMessages[Random.Shared.Next(effectiveMessages.Count)];
         var renderedMessage = _messageTemplateRenderer.Render(template, resolvedName);
 
-        var prefix = await AgentNamePrefixResolver.ResolveAsync(_repositoryClient, _logger, context.ServerId, ct).ConfigureAwait(false);
+        var prefix = await AgentNamePrefixResolver.ResolveAsync(_repositoryClient, _logger, context.ServerId, ct, _cache).ConfigureAwait(false);
         var response = BuildPrefixedMessage(prefix, renderedMessage);
 
-        var saySent = await _rconResponseService
-            .TrySayAsync(context.ServerId, context.GameType, response, context.ResponseDeadline, ct)
+        var outcome = await _rconResponseService
+            .SayWithOutcomeAsync(context.ServerId, context.GameType, response, context.ResponseDeadline, ct)
             .ConfigureAwait(false);
 
-        if (!saySent)
+        if (outcome == RconSayOutcome.Unknown)
         {
-            return await FailAsync(context, "Unable to send !fu response right now. Please try again.", ct).ConfigureAwait(false);
+            return CommandResult.Failed("Public response dispatch is unconfirmed; it may have been sent.");
+        }
+        if (outcome == RconSayOutcome.InvalidMessage)
+        {
+            return await FailAsync(context, "Response contains characters unsupported by the server.", ct).ConfigureAwait(false);
+        }
+        if (outcome != RconSayOutcome.Accepted)
+        {
+            return await FailAsync(context, "Unable to send !fu response right now.", ct).ConfigureAwait(false);
         }
 
         return CommandResult.Ok(response);
