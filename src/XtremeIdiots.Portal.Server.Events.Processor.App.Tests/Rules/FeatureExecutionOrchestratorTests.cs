@@ -6,6 +6,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 
 using MX.Api.Abstractions;
+using MX.Api.Client;
 
 using XtremeIdiots.Portal.Repository.Abstractions.Constants.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Interfaces.V1;
@@ -18,6 +19,201 @@ namespace XtremeIdiots.Portal.Server.Events.Processor.App.Tests.Rules;
 
 public sealed class FeatureExecutionOrchestratorTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConcurrentNoMatchCompletionDiscardsStaleProgressWithoutRetryingWrite(bool throwConflict)
+    {
+        var storage = new Storage();
+        var executor = new Executor();
+        var invocation = Invocation();
+        invocation = invocation with
+        {
+            Facts = invocation.Facts with { GuidFirstSeenAtUtc = DateTimeOffset.UtcNow.AddDays(-1) }
+        };
+        var snapshot = Snapshot(Rule("known", 0));
+        var firstWrite = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFirst = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var writes = 0;
+        storage.Api.Setup(item => item.UpdateProgress(It.IsAny<Guid>(), It.IsAny<Guid>(),
+                It.IsAny<UpdateRuleFeatureExecutionProgressDto>(), It.IsAny<CancellationToken>()))
+            .Returns(async (Guid _, Guid _, UpdateRuleFeatureExecutionProgressDto request, CancellationToken _) =>
+            {
+                Assert.Equal(0, request.ExpectedVersion);
+                if (Interlocked.Increment(ref writes) == 1)
+                {
+                    firstWrite.SetResult();
+                    await releaseFirst.Task;
+                    if (throwConflict)
+                    {
+                        throw new ApiHttpRequestException("Conflict", HttpStatusCode.Conflict, null);
+                    }
+                    return new ApiResult<RuleFeatureExecutionDto>(HttpStatusCode.Conflict);
+                }
+                storage.Execution = CompleteNoMatch(storage.Execution!, request);
+                return new ApiResult<RuleFeatureExecutionDto>(HttpStatusCode.OK,
+                    new ApiResponse<RuleFeatureExecutionDto>(storage.Execution));
+            });
+
+        var first = Create(storage, executor).ProcessAsync(invocation, snapshot, default);
+        await firstWrite.Task;
+        var second = await Create(storage, executor).ProcessAsync(invocation with
+        {
+            Trigger = invocation.Trigger with { TriggerId = "player.ip-resolved" }
+        }, snapshot, default);
+        var authoritativeProgress = storage.Execution!.DecisionSnapshotJson;
+        releaseFirst.SetResult();
+
+        Assert.Equal(second, await first);
+        Assert.Equal(authoritativeProgress, storage.Execution.DecisionSnapshotJson);
+        Assert.Equal(RuleFeatureExecutionState.Completed, storage.Execution.State);
+        Assert.Empty(executor.Effects);
+        Assert.Empty(invocation.Commands);
+        Assert.Equal(second, await Create(storage, executor).ProcessAsync(invocation, snapshot, default));
+        Assert.Equal(2, writes);
+        storage.Api.Verify(item => item.GetExecution(It.IsAny<Guid>(), It.IsAny<Guid>(),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Theory]
+    [InlineData("active")]
+    [InlineData("matched")]
+    [InlineData("execution")]
+    [InlineData("connection")]
+    [InlineData("revision")]
+    [InlineData("frozen-rules")]
+    [InlineData("version")]
+    [InlineData("cursor")]
+    [InlineData("mode")]
+    [InlineData("missing-evidence")]
+    [InlineData("action")]
+    [InlineData("prepared-action")]
+    [InlineData("unavailable")]
+    public async Task ConflictRetainsFailureWhenAuthoritativeCompletionIsUncertain(string mismatch)
+    {
+        var storage = new Storage();
+        var executor = new Executor();
+        var invocation = Invocation();
+        invocation = invocation with
+        {
+            Facts = invocation.Facts with { GuidFirstSeenAtUtc = DateTimeOffset.UtcNow.AddDays(-1) }
+        };
+        storage.Api.Setup(item => item.UpdateProgress(It.IsAny<Guid>(), It.IsAny<Guid>(),
+                It.IsAny<UpdateRuleFeatureExecutionProgressDto>(), It.IsAny<CancellationToken>()))
+            .Returns((Guid _, Guid _, UpdateRuleFeatureExecutionProgressDto request, CancellationToken _) =>
+            {
+                var current = CompleteNoMatch(storage.Execution!, request);
+                storage.Execution = mismatch switch
+                {
+                    "active" => current with { State = RuleFeatureExecutionState.Evaluating },
+                    "matched" => current with { MatchStatus = RuleExecutionMatchStatus.Matched },
+                    "execution" => current with { ExecutionId = Guid.NewGuid() },
+                    "connection" => current with { ConnectionId = Guid.NewGuid() },
+                    "revision" => current with { RuleSetRevision = "different" },
+                    "frozen-rules" => current with { FrozenRulesJson = "{}" },
+                    "version" => current with { Version = request.ExpectedVersion },
+                    "cursor" => current with { ActionIndex = 1 },
+                    "mode" => current with
+                    {
+                        DecisionSnapshotJson = JsonSerializer.Serialize(
+                        new RuleExecutionProgress { Mode = RuleExecutionMode.DryRun }, RulesSerialization.Options)
+                    },
+                    "missing-evidence" => current with { DecisionSnapshotJson = null },
+                    "action" => current with
+                    {
+                        Actions = [new RuleActionExecutionDto
+                        { Outcome = RuleActionExecutionOutcome.Claimed }]
+                    },
+                    "prepared-action" => current with { PreparedActions = [new()] },
+                    _ => current
+                };
+                return Task.FromResult(new ApiResult<RuleFeatureExecutionDto>(HttpStatusCode.Conflict));
+            });
+        if (mismatch == "unavailable")
+        {
+            storage.Api.Setup(item => item.GetExecution(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new ApiResult<RuleFeatureExecutionDto>(HttpStatusCode.ServiceUnavailable));
+        }
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            Create(storage, executor).ProcessAsync(invocation, Snapshot(Rule("known", 0)), default));
+
+        Assert.Empty(executor.Effects);
+        storage.Api.Verify(item => item.UpdateProgress(It.IsAny<Guid>(), It.IsAny<Guid>(),
+            It.IsAny<UpdateRuleFeatureExecutionProgressDto>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task ConflictDoesNotReconcileLocalMatchedWork()
+    {
+        var storage = new Storage();
+        var executor = new Executor();
+        var conflict = new ApiHttpRequestException("Conflict", HttpStatusCode.Conflict, null);
+        storage.Api.Setup(item => item.UpdateProgress(It.IsAny<Guid>(), It.IsAny<Guid>(),
+                It.IsAny<UpdateRuleFeatureExecutionProgressDto>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(conflict);
+
+        Assert.Same(conflict, await Assert.ThrowsAsync<ApiHttpRequestException>(() =>
+            Create(storage, executor).ProcessAsync(Invocation(), Snapshot(Rule("matched", 0)), default)));
+
+        Assert.Empty(executor.Effects);
+        storage.Api.Verify(item => item.GetExecution(It.IsAny<Guid>(), It.IsAny<Guid>(),
+            It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Theory]
+    [InlineData("action")]
+    [InlineData("prepared-action")]
+    [InlineData("outcome")]
+    [InlineData("unknown")]
+    public async Task ConflictDoesNotDiscardLocalActionOrUnresolvedWork(string work)
+    {
+        var storage = new Storage();
+        var progress = new RuleExecutionProgress
+        {
+            MatchEvidence = new() { NoMatchConfirmed = true, FalseRuleIds = ["known"] }
+        };
+        var execution = new RuleFeatureExecutionDto();
+        switch (work)
+        {
+            case "action":
+                execution = execution with { Actions = [new() { Outcome = RuleActionExecutionOutcome.Dispatched }] };
+                break;
+            case "prepared-action":
+                execution = execution with { PreparedActions = [new()] };
+                break;
+            case "outcome":
+                progress.ActionOutcomes.Add("known:action", new(ActionExecutionOutcome.OutcomeUnknown));
+                break;
+            case "unknown":
+                progress.UnknownRuleIds.Add("unknown");
+                break;
+        }
+        var conflict = new ApiHttpRequestException("Conflict", HttpStatusCode.Conflict, null);
+        storage.Api.Setup(item => item.UpdateProgress(It.IsAny<Guid>(), It.IsAny<Guid>(),
+                It.IsAny<UpdateRuleFeatureExecutionProgressDto>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(conflict);
+
+        Assert.Same(conflict, await Assert.ThrowsAsync<ApiHttpRequestException>(() =>
+            FeatureExecutionOrchestrator.PersistProgressAsync(storage.Repository.Object, execution, progress, 1, 0,
+                RuleFeatureExecutionState.Completed, NullLogger.Instance, DateTimeOffset.UtcNow, default)));
+
+        storage.Api.Verify(item => item.GetExecution(It.IsAny<Guid>(), It.IsAny<Guid>(),
+            It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    private static RuleFeatureExecutionDto CompleteNoMatch(
+        RuleFeatureExecutionDto execution, UpdateRuleFeatureExecutionProgressDto request) =>
+        execution with
+        {
+            Version = execution.Version + 1,
+            State = request.State,
+            MatchStatus = request.MatchStatus!.Value,
+            RuleIndex = request.RuleIndex,
+            ActionIndex = request.ActionIndex,
+            DecisionSnapshotJson = request.DecisionSnapshotJson
+        };
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -1082,6 +1278,7 @@ public sealed class FeatureExecutionOrchestratorTests
     private sealed class Storage
     {
         public Mock<IRepositoryApiClient> Repository { get; } = new();
+        public Mock<IRuleExecutionsApi> Api { get; } = new();
         public RuleFeatureExecutionDto? Execution { get; set; }
         public bool FailOutcomes { get; set; }
         public bool ClaimAlreadyOwned { get; init; }
@@ -1091,10 +1288,12 @@ public sealed class FeatureExecutionOrchestratorTests
 
         public Storage()
         {
-            var api = new Mock<IRuleExecutionsApi>();
+            var api = Api;
             var versioned = new Mock<IVersionedRuleExecutionsApi>();
             versioned.Setup(item => item.V1).Returns(api.Object);
             Repository.Setup(item => item.RuleExecutions).Returns(versioned.Object);
+            api.Setup(item => item.GetExecution(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+                .Returns(() => Task.FromResult(Ok(Execution!)));
             api.Setup(item => item.StartExecution(It.IsAny<Guid>(), It.IsAny<StartRuleFeatureExecutionDto>(), It.IsAny<CancellationToken>()))
                 .Returns((Guid serverId, StartRuleFeatureExecutionDto request, CancellationToken _) =>
                 {
