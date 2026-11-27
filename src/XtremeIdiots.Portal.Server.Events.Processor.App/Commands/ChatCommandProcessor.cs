@@ -138,25 +138,7 @@ public sealed class ChatCommandProcessor : IChatCommandProcessor
         var age = _clock.UtcNow - context.EventGeneratedUtc;
         if (age > threshold)
         {
-            _logger.LogInformation(
-                "Skipping stale command {CommandPrefix} for player {Username}. Category={Category}, AgeMs={AgeMs}, ThresholdMs={ThresholdMs}",
-                command.Prefix,
-                context.Username,
-                command.Metadata.IsMutating ? "Mutating" : "ReadOnly",
-                (long)age.TotalMilliseconds,
-                (long)threshold.TotalMilliseconds);
-
-            _auditLogger.LogAudit(AuditEvent.ServerAction("ChatCommandSkippedStale", AuditAction.Update)
-                .WithGameContext(context.GameType, context.ServerId)
-                .WithPlayer(context.PlayerGuid, context.Username)
-                .WithSource("ChatCommandProcessor")
-                .WithProperty("CommandPrefix", command.Prefix)
-                .WithProperty("CommandCategory", command.Metadata.IsMutating ? "Mutating" : "ReadOnly")
-                .WithProperty("AgeMs", ((long)age.TotalMilliseconds).ToString())
-                .WithProperty("ThresholdMs", ((long)threshold.TotalMilliseconds).ToString())
-                .Build());
-
-            return CommandResult.Failed("Command expired. Please run it again.");
+            return SkipStaleCommand(context, command, age, threshold);
         }
 
         context = context with
@@ -177,9 +159,27 @@ public sealed class ChatCommandProcessor : IChatCommandProcessor
             Snapshot = context.AuthorizationSnapshot
         }, ct).ConfigureAwait(false);
 
+        if (authorizationResult.Allowed)
+        {
+            authorizationResult = await ChatCommandPolicyEvaluator
+                .EvaluateAsync(commandSettings.Policy, context, ct).ConfigureAwait(false);
+
+            if (commandSettings.Policy is not null)
+            {
+                age = _clock.UtcNow - context.EventGeneratedUtc;
+                if (age > threshold)
+                {
+                    return SkipStaleCommand(context, command, age, threshold);
+                }
+            }
+        }
+
         if (!authorizationResult.Allowed)
         {
-            const string denialMessage = "You are not authorized to use this command.";
+            const string defaultDenialMessage = "You are not authorized to use this command.";
+            var denialMessage = string.Equals(command.Metadata.Name, ChatCommandDescriptorCatalog.Fu.Name, StringComparison.OrdinalIgnoreCase)
+                ? FuCommand.SelectRequiredReply(commandSettings, "denied", defaultDenialMessage)
+                : defaultDenialMessage;
             var denialSent = await _rconResponseService.TryTellAsync(
                 context.ServerId,
                 context.GameType,
@@ -250,7 +250,8 @@ public sealed class ChatCommandProcessor : IChatCommandProcessor
         CommandResult result;
         try
         {
-            result = await command.ExecuteAsync(context with { ParsedCommand = canonicalCommand }, ct).ConfigureAwait(false);
+            result = await command.ExecuteAsync(
+                context with { ParsedCommand = canonicalCommand, EffectiveSettings = commandSettings }, ct).ConfigureAwait(false);
         }
         catch (Exception ex) when (!usesRepositoryIdempotency)
         {
@@ -267,6 +268,29 @@ public sealed class ChatCommandProcessor : IChatCommandProcessor
         }
 
         return result;
+    }
+
+    private CommandResult SkipStaleCommand(CommandContext context, IChatCommand command, TimeSpan age, TimeSpan threshold)
+    {
+        _logger.LogInformation(
+            "Skipping stale command {CommandPrefix} for player {Username}. Category={Category}, AgeMs={AgeMs}, ThresholdMs={ThresholdMs}",
+            command.Prefix,
+            context.Username,
+            command.Metadata.IsMutating ? "Mutating" : "ReadOnly",
+            (long)age.TotalMilliseconds,
+            (long)threshold.TotalMilliseconds);
+
+        _auditLogger.LogAudit(AuditEvent.ServerAction("ChatCommandSkippedStale", AuditAction.Update)
+            .WithGameContext(context.GameType, context.ServerId)
+            .WithPlayer(context.PlayerGuid, context.Username)
+            .WithSource("ChatCommandProcessor")
+            .WithProperty("CommandPrefix", command.Prefix)
+            .WithProperty("CommandCategory", command.Metadata.IsMutating ? "Mutating" : "ReadOnly")
+            .WithProperty("AgeMs", ((long)age.TotalMilliseconds).ToString())
+            .WithProperty("ThresholdMs", ((long)threshold.TotalMilliseconds).ToString())
+            .Build());
+
+        return CommandResult.Failed("Command expired. Please run it again.");
     }
 
     private static CommandIdempotencyKey BuildIdempotencyKey(CommandContext context, ChatCommandEnvelope command)

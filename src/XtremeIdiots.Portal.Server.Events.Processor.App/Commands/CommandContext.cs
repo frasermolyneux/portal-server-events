@@ -15,7 +15,9 @@ public sealed record CommandContext
     public required DateTime EventPublishedUtc { get; init; }
     public required long SequenceId { get; init; }
     public string? SourceMessageId { get; init; }
+    public Guid? OccurrenceId { get; init; }
     public DateTimeOffset? ResponseDeadlineUtc { get; init; }
+    public EffectiveChatCommandSettings? EffectiveSettings { get; init; }
     public DateTimeOffset ResponseDeadline => ResponseDeadlineUtc ??
         new DateTimeOffset(DateTime.SpecifyKind(EventGeneratedUtc, DateTimeKind.Utc)).AddSeconds(5);
 
@@ -35,4 +37,8 @@ public sealed record CommandContext
     /// Authorization snapshot used for policy checks and command visibility filtering.
     /// </summary>
     public CommandAuthorizationSnapshot? AuthorizationSnapshot { get; init; }
+
+    internal Lazy<Task<CommandPolicyFacts?>>? PolicyFacts { get; init; }
 }
+
+internal sealed record CommandPolicyFacts(DateTime? FirstSeen, IReadOnlySet<Guid>? TagIds);

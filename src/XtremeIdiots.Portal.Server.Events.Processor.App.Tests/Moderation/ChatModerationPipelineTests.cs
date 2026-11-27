@@ -126,7 +126,7 @@ public class ChatModerationPipelineTests
     {
         _contentSafety
             .Setup(x => x.AnalyseAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new ChatModerationResult(4, 0, 0, 2, 4, "Hate"));
+            .ReturnsAsync(new ChatModerationResult(4, 0, 0, 2));
 
         await _sut.RunAsync(CreateContext(isNewPlayer: true));
 
@@ -146,7 +146,7 @@ public class ChatModerationPipelineTests
     {
         _contentSafety
             .Setup(x => x.AnalyseAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new ChatModerationResult(4, 0, 0, 0, 4, "Hate"));
+            .ReturnsAsync(new ChatModerationResult(4, 0, 0, 0));
         _adminActionsApi
             .Setup(x => x.CreateAdminAction(It.IsAny<CreateAdminActionDto>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new ApiResult(System.Net.HttpStatusCode.ServiceUnavailable));
@@ -167,7 +167,7 @@ public class ChatModerationPipelineTests
     {
         _contentSafety
             .Setup(x => x.AnalyseAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new ChatModerationResult(0, 0, 0, 0, 0, "Hate"));
+            .ReturnsAsync(new ChatModerationResult(0, 0, 0, 0));
 
         await _sut.RunAsync(CreateContext(isNewPlayer: true, hasModerateChatTag: true));
 
@@ -179,12 +179,30 @@ public class ChatModerationPipelineTests
     {
         _contentSafety
             .Setup(x => x.AnalyseAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new ChatModerationResult(2, 2, 2, 2, 2, "Hate"));
+            .ReturnsAsync(new ChatModerationResult(2, 2, 2, 2));
 
         await _sut.RunAsync(CreateContext(isNewPlayer: true));
 
         _adminActionsApi.Verify(x => x.CreateAdminAction(
             It.IsAny<CreateAdminActionDto>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task RunAsync_MissingCategory_PreservesLegacyObservationBehavior()
+    {
+        _settingsProvider
+            .Setup(x => x.GetForServerAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ChatModerationSettings(5, 0, null, null, null));
+        _contentSafety
+            .Setup(x => x.AnalyseAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ChatModerationResult(null, null, null, 2));
+
+        await _sut.RunAsync(CreateContext());
+
+        _adminActionsApi.Verify(x => x.CreateAdminAction(
+            It.Is<CreateAdminActionDto>(dto => dto.Text.Contains("Triggered categories: Hate") &&
+                dto.Text.Contains("Hate: 0/6")),
+            It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -198,7 +216,7 @@ public class ChatModerationPipelineTests
         // Old player with tag — should call content safety
         _contentSafety
             .Setup(x => x.AnalyseAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new ChatModerationResult(0, 0, 0, 0, 0, "Hate"));
+            .ReturnsAsync(new ChatModerationResult(0, 0, 0, 0));
 
         await _sut.RunAsync(CreateContext(isNewPlayer: false, hasModerateChatTag: true));
 
@@ -212,7 +230,7 @@ public class ChatModerationPipelineTests
 
         _contentSafety
             .Setup(x => x.AnalyseAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new ChatModerationResult(0, 0, 0, 0, 0, "Hate"));
+            .ReturnsAsync(new ChatModerationResult(0, 0, 0, 0));
 
         await _sut.RunAsync(CreateContext(message: longMessage));
 
@@ -235,7 +253,7 @@ public class ChatModerationPipelineTests
 
         _contentSafety
             .Setup(x => x.AnalyseAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new ChatModerationResult(1, 0, 0, 2, 2, "Violence"));
+            .ReturnsAsync(new ChatModerationResult(1, 0, 0, 2));
 
         await _sut.RunAsync(CreateContext(isNewPlayer: true));
 

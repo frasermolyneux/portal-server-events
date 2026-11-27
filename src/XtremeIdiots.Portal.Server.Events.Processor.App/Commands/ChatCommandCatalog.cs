@@ -57,7 +57,7 @@ public sealed class ChatCommandCatalog : IChatCommandCatalog
             }
 
             if (string.Equals(command.Name, "fu", StringComparison.OrdinalIgnoreCase) &&
-                FuCommand.ResolveMessagesFromSettings(commandSettings.Settings).Count == 0)
+                FuCommand.ResolveSuccessMessages(commandSettings).Count == 0)
             {
                 continue;
             }
@@ -80,6 +80,11 @@ public sealed class ChatCommandCatalog : IChatCommandCatalog
             }, ct).ConfigureAwait(false);
 
             if (!authorizationResult.Allowed)
+            {
+                continue;
+            }
+
+            if (!(await ChatCommandPolicyEvaluator.EvaluateAsync(commandSettings.Policy, context, ct).ConfigureAwait(false)).Allowed)
             {
                 continue;
             }

@@ -109,11 +109,42 @@ public sealed class ChatCommandSettingsMerger
             FreshnessSeconds = freshness,
             RequiredTags = requiredTags,
             Settings = payload,
+            Policy = serverCommand?.Policy ?? globalCommand?.Policy,
+            Replies = MergeReplies(globalCommand?.Replies, serverCommand?.Replies),
             EnabledSource = enabledSource,
             FreshnessSource = freshnessSource,
             AuthorizationSource = authorizationSource,
             PayloadSource = payloadSource
         };
+    }
+
+    private static Dictionary<string, string[]?>? MergeReplies(
+        Dictionary<string, string[]?>? globalReplies,
+        Dictionary<string, string[]?>? serverReplies)
+    {
+        if (globalReplies is null && serverReplies is null)
+        {
+            return null;
+        }
+
+        var merged = new Dictionary<string, string[]?>(StringComparer.OrdinalIgnoreCase);
+        foreach (var replies in new[] { globalReplies, serverReplies })
+        {
+            if (replies is null)
+            {
+                continue;
+            }
+
+            foreach (var (key, templates) in replies)
+            {
+                if (templates is not null)
+                {
+                    merged[key] = templates;
+                }
+            }
+        }
+
+        return merged;
     }
 
     private static ChatCommandSettingsEntry? TryGetCommand(ChatCommandSettingsDocument? document, string commandName)

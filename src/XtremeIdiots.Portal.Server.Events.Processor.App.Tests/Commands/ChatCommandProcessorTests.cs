@@ -1,3 +1,5 @@
+using System.Text.Json;
+
 using Microsoft.Extensions.Logging;
 
 using Moq;
@@ -6,6 +8,9 @@ using MX.Observability.ApplicationInsights.Auditing;
 
 using XtremeIdiots.Portal.Repository.Abstractions.Constants.V1;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Commands;
+using XtremeIdiots.Portal.Settings.Contracts.V1.Contracts.RulesEngine;
+
+using ChatCommandDefinition = XtremeIdiots.Portal.Server.Events.Processor.App.Commands.ChatCommandDefinition;
 
 namespace XtremeIdiots.Portal.Server.Events.Processor.App.Tests.Commands;
 
@@ -334,6 +339,116 @@ public class ChatCommandProcessorTests
 
         Assert.True(result.Handled);
         Assert.False(result.Success);
+        command.Verify(c => c.ExecuteAsync(It.IsAny<CommandContext>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task PolicyDenialSendsConfiguredPrivateReplyWithoutExecutingCommand()
+    {
+        var command = new Mock<IChatCommand>();
+        command.Setup(c => c.Prefix).Returns("!fu");
+        command.Setup(c => c.Metadata).Returns(new ChatCommandMetadata { Name = "fu", Prefix = "!fu", Usage = "!fu <player>" });
+        var settings = new EffectiveChatCommandSettings
+        {
+            CommandName = "fu",
+            Enabled = true,
+            FreshnessSeconds = 5,
+            Policy = new ChatCommandPolicy { DefaultDecision = ChatCommandPolicyDecision.Deny, Rules = [] },
+            Replies = new(StringComparer.OrdinalIgnoreCase) { ["denied"] = ["Private denial"] }
+        };
+        _settingsProvider.Setup(x => x.GetEffectiveSettingsAsync(It.IsAny<Guid>(), "fu", false, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(settings);
+        var sut = new ChatCommandProcessor([command.Object], _parser, _authorizationService.Object,
+            _idempotencyStore.Object, _clock.Object, _settingsProvider.Object, _rconResponseService.Object,
+            _auditLogger.Object, _logger.Object);
+
+        var result = await sut.ProcessAsync(CreateContext("!fu target"));
+
+        Assert.True(result.Denied);
+        Assert.Equal("Private denial", result.ResponseMessage);
+        command.Verify(c => c.ExecuteAsync(It.IsAny<CommandContext>(), It.IsAny<CancellationToken>()), Times.Never);
+        _rconResponseService.Verify(x => x.TryTellAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<string>(),
+            It.IsAny<int>(), "Private denial", It.IsAny<string?>(), It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task PolicyAllowDoesNotOverrideExistingAuthorizationDenial()
+    {
+        var command = new Mock<IChatCommand>();
+        command.Setup(c => c.Prefix).Returns("!fu");
+        command.Setup(c => c.Metadata).Returns(new ChatCommandMetadata { Name = "fu", Prefix = "!fu", Usage = "!fu <player>" });
+        _authorizationService.Setup(x => x.AuthorizeAsync(It.IsAny<CommandAuthorizationContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(CommandAuthorizationResult.Deny("required tag missing"));
+        _settingsProvider.Setup(x => x.GetEffectiveSettingsAsync(It.IsAny<Guid>(), "fu", false, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new EffectiveChatCommandSettings
+            {
+                CommandName = "fu",
+                Enabled = true,
+                FreshnessSeconds = 5,
+                RequiredTags = ["required"],
+                Policy = new ChatCommandPolicy { DefaultDecision = ChatCommandPolicyDecision.Allow, Rules = [] }
+            });
+        var sut = new ChatCommandProcessor([command.Object], _parser, _authorizationService.Object,
+            _idempotencyStore.Object, _clock.Object, _settingsProvider.Object, _rconResponseService.Object,
+            _auditLogger.Object, _logger.Object);
+
+        var result = await sut.ProcessAsync(CreateContext("!fu target"));
+
+        Assert.True(result.Denied);
+        command.Verify(c => c.ExecuteAsync(It.IsAny<CommandContext>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task CommandThatExpiresWhilePolicyFactsLoadDoesNotExecute()
+    {
+        var now = DateTime.UtcNow;
+        var tagId = Guid.NewGuid();
+        var command = new Mock<IChatCommand>();
+        command.Setup(c => c.Prefix).Returns("!fu");
+        command.Setup(c => c.Metadata).Returns(new ChatCommandMetadata { Name = "fu", Prefix = "!fu", Usage = "!fu <player>" });
+        _clock.SetupSequence(x => x.UtcNow).Returns(now).Returns(now.AddSeconds(6));
+        _settingsProvider.Setup(x => x.GetEffectiveSettingsAsync(It.IsAny<Guid>(), "fu", false, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new EffectiveChatCommandSettings
+            {
+                CommandName = "fu",
+                Enabled = true,
+                FreshnessSeconds = 5,
+                Policy = new ChatCommandPolicy
+                {
+                    DefaultDecision = ChatCommandPolicyDecision.Deny,
+                    Rules =
+                    [
+                        new ChatCommandPolicyRule
+                        {
+                            Id = "tag",
+                            Decision = ChatCommandPolicyDecision.Allow,
+                            Condition = new RuleConditionNode
+                            {
+                                ConditionId = "player.tags",
+                                Parameters = new()
+                                {
+                                    ["operator"] = JsonSerializer.SerializeToElement("ContainsAny"),
+                                    ["tags"] = JsonSerializer.SerializeToElement(new[] { tagId.ToString() })
+                                }
+                            }
+                        }
+                    ]
+                }
+            });
+        var sut = new ChatCommandProcessor([command.Object], _parser, _authorizationService.Object,
+            _idempotencyStore.Object, _clock.Object, _settingsProvider.Object, _rconResponseService.Object,
+            _auditLogger.Object, _logger.Object);
+        var context = CreateContext("!fu target") with
+        {
+            EventGeneratedUtc = now,
+            PolicyFacts = new Lazy<Task<CommandPolicyFacts?>>(() =>
+                Task.FromResult<CommandPolicyFacts?>(new CommandPolicyFacts(now, new HashSet<Guid> { tagId })))
+        };
+
+        var result = await sut.ProcessAsync(context);
+
+        Assert.False(result.Success);
+        Assert.Equal("Command expired. Please run it again.", result.ResponseMessage);
         command.Verify(c => c.ExecuteAsync(It.IsAny<CommandContext>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 

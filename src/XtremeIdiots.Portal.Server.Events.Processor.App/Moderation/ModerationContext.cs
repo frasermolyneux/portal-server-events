@@ -3,6 +3,7 @@ namespace XtremeIdiots.Portal.Server.Events.Processor.App.Moderation;
 public sealed record ModerationContext
 {
     public required Guid ServerId { get; init; }
+    public Guid? OccurrenceId { get; init; }
     public required string GameType { get; init; }
     public required string PlayerGuid { get; init; }
     public required string Username { get; init; }

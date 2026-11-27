@@ -15,24 +15,15 @@ public class ChatModerationService(
             var response = await client.AnalyzeTextAsync(new AnalyzeTextOptions(message), ct);
 
             var hate = response.Value.CategoriesAnalysis
-                .FirstOrDefault(c => c.Category == TextCategory.Hate)?.Severity ?? 0;
+                .FirstOrDefault(c => c.Category == TextCategory.Hate)?.Severity;
             var selfHarm = response.Value.CategoriesAnalysis
-                .FirstOrDefault(c => c.Category == TextCategory.SelfHarm)?.Severity ?? 0;
+                .FirstOrDefault(c => c.Category == TextCategory.SelfHarm)?.Severity;
             var sexual = response.Value.CategoriesAnalysis
-                .FirstOrDefault(c => c.Category == TextCategory.Sexual)?.Severity ?? 0;
+                .FirstOrDefault(c => c.Category == TextCategory.Sexual)?.Severity;
             var violence = response.Value.CategoriesAnalysis
-                .FirstOrDefault(c => c.Category == TextCategory.Violence)?.Severity ?? 0;
+                .FirstOrDefault(c => c.Category == TextCategory.Violence)?.Severity;
 
-            var max = new[] { hate, selfHarm, sexual, violence }.Max();
-            var category = max switch
-            {
-                _ when hate == max => "Hate",
-                _ when selfHarm == max => "SelfHarm",
-                _ when sexual == max => "Sexual",
-                _ => "Violence"
-            };
-
-            return new ChatModerationResult(hate, selfHarm, sexual, violence, max, category);
+            return new ChatModerationResult(hate, selfHarm, sexual, violence);
         }
         catch (Exception ex)
         {
