@@ -6,6 +6,7 @@ using System.Text.Json;
 using Microsoft.Extensions.Logging;
 
 using MX.Api.Abstractions;
+using MX.Api.Client;
 
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.RulesEngine;
 using XtremeIdiots.Portal.Repository.Api.Client.V1;
@@ -487,28 +488,98 @@ internal sealed class FeatureExecutionOrchestrator(
                 execution.ExecutionId);
             diagnosticProgress.OverflowReported = true;
         }
-        return
-        Require(await repository.RuleExecutions.V1.UpdateProgress(execution.GameServerId, execution.ExecutionId,
-            new UpdateRuleFeatureExecutionProgressDto
-            {
-                ExpectedVersion = execution.Version,
-                RuleIndex = ruleIndex,
-                ActionIndex = actionIndex,
-                State = state,
-                DecisionSnapshotJson = JsonSerializer.Serialize(progress, RulesSerialization.Options),
-                MatchStatus = execution.MatchStatus == RuleExecutionMatchStatus.Matched ||
+        var request = new UpdateRuleFeatureExecutionProgressDto
+        {
+            ExpectedVersion = execution.Version,
+            RuleIndex = ruleIndex,
+            ActionIndex = actionIndex,
+            State = state,
+            DecisionSnapshotJson = JsonSerializer.Serialize(progress, RulesSerialization.Options),
+            MatchStatus = execution.MatchStatus == RuleExecutionMatchStatus.Matched ||
                     progress.MatchEvidence?.ObservedMatch is true
                     ? RuleExecutionMatchStatus.Matched
                     : state == RuleFeatureExecutionState.Completed && progress.MatchEvidence?.NoMatchConfirmed is true
                         ? RuleExecutionMatchStatus.NoMatch
                         : null,
-                FactSnapshotId = execution.FactSnapshotId,
-                Coordination = execution.Coordination is { } coordination
+            FactSnapshotId = execution.FactSnapshotId,
+            Coordination = execution.Coordination is { } coordination
                     ? coordination with { WaitingReason = progress.WaitingReason }
                     : null,
-                Diagnostics = diagnostics
-            }, ct).ConfigureAwait(false), "persist rules cursor");
+            Diagnostics = diagnostics
+        };
+        ApiResult<RuleFeatureExecutionDto> response;
+        try
+        {
+            response = await repository.RuleExecutions.V1.UpdateProgress(
+                execution.GameServerId, execution.ExecutionId, request, ct).ConfigureAwait(false);
+        }
+        catch (ApiHttpRequestException ex) when (ex.StatusCode == HttpStatusCode.Conflict)
+        {
+            var completed = await ReconcileCompletedNoMatchAsync(
+                repository, execution, progress, request, logger, ct).ConfigureAwait(false);
+            if (completed is not null)
+            {
+                return completed;
+            }
+            throw;
+        }
+        if (response.StatusCode == HttpStatusCode.Conflict)
+        {
+            var completed = await ReconcileCompletedNoMatchAsync(
+                repository, execution, progress, request, logger, ct).ConfigureAwait(false);
+            if (completed is not null)
+            {
+                return completed;
+            }
+        }
+        return Require(response, "persist rules cursor");
     }
+
+    private static async Task<RuleFeatureExecutionDto?> ReconcileCompletedNoMatchAsync(
+        IRepositoryApiClient repository, RuleFeatureExecutionDto execution, RuleExecutionProgress progress,
+        UpdateRuleFeatureExecutionProgressDto request, ILogger logger, CancellationToken ct)
+    {
+        if (request.State != RuleFeatureExecutionState.Completed ||
+            request.MatchStatus != RuleExecutionMatchStatus.NoMatch ||
+            !HasNoActions(execution, progress))
+        {
+            return null;
+        }
+
+        var current = Require(await repository.RuleExecutions.V1.GetExecution(
+            execution.GameServerId, execution.ExecutionId, ct).ConfigureAwait(false), "reconcile rules cursor conflict");
+        if (current.ExecutionId != execution.ExecutionId || current.GameServerId != execution.GameServerId ||
+            current.ConnectionId != execution.ConnectionId || current.FeatureId != execution.FeatureId ||
+            current.SiegeSessionId != execution.SiegeSessionId || current.FactSnapshotId != execution.FactSnapshotId ||
+            current.RuleSetRevision != execution.RuleSetRevision || current.FrozenRulesJson != execution.FrozenRulesJson ||
+            current.Version <= execution.Version || current.State != RuleFeatureExecutionState.Completed ||
+            current.MatchStatus != RuleExecutionMatchStatus.NoMatch ||
+            current.RuleIndex != request.RuleIndex || current.ActionIndex != request.ActionIndex ||
+            JsonSerializer.Serialize(current.Trigger, RulesSerialization.Options) !=
+                JsonSerializer.Serialize(execution.Trigger, RulesSerialization.Options) ||
+            current.DecisionSnapshotJson is null)
+        {
+            return null;
+        }
+        var completedProgress = JsonSerializer.Deserialize<RuleExecutionProgress>(
+            current.DecisionSnapshotJson, RulesSerialization.Options);
+        if (completedProgress is null || completedProgress.Mode != progress.Mode ||
+            !HasNoActions(current, completedProgress) ||
+            !completedProgress.MatchEvidence!.FalseRuleIds.SetEquals(progress.MatchEvidence!.FalseRuleIds))
+        {
+            return null;
+        }
+
+        logger.LogWarning("Execution {ExecutionId} completed with no match concurrently; discarding stale cursor progress.",
+            execution.ExecutionId);
+        return current;
+    }
+
+    private static bool HasNoActions(RuleFeatureExecutionDto execution, RuleExecutionProgress progress) =>
+        execution.Actions.Length == 0 && execution.PreparedActions.Length == 0 &&
+        progress.ActionOutcomes.Count == 0 && progress.MatchedRuleIds.Count == 0 &&
+        progress.UnknownRuleIds.Count == 0 &&
+        progress.MatchEvidence is { Version: 1, NoMatchConfirmed: true, ObservedMatch: false };
 
     internal static T Require<T>(ApiResult<T> result, string operation) where T : class =>
         result.IsSuccess && result.Result?.Data is { } data ? data :

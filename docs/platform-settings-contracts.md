@@ -128,6 +128,15 @@ supply fresh rule facts, including when the client throws its typed HTTP error.
 These rejections do not fail routine status/disconnect processing. Other HTTP
 and transport failures still propagate for normal retry handling.
 
+A rule-progress HTTP 409 is reconciled only for a local final `NoMatch` decision
+with no action work. A fresh execution read must confirm the same frozen
+execution/configuration, a newer completed `NoMatch`, matching decision evidence
+and no recorded or prepared actions. The stale progress is discarded, never
+written with a refreshed version. This requires Repository's consistent,
+deletion-coordinated execution read. Active, mismatched or unavailable state still
+fails for normal retry. Terminal executions remain terminal; this does not
+guarantee re-evaluation of later changed IP facts.
+
 Siege requires its active, unexpired session, frozen universal rules, timestamped
 activation history and session mode. Baseline membership is not a timestamp.
 Dry-run persists `WouldExecute` decisions without moderation records, messages,
