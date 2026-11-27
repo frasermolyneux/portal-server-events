@@ -579,7 +579,7 @@ internal sealed class FeatureExecutionOrchestrator(
         execution.Actions.Length == 0 && execution.PreparedActions.Length == 0 &&
         progress.ActionOutcomes.Count == 0 && progress.MatchedRuleIds.Count == 0 &&
         progress.UnknownRuleIds.Count == 0 &&
-        progress.MatchEvidence is { NoMatchConfirmed: true, ObservedMatch: false };
+        progress.MatchEvidence is { Version: 1, NoMatchConfirmed: true, ObservedMatch: false };
 
     internal static T Require<T>(ApiResult<T> result, string operation) where T : class =>
         result.IsSuccess && result.Result?.Data is { } data ? data :

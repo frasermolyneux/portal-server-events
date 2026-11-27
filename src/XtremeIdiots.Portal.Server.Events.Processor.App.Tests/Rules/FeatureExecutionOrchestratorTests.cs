@@ -86,6 +86,8 @@ public sealed class FeatureExecutionOrchestratorTests
     [InlineData("cursor")]
     [InlineData("mode")]
     [InlineData("missing-evidence")]
+    [InlineData("missing-evidence-version")]
+    [InlineData("unsupported-evidence-version")]
     [InlineData("action")]
     [InlineData("prepared-action")]
     [InlineData("unavailable")]
@@ -103,6 +105,13 @@ public sealed class FeatureExecutionOrchestratorTests
             .Returns((Guid _, Guid _, UpdateRuleFeatureExecutionProgressDto request, CancellationToken _) =>
             {
                 var current = CompleteNoMatch(storage.Execution!, request);
+                if (mismatch is "missing-evidence-version" or "unsupported-evidence-version")
+                {
+                    var evidence = JsonSerializer.Deserialize<RuleExecutionProgress>(
+                        current.DecisionSnapshotJson!, RulesSerialization.Options)!;
+                    evidence.MatchEvidence!.Version = mismatch == "missing-evidence-version" ? 0 : 2;
+                    current = current with { DecisionSnapshotJson = JsonSerializer.Serialize(evidence, RulesSerialization.Options) };
+                }
                 storage.Execution = mismatch switch
                 {
                     "active" => current with { State = RuleFeatureExecutionState.Evaluating },
@@ -171,7 +180,7 @@ public sealed class FeatureExecutionOrchestratorTests
         var storage = new Storage();
         var progress = new RuleExecutionProgress
         {
-            MatchEvidence = new() { NoMatchConfirmed = true, FalseRuleIds = ["known"] }
+            MatchEvidence = new() { Version = 1, NoMatchConfirmed = true, FalseRuleIds = ["known"] }
         };
         var execution = new RuleFeatureExecutionDto();
         switch (work)
