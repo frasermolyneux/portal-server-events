@@ -1,4 +1,5 @@
 using MX.Observability.ApplicationInsights.Auditing;
+using MX.Observability.ApplicationInsights.Auditing.Models;
 
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
@@ -135,6 +136,42 @@ public class ChatModerationPipelineTests
                 dto.Type == Repository.Abstractions.Constants.V1.AdminActionType.Observation &&
                 dto.Text.Contains("AI Content Safety")),
             It.IsAny<CancellationToken>()), Times.Once);
+
+        _auditLogger.Verify(x => x.LogAudit(It.Is<AuditEvent>(audit =>
+            audit.EventName == "ChatModerationObservationCreated")), Times.Once);
+    }
+
+    [Fact]
+    public async Task RunAsync_ObservationRejected_DoesNotAuditSuccess()
+    {
+        _contentSafety
+            .Setup(x => x.AnalyseAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ChatModerationResult(4, 0, 0, 0, 4, "Hate"));
+        _adminActionsApi
+            .Setup(x => x.CreateAdminAction(It.IsAny<CreateAdminActionDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult(System.Net.HttpStatusCode.ServiceUnavailable));
+
+        await _sut.RunAsync(CreateContext());
+
+        _auditLogger.Verify(x => x.LogAudit(It.IsAny<AuditEvent>()), Times.Never);
+        _logger.Verify(x => x.Log(
+            LogLevel.Error,
+            It.IsAny<EventId>(),
+            It.IsAny<It.IsAnyType>(),
+            It.IsAny<Exception>(),
+            It.IsAny<Func<It.IsAnyType, Exception?, string>>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task RunAsync_NewAndTaggedPlayer_UsesOnePaidCheck()
+    {
+        _contentSafety
+            .Setup(x => x.AnalyseAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ChatModerationResult(0, 0, 0, 0, 0, "Hate"));
+
+        await _sut.RunAsync(CreateContext(isNewPlayer: true, hasModerateChatTag: true));
+
+        _contentSafety.Verify(x => x.AnalyseAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]

@@ -99,7 +99,12 @@ public sealed class ChatModerationPipeline(
             AdminId = botAdminId
         };
 
-        await repositoryClient.AdminActions.V1.CreateAdminAction(adminAction, ct);
+        var result = await repositoryClient.AdminActions.V1.CreateAdminAction(adminAction, ct);
+        if (!result.IsSuccess)
+        {
+            throw new InvalidOperationException(
+                $"Failed to create chat moderation observation. Repository status: {result.StatusCode}.");
+        }
 
         auditLogger.LogAudit(AuditEvent.ServerAction("ChatModerationObservationCreated", AuditAction.Create)
             .WithGameContext(context.GameType, context.ServerId)
