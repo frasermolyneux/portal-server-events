@@ -7,9 +7,6 @@ using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 
-using MX.Observability.ApplicationInsights.Auditing;
-using MX.Observability.ApplicationInsights.Auditing.Models;
-
 using XtremeIdiots.Portal.Repository.Api.Client.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Constants.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.ChatMessages;
@@ -26,7 +23,6 @@ public class ChatMessageProcessor(
     ILogger<ChatMessageProcessor> logger,
     IRepositoryApiClient repositoryApiClient,
     IMemoryCache memoryCache,
-    IAuditLogger auditLogger,
     ICod4xPluginCommandExecutionPolicy cod4xPluginCommandExecutionPolicy,
     IChatCommandProcessor chatCommandProcessor,
     IChatModerationPipeline moderationPipeline,
@@ -139,14 +135,20 @@ public class ChatMessageProcessor(
             sanitizedMessage,
             chatEvent.EventGeneratedUtc);
 
-        await repositoryApiClient.ChatMessages.V1
+        var chatWrite = await repositoryApiClient.ChatMessages.V1
             .CreateChatMessage(chatMessageDto)
             .ConfigureAwait(false);
 
-        auditLogger.LogAudit(AuditEvent.ServerAction("ChatMessagePersisted", AuditAction.Create)
-            .WithGameContext(chatEvent.GameType, chatEvent.ServerId)
-            .WithPlayer(chatEvent.PlayerGuid, chatEvent.Username)
-            .Build());
+        if (!chatWrite.IsSuccess)
+        {
+            logger.LogError("Failed to persist chat message for server {ServerId}, player {PlayerId}. Repository status: {StatusCode}",
+                chatEvent.ServerId, playerId, chatWrite.StatusCode);
+        }
+        else
+        {
+            logger.LogDebug("Chat message persisted for server {ServerId}, player {PlayerId}",
+                chatEvent.ServerId, playerId);
+        }
 
         if (!skipBackendCommandExecution)
         {

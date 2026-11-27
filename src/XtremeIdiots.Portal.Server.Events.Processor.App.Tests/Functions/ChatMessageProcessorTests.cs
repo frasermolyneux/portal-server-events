@@ -1,5 +1,3 @@
-using MX.Observability.ApplicationInsights.Auditing;
-
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Configuration;
@@ -43,7 +41,6 @@ public class ChatMessageProcessorTests
     private readonly Mock<IVersionedUserProfileApi> _versionedUserProfiles = new();
     private readonly Mock<IUserProfileApi> _userProfilesApi = new();
     private readonly IMemoryCache _cache;
-    private readonly Mock<IAuditLogger> _auditLogger = new();
     private readonly Mock<FunctionContext> _functionContext = new();
     private readonly Mock<IChatCommandProcessor> _commandProcessor = new();
     private readonly Mock<ICod4xPluginCommandExecutionPolicy> _cod4xPolicy = new();
@@ -104,7 +101,6 @@ public class ChatMessageProcessorTests
             _logger.Object,
             _repoClient.Object,
             _cache,
-            _auditLogger.Object,
             _cod4xPolicy.Object,
             _commandProcessor.Object,
             _moderationPipeline.Object,
@@ -153,6 +149,33 @@ public class ChatMessageProcessorTests
             dto.ChatType == ChatType.All &&
             dto.Username == "TestPlayer" &&
             dto.Message == "Hello world"), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task RejectedChatWrite_IsLoggedAndDoesNotStopExistingProcessing()
+    {
+        var playerDto = CreatePlayerDto(TestPlayerId);
+        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.Tags))
+            .ReturnsAsync(SuccessResult(playerDto));
+        _chatApi.Setup(x => x.CreateChatMessage(It.IsAny<CreateChatMessageDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult(System.Net.HttpStatusCode.ServiceUnavailable));
+
+        await _sut.ProcessChatMessage(CreateMessage(CreateValidEvent()), _functionContext.Object);
+
+        _logger.Verify(x => x.Log(
+            LogLevel.Error,
+            It.IsAny<EventId>(),
+            It.IsAny<It.IsAnyType>(),
+            It.IsAny<Exception?>(),
+            It.IsAny<Func<It.IsAnyType, Exception?, string>>()), Times.Once);
+        _logger.Verify(x => x.Log(
+            LogLevel.Debug,
+            It.IsAny<EventId>(),
+            It.Is<It.IsAnyType>((state, _) => state != null && state.ToString()!.Contains("Chat message persisted", StringComparison.Ordinal)),
+            It.IsAny<Exception?>(),
+            It.IsAny<Func<It.IsAnyType, Exception?, string>>()), Times.Never);
+        _commandProcessor.Verify(x => x.ProcessAsync(It.IsAny<CommandContext>(), It.IsAny<CancellationToken>()), Times.Once);
+        _moderationPipeline.Verify(x => x.RunAsync(It.IsAny<ModerationContext>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Theory]
