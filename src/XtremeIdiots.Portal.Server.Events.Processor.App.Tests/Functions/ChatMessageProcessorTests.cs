@@ -168,6 +168,12 @@ public class ChatMessageProcessorTests
             It.IsAny<It.IsAnyType>(),
             It.IsAny<Exception?>(),
             It.IsAny<Func<It.IsAnyType, Exception?, string>>()), Times.Once);
+        _logger.Verify(x => x.Log(
+            LogLevel.Debug,
+            It.IsAny<EventId>(),
+            It.Is<It.IsAnyType>((state, _) => state != null && state.ToString()!.Contains("Chat message persisted", StringComparison.Ordinal)),
+            It.IsAny<Exception?>(),
+            It.IsAny<Func<It.IsAnyType, Exception?, string>>()), Times.Never);
         _commandProcessor.Verify(x => x.ProcessAsync(It.IsAny<CommandContext>(), It.IsAny<CancellationToken>()), Times.Once);
         _moderationPipeline.Verify(x => x.RunAsync(It.IsAny<ModerationContext>(), It.IsAny<CancellationToken>()), Times.Once);
     }
