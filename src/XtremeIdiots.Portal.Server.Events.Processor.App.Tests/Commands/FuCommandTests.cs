@@ -12,8 +12,10 @@ using MX.Api.Abstractions;
 using XtremeIdiots.Portal.Integrations.Servers.Abstractions.Interfaces.V1;
 using XtremeIdiots.Portal.Integrations.Servers.Abstractions.Models.V1.Rcon;
 using XtremeIdiots.Portal.Integrations.Servers.Api.Client.V1;
+using XtremeIdiots.Portal.Repository.Abstractions.Constants.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Interfaces.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.Configurations;
+using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.RulesEngine;
 using XtremeIdiots.Portal.Repository.Api.Client.V1;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Commands;
 
@@ -39,6 +41,8 @@ public class FuCommandTests
     private readonly Mock<IGlobalConfigurationsApi> _globalConfigsApi = new();
     private readonly Mock<IVersionedGameServerConfigurationsApi> _versionedServerConfigs = new();
     private readonly Mock<IGameServerConfigurationsApi> _serverConfigsApi = new();
+    private readonly Mock<IVersionedRuleExecutionsApi> _versionedRuleExecutions = new();
+    private readonly Mock<IRuleExecutionsApi> _ruleExecutions = new();
     private readonly Mock<IRconResponseService> _rconResponseService = new();
     private readonly Mock<ILogger<FuCommand>> _logger = new();
 
@@ -63,6 +67,19 @@ public class FuCommandTests
 
         _versionedServerConfigs.Setup(x => x.V1).Returns(_serverConfigsApi.Object);
         _repositoryClient.Setup(x => x.GameServerConfigurations).Returns(_versionedServerConfigs.Object);
+
+        _versionedRuleExecutions.Setup(x => x.V1).Returns(_ruleExecutions.Object);
+        _repositoryClient.Setup(x => x.RuleExecutions).Returns(_versionedRuleExecutions.Object);
+        _ruleExecutions.Setup(x => x.UpdateOccurrenceEffectOutcome(
+                It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<UpdateRuleOccurrenceEffectOutcomeDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Guid serverId, Guid occurrenceId, string effectId, UpdateRuleOccurrenceEffectOutcomeDto update, CancellationToken _) =>
+                new ApiResult<RuleOccurrenceEffectDto>(HttpStatusCode.OK, new ApiResponse<RuleOccurrenceEffectDto>(new RuleOccurrenceEffectDto
+                {
+                    GameServerId = serverId,
+                    OccurrenceId = occurrenceId,
+                    Claim = new ClaimRuleOccurrenceEffectDto { LogicalEffectId = effectId },
+                    Outcome = update.Outcome
+                })));
 
         _globalConfigsApi
             .Setup(x => x.GetConfigurations(It.IsAny<CancellationToken>()))
@@ -111,6 +128,246 @@ public class FuCommandTests
             _repositoryClient.Object,
             _rconResponseService.Object,
             _logger.Object);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_AcquiredOccurrenceClaimsOnePublicReplyAndRecordsDispatch()
+    {
+        var occurrenceId = Guid.NewGuid();
+        SetupResolvedTarget();
+        SetupClaim((serverId, occurrence, request) =>
+            ClaimResult(HttpStatusCode.Created, RuleOccurrenceEffectDisposition.Acquired, true, serverId, occurrence, request));
+
+        var result = await _sut.ExecuteAsync(CreateContext("!fu target") with { OccurrenceId = occurrenceId });
+
+        Assert.True(result.Success);
+        _ruleExecutions.Verify(x => x.ClaimOccurrenceEffect(TestServerId, occurrenceId,
+            It.Is<ClaimRuleOccurrenceEffectDto>(request =>
+                request.FeatureId == "chat-commands" && request.RuleId == "fu" &&
+                request.ActionId == "success" && request.ActionTypeId == "message.public" &&
+                request.RuleIndex == 0 && request.ActionIndex == 0 &&
+                request.RuleSetRevision == "command-unversioned-v1" && request.Mode == RuleExecutionMode.Enforce &&
+                request.LogicalEffectId == RuleOccurrenceEffectIdentity.Create(TestServerId, occurrenceId, "chat-commands", "fu", "success")),
+            It.IsAny<CancellationToken>()), Times.Once);
+        _rconResponseService.Verify(x => x.SayWithOutcomeAsync(TestServerId, "CallOfDuty4",
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()), Times.Once);
+        _ruleExecutions.Verify(x => x.UpdateOccurrenceEffectOutcome(TestServerId, occurrenceId, It.IsAny<string>(),
+            It.Is<UpdateRuleOccurrenceEffectOutcomeDto>(update => update.Outcome == RuleOccurrenceEffectOutcome.Dispatched),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.OK, RuleOccurrenceEffectDisposition.AlreadyClaimed, false)]
+    [InlineData(HttpStatusCode.OK, RuleOccurrenceEffectDisposition.Acquired, true)]
+    [InlineData(HttpStatusCode.Created, RuleOccurrenceEffectDisposition.Acquired, false)]
+    [InlineData(HttpStatusCode.Conflict, RuleOccurrenceEffectDisposition.Acquired, true)]
+    public async Task ExecuteAsync_OnlyCreatedAcquiredAndDispatchableClaimCanSend(
+        HttpStatusCode status, RuleOccurrenceEffectDisposition disposition, bool shouldDispatch)
+    {
+        var occurrenceId = Guid.NewGuid();
+        SetupResolvedTarget();
+        SetupClaim((serverId, occurrence, request) =>
+            ClaimResult(status, disposition, shouldDispatch, serverId, occurrence, request));
+
+        var result = await _sut.ExecuteAsync(CreateContext("!fu target") with { OccurrenceId = occurrenceId });
+
+        Assert.False(result.Success);
+        _rconResponseService.Verify(x => x.SayWithOutcomeAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<string>(),
+            It.IsAny<string>(), It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()), Times.Never);
+        _ruleExecutions.Verify(x => x.UpdateOccurrenceEffectOutcome(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<string>(),
+            It.IsAny<UpdateRuleOccurrenceEffectOutcomeDto>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_MismatchedCreatedClaimDoesNotAuthorizePublicReply()
+    {
+        SetupResolvedTarget();
+        SetupClaim((serverId, _, request) =>
+            ClaimResult(HttpStatusCode.Created, RuleOccurrenceEffectDisposition.Acquired, true, serverId, Guid.NewGuid(), request));
+
+        var result = await _sut.ExecuteAsync(CreateContext("!fu target") with { OccurrenceId = Guid.NewGuid() });
+
+        Assert.False(result.Success);
+        _rconResponseService.Verify(x => x.SayWithOutcomeAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<string>(),
+            It.IsAny<string>(), It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.Created, RuleOccurrenceEffectDisposition.Acquired, true)]
+    [InlineData(HttpStatusCode.OK, RuleOccurrenceEffectDisposition.AlreadyClaimed, false)]
+    public async Task ExecuteAsync_MismatchedClaimMetadataDoesNotAuthorizeOrConfirmDuplicate(
+        HttpStatusCode status, RuleOccurrenceEffectDisposition disposition, bool shouldDispatch)
+    {
+        SetupResolvedTarget();
+        SetupClaim((serverId, occurrence, request) =>
+            ClaimResult(status, disposition, shouldDispatch, serverId, occurrence, request with { RuleSetRevision = "other" }));
+
+        var result = await _sut.ExecuteAsync(CreateContext("!fu target") with { OccurrenceId = Guid.NewGuid() });
+
+        Assert.True(result.Handled);
+        Assert.False(result.Success);
+        _rconResponseService.Verify(x => x.SayWithOutcomeAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<string>(),
+            It.IsAny<string>(), It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_MismatchedDuplicateIsReportedAsFailureRatherThanConfirmedDuplicate()
+    {
+        SetupResolvedTarget();
+        SetupClaim((serverId, _, request) =>
+            ClaimResult(HttpStatusCode.OK, RuleOccurrenceEffectDisposition.AlreadyClaimed, false, serverId, Guid.NewGuid(), request));
+
+        var result = await _sut.ExecuteAsync(CreateContext("!fu target") with { OccurrenceId = Guid.NewGuid() });
+
+        Assert.True(result.Handled);
+        Assert.False(result.Success);
+        _rconResponseService.Verify(x => x.SayWithOutcomeAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<string>(),
+            It.IsAny<string>(), It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_MissingCreatedClaimBodyDoesNotAuthorizePublicReply()
+    {
+        SetupResolvedTarget();
+        SetupClaim((_, _, _) => new ApiResult<ClaimRuleOccurrenceEffectResultDto>(HttpStatusCode.Created));
+
+        var result = await _sut.ExecuteAsync(CreateContext("!fu target") with { OccurrenceId = Guid.NewGuid() });
+
+        Assert.False(result.Success);
+        _rconResponseService.Verify(x => x.SayWithOutcomeAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<string>(),
+            It.IsAny<string>(), It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_LostClaimResponseDoesNotSendOrFallbackOnRedelivery()
+    {
+        var occurrenceId = Guid.NewGuid();
+        var claims = 0;
+        SetupResolvedTarget();
+        SetupClaim((serverId, occurrence, request) =>
+        {
+            if (++claims == 1)
+            {
+                throw new HttpRequestException("Claim response was lost");
+            }
+            return ClaimResult(HttpStatusCode.OK, RuleOccurrenceEffectDisposition.AlreadyClaimed, false, serverId, occurrence, request);
+        });
+        var context = CreateContext("!fu target") with { OccurrenceId = occurrenceId };
+
+        var first = await _sut.ExecuteAsync(context);
+        var duplicate = await _sut.ExecuteAsync(context);
+
+        Assert.False(first.Success);
+        Assert.False(duplicate.Handled);
+        _rconResponseService.Verify(x => x.SayWithOutcomeAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<string>(),
+            It.IsAny<string>(), It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()), Times.Never);
+        _rconResponseService.Verify(x => x.TryTellAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(),
+            It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Theory]
+    [InlineData(RconSayOutcome.NotAttempted)]
+    [InlineData(RconSayOutcome.Rejected)]
+    [InlineData(RconSayOutcome.InvalidMessage)]
+    public async Task ExecuteAsync_DefiniteNonDispatchIsRecordedAsFailed(RconSayOutcome outcome)
+    {
+        var occurrenceId = Guid.NewGuid();
+        SetupResolvedTarget();
+        SetupClaim((serverId, occurrence, request) =>
+            ClaimResult(HttpStatusCode.Created, RuleOccurrenceEffectDisposition.Acquired, true, serverId, occurrence, request));
+        _rconResponseService.Setup(x => x.SayWithOutcomeAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<string>(),
+            It.IsAny<string>(), It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>())).ReturnsAsync(outcome);
+
+        var result = await _sut.ExecuteAsync(CreateContext("!fu target") with { OccurrenceId = occurrenceId });
+
+        Assert.False(result.Success);
+        _ruleExecutions.Verify(x => x.UpdateOccurrenceEffectOutcome(TestServerId, occurrenceId, It.IsAny<string>(),
+            It.Is<UpdateRuleOccurrenceEffectOutcomeDto>(update => update.Outcome == RuleOccurrenceEffectOutcome.Failed),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_FailedOutcomeWriteDoesNotResendAcceptedPublicReply()
+    {
+        var occurrenceId = Guid.NewGuid();
+        var claims = 0;
+        SetupResolvedTarget();
+        SetupClaim((serverId, occurrence, request) => ++claims == 1
+            ? ClaimResult(HttpStatusCode.Created, RuleOccurrenceEffectDisposition.Acquired, true, serverId, occurrence, request)
+            : ClaimResult(HttpStatusCode.OK, RuleOccurrenceEffectDisposition.AlreadyClaimed, false, serverId, occurrence, request));
+        _ruleExecutions.Setup(x => x.UpdateOccurrenceEffectOutcome(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<string>(),
+                It.IsAny<UpdateRuleOccurrenceEffectOutcomeDto>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new HttpRequestException("Outcome response was lost"));
+        var context = CreateContext("!fu target") with { OccurrenceId = occurrenceId };
+
+        var first = await _sut.ExecuteAsync(context);
+        var duplicate = await _sut.ExecuteAsync(context);
+
+        Assert.True(first.Success);
+        Assert.False(duplicate.Handled);
+        _rconResponseService.Verify(x => x.SayWithOutcomeAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<string>(),
+            It.IsAny<string>(), It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_StaleOccurrenceDoesNotClaimOrSend()
+    {
+        SetupResolvedTarget();
+        var context = CreateContext("!fu target") with
+        {
+            OccurrenceId = Guid.NewGuid(),
+            ResponseDeadlineUtc = DateTimeOffset.UtcNow.AddSeconds(-1)
+        };
+
+        var result = await _sut.ExecuteAsync(context);
+
+        Assert.False(result.Success);
+        _ruleExecutions.Verify(x => x.ClaimOccurrenceEffect(It.IsAny<Guid>(), It.IsAny<Guid>(),
+            It.IsAny<ClaimRuleOccurrenceEffectDto>(), It.IsAny<CancellationToken>()), Times.Never);
+        _rconResponseService.Verify(x => x.SayWithOutcomeAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<string>(),
+            It.IsAny<string>(), It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_UnknownPublicDispatchIsRecordedAndDuplicateDoesNotResend()
+    {
+        var occurrenceId = Guid.NewGuid();
+        var claims = 0;
+        SetupResolvedTarget();
+        SetupClaim((serverId, occurrence, request) => ++claims == 1
+            ? ClaimResult(HttpStatusCode.Created, RuleOccurrenceEffectDisposition.Acquired, true, serverId, occurrence, request)
+            : ClaimResult(HttpStatusCode.OK, RuleOccurrenceEffectDisposition.AlreadyClaimed, false, serverId, occurrence, request));
+        _rconResponseService.Setup(x => x.SayWithOutcomeAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<string>(),
+            It.IsAny<string>(), It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>())).ReturnsAsync(RconSayOutcome.Unknown);
+        var context = CreateContext("!fu target") with { OccurrenceId = occurrenceId };
+
+        var first = await _sut.ExecuteAsync(context);
+        var duplicate = await _sut.ExecuteAsync(context);
+
+        Assert.False(first.Success);
+        Assert.False(duplicate.Handled);
+        _rconResponseService.Verify(x => x.SayWithOutcomeAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<string>(),
+            It.IsAny<string>(), It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()), Times.Once);
+        _ruleExecutions.Verify(x => x.UpdateOccurrenceEffectOutcome(TestServerId, occurrenceId, It.IsAny<string>(),
+            It.Is<UpdateRuleOccurrenceEffectOutcomeDto>(update => update.Outcome == RuleOccurrenceEffectOutcome.OutcomeUnknown),
+            It.IsAny<CancellationToken>()), Times.Once);
+        _rconResponseService.Verify(x => x.TryTellAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(),
+            It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("00000000-0000-0000-0000-000000000000")]
+    public async Task ExecuteAsync_LegacyOccurrenceDoesNotClaim(string? rawOccurrenceId)
+    {
+        SetupResolvedTarget();
+        var occurrenceId = rawOccurrenceId is null ? (Guid?)null : Guid.Parse(rawOccurrenceId);
+
+        var result = await _sut.ExecuteAsync(CreateContext("!fu target") with { OccurrenceId = occurrenceId });
+
+        Assert.True(result.Success);
+        _ruleExecutions.Verify(x => x.ClaimOccurrenceEffect(It.IsAny<Guid>(), It.IsAny<Guid>(),
+            It.IsAny<ClaimRuleOccurrenceEffectDto>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -309,6 +566,58 @@ public class FuCommandTests
             It.IsAny<string?>(),
             It.IsAny<DateTimeOffset>(),
             It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_UsesConfiguredSuccessReplyAndPreservesLiteralPlayerName()
+    {
+        _cod4RconApi.Setup(x => x.Status(TestServerId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<RconStatusResponseDto>(HttpStatusCode.OK, new ApiResponse<RconStatusResponseDto>(new RconStatusResponseDto
+            {
+                Players = [new RconStatusPlayerDto { Num = 4, Guid = "target-guid", Name = "Target$1" }]
+            })));
+        var settings = new EffectiveChatCommandSettings
+        {
+            CommandName = "fu",
+            Enabled = true,
+            FreshnessSeconds = 5,
+            Replies = new(StringComparer.OrdinalIgnoreCase) { ["success"] = ["Cheers {NAME}"] }
+        };
+
+        var result = await _sut.ExecuteAsync(CreateContext("!fu target") with { EffectiveSettings = settings });
+
+        Assert.True(result.Success);
+        _rconResponseService.Verify(x => x.SayWithOutcomeAsync(TestServerId, "CallOfDuty4",
+            "Cheers Target$1", It.IsAny<string>(), It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()), Times.Once);
+        _settingsProvider.Verify(x => x.GetEffectiveSettingsAsync(It.IsAny<Guid>(), It.IsAny<string>(),
+            It.IsAny<bool>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_UsesConfiguredAmbiguousReplyPrivately()
+    {
+        _cod4RconApi.Setup(x => x.Status(TestServerId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<RconStatusResponseDto>(HttpStatusCode.OK, new ApiResponse<RconStatusResponseDto>(new RconStatusResponseDto
+            {
+                Players =
+                [
+                    new RconStatusPlayerDto { Num = 3, Guid = "g1", Name = "Name1" },
+                    new RconStatusPlayerDto { Num = 5, Guid = "g2", Name = "Name2" }
+                ]
+            })));
+        var settings = CreateEnabledFuSettings(["legacy {name}"]) with
+        {
+            Replies = new(StringComparer.OrdinalIgnoreCase) { ["targetAmbiguous"] = ["Choose: {SUGGESTIONS}"] }
+        };
+
+        var result = await _sut.ExecuteAsync(CreateContext("!fu name") with { EffectiveSettings = settings });
+
+        Assert.False(result.Success);
+        Assert.Equal("Choose: Name1 (slot 3), Name2 (slot 5)", result.ResponseMessage);
+        _rconResponseService.Verify(x => x.TryTellAsync(TestServerId, "CallOfDuty4", "abc123", 3,
+            result.ResponseMessage!, "Issuer", It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()), Times.Once);
+        _rconResponseService.Verify(x => x.SayWithOutcomeAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<string>(),
+            It.IsAny<string>(), It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -546,6 +855,36 @@ public class FuCommandTests
                 It.IsAny<string>(),
                 It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()), Times.Never);
     }
+
+    private void SetupResolvedTarget() =>
+        _cod4RconApi.Setup(x => x.Status(TestServerId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiResult<RconStatusResponseDto>(HttpStatusCode.OK,
+                new ApiResponse<RconStatusResponseDto>(new RconStatusResponseDto
+                {
+                    Players = [new RconStatusPlayerDto { Num = 4, Guid = "target-guid", Name = "Target" }]
+                })));
+
+    private void SetupClaim(Func<Guid, Guid, ClaimRuleOccurrenceEffectDto, ApiResult<ClaimRuleOccurrenceEffectResultDto>> response) =>
+        _ruleExecutions.Setup(x => x.ClaimOccurrenceEffect(It.IsAny<Guid>(), It.IsAny<Guid>(),
+                It.IsAny<ClaimRuleOccurrenceEffectDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Guid serverId, Guid occurrenceId, ClaimRuleOccurrenceEffectDto request, CancellationToken _) =>
+                response(serverId, occurrenceId, request));
+
+    private static ApiResult<ClaimRuleOccurrenceEffectResultDto> ClaimResult(
+        HttpStatusCode status, RuleOccurrenceEffectDisposition disposition, bool shouldDispatch,
+        Guid serverId, Guid occurrenceId, ClaimRuleOccurrenceEffectDto request) =>
+        new(status, new ApiResponse<ClaimRuleOccurrenceEffectResultDto>(new ClaimRuleOccurrenceEffectResultDto
+        {
+            Disposition = disposition,
+            ShouldDispatch = shouldDispatch,
+            Effect = new RuleOccurrenceEffectDto
+            {
+                GameServerId = serverId,
+                OccurrenceId = occurrenceId,
+                Claim = JsonSerializer.Deserialize<ClaimRuleOccurrenceEffectDto>(JsonSerializer.Serialize(request))!,
+                Outcome = RuleOccurrenceEffectOutcome.Claimed
+            }
+        }));
 
     private static CommandContext CreateContext(string message, string gameType = "CallOfDuty4") => new()
     {

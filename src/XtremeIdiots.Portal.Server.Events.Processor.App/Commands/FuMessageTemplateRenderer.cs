@@ -11,6 +11,6 @@ public sealed class FuMessageTemplateRenderer
         var sourceTemplate = template ?? string.Empty;
         var playerName = resolvedPlayerName ?? string.Empty;
 
-        return NameTokenRegex.Replace(sourceTemplate, playerName);
+        return NameTokenRegex.Replace(sourceTemplate, _ => playerName);
     }
 }

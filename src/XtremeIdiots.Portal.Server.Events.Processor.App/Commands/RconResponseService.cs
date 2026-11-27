@@ -1,10 +1,12 @@
 using System.Diagnostics;
+using System.Net;
 using System.Text.RegularExpressions;
 
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
 
 using MX.Api.Abstractions;
+using MX.Api.Client;
 
 using XtremeIdiots.Portal.Integrations.Servers.Abstractions.Models.V1.Rcon;
 using XtremeIdiots.Portal.Integrations.Servers.Api.Client.V1;
@@ -113,20 +115,23 @@ public sealed class RconResponseService : IRconResponseService
 
             if (parsedGameType == GameType.CallOfDuty4x)
             {
-                var cod4xResult = await _serversApiClient.CoD4xRcon.V1.Say(
-                    serverId, new CoD4xMessageRequestDto { Message = message, FirstFragmentHeader = header }, ct).ConfigureAwait(false);
+                ApiResult<string> cod4xResult;
+                try
+                {
+                    cod4xResult = await _serversApiClient.CoD4xRcon.V1.Say(
+                        serverId, new CoD4xMessageRequestDto { Message = message, FirstFragmentHeader = header }, ct).ConfigureAwait(false);
+                }
+                catch (ApiHttpRequestException ex) when (ex.StatusCode == HttpStatusCode.BadRequest)
+                {
+                    _logger.LogWarning(ex, "RCON Say rejected for server {ServerId} ({GameType})", serverId, parsedGameType);
+                    return ClassifyCod4xSayFailure(ex.StatusCode, ex.ErrorResponse?.Errors);
+                }
+
                 if (!cod4xResult.IsSuccess)
                 {
                     _logger.LogWarning("RCON Say failed for server {ServerId} ({GameType}): {StatusCode}",
                         serverId, parsedGameType, cod4xResult.StatusCode);
-                    if (cod4xResult.StatusCode == System.Net.HttpStatusCode.BadRequest &&
-                        cod4xResult.Result?.Errors?.Any(error => error?.Code == "INVALID_REQUEST") == true)
-                    {
-                        return cod4xResult.Result.Errors.Any(error => error?.Message ==
-                            "A message contains characters that cannot be safely represented by this RCON transport.")
-                            ? RconSayOutcome.InvalidMessage : RconSayOutcome.Rejected;
-                    }
-                    return RconSayOutcome.Unknown;
+                    return ClassifyCod4xSayFailure(cod4xResult.StatusCode, cod4xResult.Result?.Errors);
                 }
                 _logger.LogInformation("RCON Say request accepted for server {ServerId} ({GameType}); player delivery unconfirmed", serverId, parsedGameType);
                 return RconSayOutcome.Accepted;
@@ -166,6 +171,19 @@ public sealed class RconResponseService : IRconResponseService
             _logger.LogError(ex, "RCON Say threw for server {ServerId} ({GameType})", serverId, parsedGameType);
             return RconSayOutcome.Unknown;
         }
+    }
+
+    private static RconSayOutcome ClassifyCod4xSayFailure(HttpStatusCode? status, ApiError[]? errors)
+    {
+        if (status != HttpStatusCode.BadRequest || errors?.Any(error => error?.Code == "INVALID_REQUEST") != true)
+        {
+            return RconSayOutcome.Unknown;
+        }
+
+        return errors.Any(error => error?.Code == "INVALID_REQUEST" && error.Message ==
+            "A message contains characters that cannot be safely represented by this RCON transport.")
+            ? RconSayOutcome.InvalidMessage
+            : RconSayOutcome.Rejected;
     }
 
     public Task<bool> TryTellAsync(

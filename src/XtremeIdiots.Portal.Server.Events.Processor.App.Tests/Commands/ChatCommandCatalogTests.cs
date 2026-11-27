@@ -73,6 +73,28 @@ public class ChatCommandCatalogTests
         Assert.Contains(result, x => x.Prefix == "!fu");
     }
 
+    [Theory]
+    [InlineData(ChatCommandPolicyDecision.Allow, true)]
+    [InlineData(ChatCommandPolicyDecision.Deny, false)]
+    public async Task GetAvailableCommandsAsync_UsesSuccessRepliesAndPolicyForFu(
+        ChatCommandPolicyDecision decision, bool expectedVisible)
+    {
+        var settingsProvider = new Mock<IChatCommandSettingsProvider>();
+        settingsProvider.Setup(x => x.GetEffectiveSettingsAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Guid _, string name, bool _, CancellationToken _) => new EffectiveChatCommandSettings
+            {
+                CommandName = name,
+                Enabled = true,
+                FreshnessSeconds = 5,
+                Policy = name == "fu" ? new ChatCommandPolicy { DefaultDecision = decision, Rules = [] } : null,
+                Replies = name == "fu" ? new(StringComparer.OrdinalIgnoreCase) { ["success"] = ["Hello {name}"] } : null
+            });
+
+        var commands = await CreateSut(settingsProvider.Object).GetAvailableCommandsAsync(CreateContext());
+
+        Assert.Equal(expectedVisible, commands.Any(command => command.Prefix == "!fu"));
+    }
+
     [Fact]
     public async Task GetAvailableCommandsAsync_WhenFuDisabled_ExcludesFu()
     {

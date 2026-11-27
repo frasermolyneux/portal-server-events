@@ -15,6 +15,66 @@ This document defines how `portal-server-events` consumes platform settings afte
 - New approach: canonical contracts are owned in `portal-repository` via `XtremeIdiots.Portal.Settings.Contracts.V1`.
 - `XtremeIdiots.Portal.ChatCommands.Abstractions.V1` is compatibility-only and not canonical for new behavior.
 
+## Chat commands and moderation
+
+The existing command enablement, authorization, game ownership and freshness
+checks remain in force. An optional per-command policy adds ordered admission
+rules after existing authorization; the first matching rule decides, and an
+unknown condition at that point denies. Unsupported leaves remain unknown,
+including within three-valued AND/OR groups. Disabled rules are skipped.
+The same authorization and policy checks filter `!commands` visibility.
+
+Supported policy leaves are `always`, `player.tags` with GUID-based
+`ContainsAny`, `ContainsAll` or `ContainsNone`, and `chat.player-first-seen`
+with `withinDays` from 0 to 36500. First-seen means the selected player's
+Repository `FirstSeen`, strictly later than processing UTC time minus the
+positive window; a zero window never matches. It is not connection GUID history
+or profile age. Missing facts are unknown. Policy facts are fetched lazily once
+per command/help context, independently of the legacy player and required-tag
+cache, and freshness is checked again after policy evaluation.
+
+A non-null server command policy replaces the whole global policy. Reply
+templates merge per result key: null inherits, while an explicit empty list is
+preserved for result keys that permit suppression. The shared validator requires
+nonempty `!fu` success and failure reply lists when supplied. `!fu` uses the
+`success` choices when supplied, otherwise its existing `settings.messages`;
+when no effective success messages exist it is hidden from help and sends no
+public reply.
+
+For `!fu` events with a nonempty occurrence ID, a public reply requires a
+Repository occurrence-effect claim immediately before dispatch. The stable
+coordinates are `chat-commands` / `fu` / `success` / `message.public`, with rule
+and action indices zero. `command-unversioned-v1` records that no command
+settings revision was available; it is not a settings hash or frozen payload.
+Only a correlated HTTP 201 `Acquired` response with `ShouldDispatch` authorizes
+the send. Duplicates, conflicts and ambiguous claim responses do not send or
+fall back; a lost response or crash after claiming can therefore lose a reply.
+The occurrence ID survives delivery retry but does not deduplicate a log entry
+recaptured after restart. An accepted RCON request is recorded as `Dispatched`,
+an uncertain send as `OutcomeUnknown`, and a definite rejection or no-send as `Failed`;
+outcome-write failures are logged and do not resend. RCON acceptance does not
+confirm player delivery. A missing or empty occurrence ID retains legacy
+behavior, and other command effects are unchanged.
+
+Deploy this runtime only after the compatible Repository occurrence API and
+published contracts are available. Repository 5.0.14 provides the occurrence API,
+but its command validator rejects unknown leaves and `chat.player-first-seen`,
+which disables the affected settings document. Do not configure those leaves
+until the preservation-compatible validator and catalogue are released and
+deployed. Coordinate the agent and native-plugin command owners; this change
+does not switch ownership or disable native game commands. The existing CoD4x
+`AdminListCommands` heuristic can fail open and does not prove exclusive
+ownership; backend claims do not deduplicate native effects. Do not enable
+overlapping execution until occurrence-bound ownership is established.
+
+Legacy chat moderation remains feature/category-gated, excludes short and
+`QUICKMESSAGE_` traffic, and uses the existing new-player-or-`moderate-chat`
+eligibility before one paid analysis per processing attempt. Redelivery may
+retry an unresolved analysis. Missing analyzer categories remain nullable for
+future rules, while the legacy observation retains its zero fallback. The
+staged `chatModerationRules`, local literal lists, private nudges and new chat
+evidence are not activated by this change.
+
 ## Welcome cutover
 
 The legacy `welcomeMessages` runtime, its process-local deduplication, delayed

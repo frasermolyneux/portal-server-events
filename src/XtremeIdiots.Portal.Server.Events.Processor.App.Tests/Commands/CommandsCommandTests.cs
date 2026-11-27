@@ -4,6 +4,8 @@ using Moq;
 
 using XtremeIdiots.Portal.Server.Events.Processor.App.Commands;
 
+using ChatCommandDefinition = XtremeIdiots.Portal.Server.Events.Processor.App.Commands.ChatCommandDefinition;
+
 namespace XtremeIdiots.Portal.Server.Events.Processor.App.Tests.Commands;
 
 public class CommandsCommandTests

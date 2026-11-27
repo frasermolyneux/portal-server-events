@@ -5,6 +5,7 @@ using Microsoft.Extensions.Options;
 using Moq;
 
 using MX.Api.Abstractions;
+using MX.Api.Client;
 
 using XtremeIdiots.Portal.Integrations.Servers.Abstractions.Interfaces.V1;
 using XtremeIdiots.Portal.Integrations.Servers.Abstractions.Models.V1.Rcon;
@@ -224,6 +225,24 @@ public class RconResponseServiceTests
         var result = await _sut.SayWithOutcomeAsync(TestServerId, "CallOfDuty4x", "Hello", DateTimeOffset.UtcNow.AddSeconds(5));
 
         Assert.Equal(RconSayOutcome.InvalidMessage, result);
+    }
+
+    [Theory]
+    [InlineData(System.Net.HttpStatusCode.BadRequest, "INVALID_REQUEST",
+        "A message contains characters that cannot be safely represented by this RCON transport.", RconSayOutcome.InvalidMessage)]
+    [InlineData(System.Net.HttpStatusCode.BadRequest, "INVALID_REQUEST", "Invalid request.", RconSayOutcome.Rejected)]
+    [InlineData(System.Net.HttpStatusCode.BadRequest, "RCON_OPERATION_FAILED", "Prefix unavailable.", RconSayOutcome.Unknown)]
+    [InlineData(System.Net.HttpStatusCode.BadGateway, "RCON_MESSAGE_PARTIAL_FAILURE", "Partial send.", RconSayOutcome.Unknown)]
+    public async Task SayWithOutcomeAsync_ClassifiesTypedHttpFailures(
+        System.Net.HttpStatusCode status, string code, string message, RconSayOutcome expected)
+    {
+        _coD4xRconApi.Setup(x => x.Say(TestServerId, It.IsAny<CoD4xMessageRequestDto>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new ApiHttpRequestException("RCON request failed", status, new ApiResponse(new ApiError(code, message))));
+
+        var result = await _sut.SayWithOutcomeAsync(TestServerId, "CallOfDuty4x", "Hello", DateTimeOffset.UtcNow.AddSeconds(5));
+
+        Assert.Equal(expected, result);
+        _coD4xRconApi.Verify(x => x.Say(TestServerId, It.IsAny<CoD4xMessageRequestDto>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]

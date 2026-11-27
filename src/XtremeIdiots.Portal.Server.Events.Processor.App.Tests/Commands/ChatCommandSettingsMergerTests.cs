@@ -99,4 +99,45 @@ public class ChatCommandSettingsMergerTests
         Assert.Equal(SettingsValueSource.ServerCommand, result.AuthorizationSource);
         Assert.Equal(SettingsValueSource.ServerCommand, result.PayloadSource);
     }
+
+    [Fact]
+    public void Merge_PolicyReplacesAsAWholeAndRepliesInheritPerResult()
+    {
+        var globalPolicy = new ChatCommandPolicy { DefaultDecision = ChatCommandPolicyDecision.Deny, Rules = [] };
+        var global = new ChatCommandSettingsDocument
+        {
+            Commands = new Dictionary<string, ChatCommandSettingsEntry>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["fu"] = new()
+                {
+                    Policy = globalPolicy,
+                    Replies = new()
+                    {
+                        ["success"] = ["global {name}"],
+                        ["usage"] = ["global usage"],
+                        ["optional"] = ["global optional"]
+                    }
+                }
+            }
+        };
+        var serverEntry = new ChatCommandSettingsEntry
+        {
+            Replies = new() { ["SUCCESS"] = null, ["usage"] = ["server usage"], ["optional"] = [] }
+        };
+        var server = new ChatCommandSettingsDocument
+        {
+            Commands = new Dictionary<string, ChatCommandSettingsEntry>(StringComparer.OrdinalIgnoreCase) { ["fu"] = serverEntry }
+        };
+
+        var inherited = _sut.Merge("fu", false, global, server);
+        Assert.Same(globalPolicy, inherited.Policy);
+        Assert.Equal(["global {name}"], inherited.Replies!["success"]!);
+        Assert.Equal(["server usage"], inherited.Replies["USAGE"]!);
+        Assert.Empty(inherited.Replies["optional"]!);
+
+        serverEntry.Policy = new ChatCommandPolicy { DefaultDecision = ChatCommandPolicyDecision.Allow, Rules = [] };
+        var replaced = _sut.Merge("fu", false, global, server);
+        Assert.Same(serverEntry.Policy, replaced.Policy);
+        Assert.Empty(replaced.Policy!.Rules!);
+    }
 }

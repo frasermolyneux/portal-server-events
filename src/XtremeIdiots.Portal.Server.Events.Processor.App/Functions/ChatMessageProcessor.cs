@@ -165,8 +165,10 @@ public class ChatMessageProcessor(
                 EventPublishedUtc = chatEvent.EventPublishedUtc,
                 SequenceId = chatEvent.SequenceId,
                 SourceMessageId = message.MessageId,
+                OccurrenceId = chatEvent.OccurrenceId,
                 PlayerId = playerId,
-                AuthorizationSnapshot = playerContext.Value.AuthorizationSnapshot
+                AuthorizationSnapshot = playerContext.Value.AuthorizationSnapshot,
+                PolicyFacts = new Lazy<Task<CommandPolicyFacts?>>(() => GetCurrentPolicyFactsAsync(playerId, context.CancellationToken))
             };
 
             var commandResult = await chatCommandProcessor.ProcessAsync(commandContext, context.CancellationToken).ConfigureAwait(false);
@@ -191,6 +193,7 @@ public class ChatMessageProcessor(
         var moderationContext = new ModerationContext
         {
             ServerId = chatEvent.ServerId,
+            OccurrenceId = chatEvent.OccurrenceId,
             GameType = chatEvent.GameType,
             PlayerGuid = chatEvent.PlayerGuid,
             Username = chatEvent.Username,
@@ -319,6 +322,48 @@ public class ChatMessageProcessor(
             new MemoryCacheEntryOptions().SetSlidingExpiration(PlayerCacheExpiration));
 
         return ctx;
+    }
+
+    private async Task<CommandPolicyFacts?> GetCurrentPolicyFactsAsync(Guid playerId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var response = await repositoryApiClient.Players.V1
+                .GetPlayer(playerId, PlayerEntityOptions.Tags)
+                .ConfigureAwait(false);
+
+            if (!response.IsSuccess || response.Result?.Data is not { } player || player.PlayerId != playerId)
+            {
+                logger.LogWarning("Unable to resolve current command-policy facts for player {PlayerId}; repository status {StatusCode}",
+                    playerId, response.StatusCode);
+                return null;
+            }
+
+            IReadOnlySet<Guid>? tagIds = null;
+            if (player.Tags is not null &&
+                player.Tags.All(static tag => tag is not null && tag.TagId.HasValue && tag.TagId != Guid.Empty))
+            {
+                tagIds = player.Tags.Select(static tag => tag.TagId!.Value).ToHashSet();
+            }
+            else
+            {
+                logger.LogWarning("Current command-policy tags are unavailable or contain a missing ID for player {PlayerId}", playerId);
+            }
+
+            var firstSeen = player.FirstSeen == default ? (DateTime?)null : player.FirstSeen;
+            if (firstSeen is null)
+            {
+                logger.LogWarning("Current command-policy first-seen time is unavailable for player {PlayerId}", playerId);
+            }
+
+            return new CommandPolicyFacts(firstSeen, tagIds);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TimeoutException ||
+            ex is OperationCanceledException && !cancellationToken.IsCancellationRequested)
+        {
+            logger.LogWarning(ex, "Unable to resolve current command-policy facts for player {PlayerId}", playerId);
+            return null;
+        }
     }
 
     private readonly record struct PlayerContextInfo(

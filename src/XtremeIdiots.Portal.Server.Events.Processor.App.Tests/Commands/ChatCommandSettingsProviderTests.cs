@@ -88,6 +88,56 @@ public class ChatCommandSettingsProviderTests
     }
 
     [Fact]
+    public async Task GetEffectiveSettingsAsync_DeserializesAndInheritsPolicyAndReplies()
+    {
+        _globalConfigsApi.Setup(x => x.GetConfigurations(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(SuccessResult(new CollectionModel<ConfigurationDto>(
+            [
+                CreateConfigurationDto(ChatCommandSettingsConstants.Namespace,
+                    /*lang=json,strict*/ """{"schemaVersion":1,"commands":{"fu":{"policy":{"defaultDecision":"Deny","rules":[{"id":"allow","enabled":true,"order":0,"condition":{"conditionId":"always","parameters":{}},"decision":"Allow"}]},"replies":{"success":["Hello {name}"],"usage":["Global"]}}}}""")
+            ])));
+        _serverConfigsApi.Setup(x => x.GetConfigurations(ServerId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(SuccessResult(new CollectionModel<ConfigurationDto>(
+            [
+                CreateConfigurationDto(ChatCommandSettingsConstants.Namespace,
+                    /*lang=json,strict*/ """{"schemaVersion":1,"commands":{"fu":{"policy":null,"replies":{"success":null,"usage":["Server"]}}}}""")
+            ])));
+
+        var result = await CreateSut().GetEffectiveSettingsAsync(ServerId, "fu", false);
+
+        Assert.True(result.Enabled);
+        Assert.Equal(ChatCommandPolicyDecision.Deny, result.Policy!.DefaultDecision);
+        Assert.True(ChatCommandPolicyEvaluator.Evaluate(result.Policy, null, DateTime.UtcNow).Allowed);
+        Assert.Equal(["Hello {name}"], result.Replies!["success"]!);
+        Assert.Equal(["Server"], result.Replies["usage"]!);
+    }
+
+    [Theory]
+    [InlineData("denied")]
+    [InlineData("success")]
+    public async Task GetEffectiveSettingsAsync_RejectsSuppressionOfRequiredFuReply(string resultKey)
+    {
+        var json = System.Text.Json.JsonSerializer.Serialize(new
+        {
+            schemaVersion = 1,
+            commands = new Dictionary<string, object>
+            {
+                ["fu"] = new { replies = new Dictionary<string, string[]> { [resultKey] = [] } }
+            }
+        });
+        _globalConfigsApi.Setup(x => x.GetConfigurations(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(SuccessResult(new CollectionModel<ConfigurationDto>(
+            [
+                CreateConfigurationDto(ChatCommandSettingsConstants.Namespace, json)
+            ])));
+
+        var result = await CreateSut().GetEffectiveSettingsAsync(ServerId, "fu", false);
+
+        Assert.False(result.Enabled);
+        Assert.True(result.ValidationFailed);
+    }
+
+    [Fact]
     public async Task GetEffectiveSettingsAsync_WhenUsingFixtures_LocksCurrentMergeAndReadBehavior()
     {
         _globalConfigsApi

@@ -37,7 +37,7 @@ internal sealed class SharedRuleConditionResolver(
         bool? result = id switch
         {
             "always" => true,
-            "player.tags" => EvaluateTags(parameters, operation),
+            "player.tags" => EvaluateTags(facts.TagsAvailable ? facts.TagIds : null, parameters, operation),
             "player.first-seen-guid" => EvaluateIdentifier(parameters, operation, true, context.OccurredAtUtc),
             "player.first-seen-ip" => EvaluateIdentifier(parameters, operation, false, context.OccurredAtUtc),
             "player.profile-age" => PlayerRuleConditions.ProfileAge(
@@ -55,7 +55,10 @@ internal sealed class SharedRuleConditionResolver(
         };
     }
 
-    private bool? EvaluateTags(IReadOnlyDictionary<string, JsonElement> parameters, string? operation)
+    internal static bool? EvaluateTags(
+        IReadOnlyCollection<Guid>? actual,
+        IReadOnlyDictionary<string, JsonElement> parameters,
+        string? operation)
     {
         if (!parameters.TryGetValue("tags", out var tags) || tags.ValueKind != JsonValueKind.Array ||
             tags.EnumerateArray().Any(static item => item.ValueKind != JsonValueKind.String))
@@ -63,7 +66,7 @@ internal sealed class SharedRuleConditionResolver(
             return null;
         }
 
-        return PlayerRuleConditions.Tags(facts.TagsAvailable ? facts.TagIds : null,
+        return PlayerRuleConditions.Tags(actual,
             tags.EnumerateArray().Select(static item => item.GetString()!).ToArray(), operation ?? "");
     }
 

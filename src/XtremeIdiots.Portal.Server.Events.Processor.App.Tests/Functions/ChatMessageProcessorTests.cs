@@ -14,6 +14,7 @@ using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.ChatMessages;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.ConnectedPlayers;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.GameServers;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.Players;
+using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.Tags;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.UserProfiles;
 using XtremeIdiots.Portal.Repository.Api.Client.V1;
 using XtremeIdiots.Portal.Server.Events.Abstractions.V1.Events;
@@ -114,11 +115,13 @@ public class ChatMessageProcessorTests
         string? chatMessage = null,
         int slotId = 3,
         ChatMessageType? type = null,
-        Guid? serverId = null) => new()
+        Guid? serverId = null,
+        Guid? occurrenceId = null) => new()
         {
             EventGeneratedUtc = DateTime.UtcNow.AddSeconds(-10),
             EventPublishedUtc = DateTime.UtcNow.AddSeconds(-5),
             ServerId = serverId ?? TestServerId,
+            OccurrenceId = occurrenceId,
             GameType = gameType ?? "CallOfDuty4",
             SequenceId = 1,
             PlayerGuid = playerGuid ?? "abc123guid",
@@ -149,6 +152,29 @@ public class ChatMessageProcessorTests
             dto.ChatType == ChatType.All &&
             dto.Username == "TestPlayer" &&
             dto.Message == "Hello world"), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("00000000-0000-0000-0000-000000000000")]
+    [InlineData("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")]
+    public async Task ModerationReceivesOriginalOccurrenceIdentity(string? rawOccurrenceId)
+    {
+        Guid? occurrenceId = rawOccurrenceId is null ? null : Guid.Parse(rawOccurrenceId);
+        var evt = CreateValidEvent(occurrenceId: occurrenceId);
+        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.Tags))
+            .ReturnsAsync(SuccessResult(CreatePlayerDto(TestPlayerId)));
+        _chatApi.Setup(x => x.CreateChatMessage(It.IsAny<CreateChatMessageDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(SuccessResult());
+
+        await _sut.ProcessChatMessage(CreateMessage(evt), _functionContext.Object);
+
+        _moderationPipeline.Verify(x => x.RunAsync(
+            It.Is<ModerationContext>(context => context.OccurrenceId == occurrenceId && context.ServerId == TestServerId),
+            It.IsAny<CancellationToken>()), Times.Once);
+        _commandProcessor.Verify(x => x.ProcessAsync(
+            It.Is<CommandContext>(context => context.OccurrenceId == occurrenceId),
+            It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -512,8 +538,116 @@ public class ChatMessageProcessorTests
         _commandProcessor.Verify(x => x.ProcessAsync(
             It.Is<CommandContext>(ctx =>
                 ctx.AuthorizationSnapshot != null &&
-                ctx.AuthorizationSnapshot.TagsResolved == true),
+                ctx.AuthorizationSnapshot.TagsResolved == true &&
+                ctx.PolicyFacts != null),
             It.IsAny<CancellationToken>()), Times.Once);
+        _playersApi.Verify(x => x.GetPlayer(It.IsAny<Guid>(), It.IsAny<PlayerEntityOptions>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task CommandPolicyFactsUseFreshPlayerDataWithoutChangingLegacyCache()
+    {
+        var oldTagId = Guid.NewGuid();
+        var currentTagId = Guid.NewGuid();
+        var firstSeen = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        var cachedPlayer = CreatePlayerDto(TestPlayerId);
+        cachedPlayer.Tags.Add(new PlayerTagDto { TagId = oldTagId });
+        var currentPlayer = Newtonsoft.Json.JsonConvert.DeserializeObject<PlayerDto>(
+            Newtonsoft.Json.JsonConvert.SerializeObject(new { PlayerId = TestPlayerId, FirstSeen = firstSeen }))!;
+        currentPlayer.Tags.Add(new PlayerTagDto { TagId = currentTagId });
+        var updatedPlayer = CreatePlayerDto(TestPlayerId);
+        var contexts = new List<CommandContext>();
+        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.Tags))
+            .ReturnsAsync(SuccessResult(cachedPlayer));
+        _playersApi.SetupSequence(x => x.GetPlayer(TestPlayerId, PlayerEntityOptions.Tags))
+            .ReturnsAsync(SuccessResult(currentPlayer))
+            .ReturnsAsync(SuccessResult(updatedPlayer));
+        _chatApi.Setup(x => x.CreateChatMessage(It.IsAny<CreateChatMessageDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(SuccessResult());
+        _commandProcessor.Setup(x => x.ProcessAsync(It.IsAny<CommandContext>(), It.IsAny<CancellationToken>()))
+            .Callback<CommandContext, CancellationToken>((context, _) => contexts.Add(context))
+            .ReturnsAsync(CommandResult.NotHandled);
+
+        await _sut.ProcessChatMessage(CreateMessage(CreateValidEvent(chatMessage: "!commands")), _functionContext.Object);
+        await _sut.ProcessChatMessage(CreateMessage(CreateValidEvent(chatMessage: "!commands")), _functionContext.Object);
+
+        _playersApi.Verify(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.Tags), Times.Once);
+        _playersApi.Verify(x => x.GetPlayer(It.IsAny<Guid>(), It.IsAny<PlayerEntityOptions>()), Times.Never);
+        var first = await contexts[0].PolicyFacts!.Value;
+        var second = await contexts[1].PolicyFacts!.Value;
+        Assert.Equal(firstSeen, first!.FirstSeen);
+        Assert.Equal([currentTagId], first.TagIds);
+        Assert.Empty(second!.TagIds!);
+        Assert.Null(second.FirstSeen);
+        _playersApi.Verify(x => x.GetPlayer(TestPlayerId, PlayerEntityOptions.Tags), Times.Exactly(2));
+    }
+
+    [Fact]
+    public async Task MissingPlayerTagIdIsUnknownForCommandPolicies()
+    {
+        var player = CreatePlayerDto(TestPlayerId);
+        player.Tags.Add(new PlayerTagDto());
+        CommandContext? captured = null;
+        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.Tags))
+            .ReturnsAsync(SuccessResult(player));
+        _playersApi.Setup(x => x.GetPlayer(TestPlayerId, PlayerEntityOptions.Tags))
+            .ReturnsAsync(SuccessResult(player));
+        _chatApi.Setup(x => x.CreateChatMessage(It.IsAny<CreateChatMessageDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(SuccessResult());
+        _commandProcessor.Setup(x => x.ProcessAsync(It.IsAny<CommandContext>(), It.IsAny<CancellationToken>()))
+            .Callback<CommandContext, CancellationToken>((context, _) => captured = context)
+            .ReturnsAsync(CommandResult.NotHandled);
+
+        await _sut.ProcessChatMessage(CreateMessage(CreateValidEvent(chatMessage: "!commands")), _functionContext.Object);
+
+        var facts = await captured!.PolicyFacts!.Value;
+        Assert.NotNull(facts);
+        Assert.Null(facts.TagIds);
+    }
+
+    [Fact]
+    public async Task MissingTagsDoNotHideAvailableFirstSeenForCommandPolicies()
+    {
+        var firstSeen = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        var player = Newtonsoft.Json.JsonConvert.DeserializeObject<PlayerDto>(
+            Newtonsoft.Json.JsonConvert.SerializeObject(new { PlayerId = TestPlayerId, FirstSeen = firstSeen }))!;
+        typeof(PlayerDto).GetProperty(nameof(PlayerDto.Tags))!.SetValue(player, null);
+        CommandContext? captured = null;
+        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.Tags))
+            .ReturnsAsync(SuccessResult(CreatePlayerDto(TestPlayerId)));
+        _playersApi.Setup(x => x.GetPlayer(TestPlayerId, PlayerEntityOptions.Tags))
+            .ReturnsAsync(SuccessResult(player));
+        _chatApi.Setup(x => x.CreateChatMessage(It.IsAny<CreateChatMessageDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(SuccessResult());
+        _commandProcessor.Setup(x => x.ProcessAsync(It.IsAny<CommandContext>(), It.IsAny<CancellationToken>()))
+            .Callback<CommandContext, CancellationToken>((context, _) => captured = context)
+            .ReturnsAsync(CommandResult.NotHandled);
+
+        await _sut.ProcessChatMessage(CreateMessage(CreateValidEvent(chatMessage: "!commands")), _functionContext.Object);
+
+        var facts = await captured!.PolicyFacts!.Value;
+        Assert.NotNull(facts);
+        Assert.Null(facts.TagIds);
+        Assert.Equal(firstSeen, facts.FirstSeen);
+    }
+
+    [Fact]
+    public async Task CommandPolicyFactTransportFailureIsUnknownRatherThanAnEmptyTagSet()
+    {
+        CommandContext? captured = null;
+        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.Tags))
+            .ReturnsAsync(SuccessResult(CreatePlayerDto(TestPlayerId)));
+        _playersApi.Setup(x => x.GetPlayer(TestPlayerId, PlayerEntityOptions.Tags))
+            .ThrowsAsync(new HttpRequestException("Repository unavailable"));
+        _chatApi.Setup(x => x.CreateChatMessage(It.IsAny<CreateChatMessageDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(SuccessResult());
+        _commandProcessor.Setup(x => x.ProcessAsync(It.IsAny<CommandContext>(), It.IsAny<CancellationToken>()))
+            .Callback<CommandContext, CancellationToken>((context, _) => captured = context)
+            .ReturnsAsync(CommandResult.NotHandled);
+
+        await _sut.ProcessChatMessage(CreateMessage(CreateValidEvent(chatMessage: "!commands")), _functionContext.Object);
+
+        Assert.Null(await captured!.PolicyFacts!.Value);
     }
 
     [Fact]
