@@ -114,11 +114,13 @@ public class ChatMessageProcessorTests
         string? chatMessage = null,
         int slotId = 3,
         ChatMessageType? type = null,
-        Guid? serverId = null) => new()
+        Guid? serverId = null,
+        Guid? occurrenceId = null) => new()
         {
             EventGeneratedUtc = DateTime.UtcNow.AddSeconds(-10),
             EventPublishedUtc = DateTime.UtcNow.AddSeconds(-5),
             ServerId = serverId ?? TestServerId,
+            OccurrenceId = occurrenceId,
             GameType = gameType ?? "CallOfDuty4",
             SequenceId = 1,
             PlayerGuid = playerGuid ?? "abc123guid",
@@ -149,6 +151,24 @@ public class ChatMessageProcessorTests
             dto.ChatType == ChatType.All &&
             dto.Username == "TestPlayer" &&
             dto.Message == "Hello world"), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")]
+    public async Task ValidMessage_PassesCaptureIdentityToModeration(string? occurrence)
+    {
+        var occurrenceId = occurrence is null ? (Guid?)null : Guid.Parse(occurrence);
+        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.Tags))
+            .ReturnsAsync(SuccessResult(CreatePlayerDto(TestPlayerId)));
+        _chatApi.Setup(x => x.CreateChatMessage(It.IsAny<CreateChatMessageDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(SuccessResult());
+
+        await _sut.ProcessChatMessage(CreateMessage(CreateValidEvent(occurrenceId: occurrenceId)), _functionContext.Object);
+
+        _moderationPipeline.Verify(x => x.RunAsync(
+            It.Is<ModerationContext>(context => context.OccurrenceId == occurrenceId),
+            It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]

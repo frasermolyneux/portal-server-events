@@ -191,6 +191,7 @@ public class ChatMessageProcessor(
         var moderationContext = new ModerationContext
         {
             ServerId = chatEvent.ServerId,
+            OccurrenceId = chatEvent.OccurrenceId,
             GameType = chatEvent.GameType,
             PlayerGuid = chatEvent.PlayerGuid,
             Username = chatEvent.Username,

@@ -188,6 +188,23 @@ public class ChatModerationPipelineTests
     }
 
     [Fact]
+    public async Task RunAsync_MissingCategoryAtZeroThreshold_PreservesLegacyObservation()
+    {
+        _settingsProvider
+            .Setup(x => x.GetForServerAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ChatModerationSettings(5, 0, null, null, null));
+        _contentSafety
+            .Setup(x => x.AnalyseAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ChatModerationResult(null, null, null, null, 0, "Hate"));
+
+        await _sut.RunAsync(CreateContext());
+
+        _adminActionsApi.Verify(x => x.CreateAdminAction(
+            It.Is<CreateAdminActionDto>(dto => dto.Text.Contains("Hate: 0/6")),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
     public async Task RunAsync_OnlyNewOrTaggedPlayers_GetContentSafetyCheck()
     {
         // Old player, no tag — should not call content safety

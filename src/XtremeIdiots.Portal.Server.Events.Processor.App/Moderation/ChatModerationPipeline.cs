@@ -134,22 +134,23 @@ public sealed class ChatModerationPipeline(
     {
         var triggered = new List<string>();
 
-        if (settings.HateSeverityThreshold.HasValue && result.HateSeverity >= settings.HateSeverityThreshold.Value)
+        // Preserve the legacy observation behavior while retaining missing categories for future rule checks.
+        if (settings.HateSeverityThreshold.HasValue && (result.HateSeverity ?? 0) >= settings.HateSeverityThreshold.Value)
         {
             triggered.Add("Hate");
         }
 
-        if (settings.ViolenceSeverityThreshold.HasValue && result.ViolenceSeverity >= settings.ViolenceSeverityThreshold.Value)
+        if (settings.ViolenceSeverityThreshold.HasValue && (result.ViolenceSeverity ?? 0) >= settings.ViolenceSeverityThreshold.Value)
         {
             triggered.Add("Violence");
         }
 
-        if (settings.SexualSeverityThreshold.HasValue && result.SexualSeverity >= settings.SexualSeverityThreshold.Value)
+        if (settings.SexualSeverityThreshold.HasValue && (result.SexualSeverity ?? 0) >= settings.SexualSeverityThreshold.Value)
         {
             triggered.Add("Sexual");
         }
 
-        if (settings.SelfHarmSeverityThreshold.HasValue && result.SelfHarmSeverity >= settings.SelfHarmSeverityThreshold.Value)
+        if (settings.SelfHarmSeverityThreshold.HasValue && (result.SelfHarmSeverity ?? 0) >= settings.SelfHarmSeverityThreshold.Value)
         {
             triggered.Add("SelfHarm");
         }
@@ -168,10 +169,10 @@ public sealed class ChatModerationPipeline(
             "[AI Content Safety]",
             $"Triggered categories: {string.Join(", ", triggeredCategories)}",
             "",
-            $"Hate: {result.HateSeverity}/6 (threshold: {FormatThreshold(settings.HateSeverityThreshold)})",
-            $"Violence: {result.ViolenceSeverity}/6 (threshold: {FormatThreshold(settings.ViolenceSeverityThreshold)})",
-            $"Sexual: {result.SexualSeverity}/6 (threshold: {FormatThreshold(settings.SexualSeverityThreshold)})",
-            $"SelfHarm: {result.SelfHarmSeverity}/6 (threshold: {FormatThreshold(settings.SelfHarmSeverityThreshold)})",
+            $"Hate: {result.HateSeverity ?? 0}/6 (threshold: {FormatThreshold(settings.HateSeverityThreshold)})",
+            $"Violence: {result.ViolenceSeverity ?? 0}/6 (threshold: {FormatThreshold(settings.ViolenceSeverityThreshold)})",
+            $"Sexual: {result.SexualSeverity ?? 0}/6 (threshold: {FormatThreshold(settings.SexualSeverityThreshold)})",
+            $"SelfHarm: {result.SelfHarmSeverity ?? 0}/6 (threshold: {FormatThreshold(settings.SelfHarmSeverityThreshold)})",
             "",
             "Message excerpt:",
             $"\"{Truncate(message, 200)}\""
