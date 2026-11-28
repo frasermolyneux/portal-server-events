@@ -15,5 +15,6 @@ public sealed record ModerationContext
     public required DateTime EventGeneratedUtc { get; init; }
     public required Guid PlayerId { get; init; }
     public required DateTime PlayerFirstSeen { get; init; }
+    public required IReadOnlyList<string?> PlayerTagNames { get; init; }
     public required bool HasModerateChatTag { get; init; }
 }

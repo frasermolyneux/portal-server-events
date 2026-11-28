@@ -201,6 +201,7 @@ public class ChatMessageProcessor(
             EventGeneratedUtc = chatEvent.EventGeneratedUtc,
             PlayerId = playerId,
             PlayerFirstSeen = playerContext.Value.FirstSeen,
+            PlayerTagNames = playerContext.Value.TagNames,
             HasModerateChatTag = playerContext.Value.HasModerateChatTag
         };
 
@@ -306,8 +307,8 @@ public class ChatMessageProcessor(
         var hasTag = player.Tags.Any(t =>
             string.Equals(t.Tag?.Name, moderateTagName, StringComparison.OrdinalIgnoreCase));
 
-        var tagNames = player.Tags
-            .Select(t => t.Tag?.Name)
+        var observedTagNames = player.Tags.Select(t => t.Tag?.Name).ToArray();
+        var tagNames = observedTagNames
             .Where(t => !string.IsNullOrWhiteSpace(t))
             .Select(t => t!)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -318,7 +319,7 @@ public class ChatMessageProcessor(
             TagsResolved = true
         };
 
-        var ctx = new PlayerContextInfo(player.PlayerId, player.FirstSeen, hasTag, authorizationSnapshot);
+        var ctx = new PlayerContextInfo(player.PlayerId, player.FirstSeen, hasTag, observedTagNames, authorizationSnapshot);
         memoryCache.Set(cacheKey, ctx,
             new MemoryCacheEntryOptions().SetSlidingExpiration(PlayerCacheExpiration));
 
@@ -329,5 +330,6 @@ public class ChatMessageProcessor(
         Guid PlayerId,
         DateTime FirstSeen,
         bool HasModerateChatTag,
+        IReadOnlyList<string?> TagNames,
         CommandAuthorizationSnapshot AuthorizationSnapshot);
 }

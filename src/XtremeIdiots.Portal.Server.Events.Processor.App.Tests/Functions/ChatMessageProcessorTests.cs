@@ -14,6 +14,7 @@ using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.ChatMessages;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.ConnectedPlayers;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.GameServers;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.Players;
+using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.Tags;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.UserProfiles;
 using XtremeIdiots.Portal.Repository.Api.Client.V1;
 using XtremeIdiots.Portal.Server.Events.Abstractions.V1.Events;
@@ -185,6 +186,27 @@ public class ChatMessageProcessorTests
         _moderationPipeline.Verify(x => x.RunAsync(
             It.Is<ModerationContext>(context => context.MessageType == ChatMessageType.Team &&
                 context.SlotId == 9 && context.EventGeneratedUtc == evt.EventGeneratedUtc),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task ValidMessage_PassesTagNamesWithoutDiscardingUnavailableNames()
+    {
+        var player = CreatePlayerDto(TestPlayerId);
+        player.Tags.Add(new PlayerTagDto { Tag = new TagDto { Name = "Example" } });
+        player.Tags.Add(new PlayerTagDto());
+        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.Tags))
+            .ReturnsAsync(SuccessResult(player));
+        _chatApi.Setup(x => x.CreateChatMessage(It.IsAny<CreateChatMessageDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(SuccessResult());
+
+        await _sut.ProcessChatMessage(CreateMessage(CreateValidEvent()), _functionContext.Object);
+
+        _moderationPipeline.Verify(x => x.RunAsync(
+            It.Is<ModerationContext>(context => context.PlayerTagNames.SequenceEqual(new string?[] { "Example", null })),
+            It.IsAny<CancellationToken>()), Times.Once);
+        _commandProcessor.Verify(x => x.ProcessAsync(
+            It.Is<CommandContext>(context => context.AuthorizationSnapshot!.Tags.SetEquals(new[] { "Example" })),
             It.IsAny<CancellationToken>()), Times.Once);
     }
 

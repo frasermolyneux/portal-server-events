@@ -94,6 +94,7 @@ public class ChatModerationPipelineTests
             EventGeneratedUtc = DateTime.UtcNow,
             PlayerId = TestPlayerId,
             PlayerFirstSeen = isNewPlayer ? DateTime.UtcNow.AddDays(-1) : DateTime.UtcNow.AddDays(-30),
+            PlayerTagNames = [],
             HasModerateChatTag = hasModerateChatTag
         };
 
