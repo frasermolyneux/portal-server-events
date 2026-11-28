@@ -12,6 +12,7 @@ using MX.Api.Abstractions;
 using XtremeIdiots.Portal.Repository.Abstractions.Interfaces.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.AdminActions;
 using XtremeIdiots.Portal.Repository.Api.Client.V1;
+using XtremeIdiots.Portal.Server.Events.Abstractions.V1.Events;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Moderation;
 
 using static XtremeIdiots.Portal.Server.Events.Processor.App.Tests.ServiceBusTestHelpers;
@@ -88,6 +89,9 @@ public class ChatModerationPipelineTests
             PlayerGuid = "abc123guid",
             Username = "TestPlayer",
             Message = message ?? "This is a test message",
+            MessageType = ChatMessageType.All,
+            SlotId = 3,
+            EventGeneratedUtc = DateTime.UtcNow,
             PlayerId = TestPlayerId,
             PlayerFirstSeen = isNewPlayer ? DateTime.UtcNow.AddDays(-1) : DateTime.UtcNow.AddDays(-30),
             HasModerateChatTag = hasModerateChatTag

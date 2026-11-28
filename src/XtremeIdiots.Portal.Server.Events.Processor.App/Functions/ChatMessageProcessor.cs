@@ -196,6 +196,9 @@ public class ChatMessageProcessor(
             PlayerGuid = chatEvent.PlayerGuid,
             Username = chatEvent.Username,
             Message = sanitizedMessage,
+            MessageType = chatEvent.Type,
+            SlotId = chatEvent.SlotId,
+            EventGeneratedUtc = chatEvent.EventGeneratedUtc,
             PlayerId = playerId,
             PlayerFirstSeen = playerContext.Value.FirstSeen,
             HasModerateChatTag = playerContext.Value.HasModerateChatTag

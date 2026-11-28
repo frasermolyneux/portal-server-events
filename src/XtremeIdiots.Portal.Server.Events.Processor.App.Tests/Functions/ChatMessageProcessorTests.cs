@@ -172,6 +172,23 @@ public class ChatMessageProcessorTests
     }
 
     [Fact]
+    public async Task ValidMessage_PassesOriginalChatContextToModeration()
+    {
+        var evt = CreateValidEvent(type: ChatMessageType.Team, slotId: 9);
+        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.Tags))
+            .ReturnsAsync(SuccessResult(CreatePlayerDto(TestPlayerId)));
+        _chatApi.Setup(x => x.CreateChatMessage(It.IsAny<CreateChatMessageDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(SuccessResult());
+
+        await _sut.ProcessChatMessage(CreateMessage(evt), _functionContext.Object);
+
+        _moderationPipeline.Verify(x => x.RunAsync(
+            It.Is<ModerationContext>(context => context.MessageType == ChatMessageType.Team &&
+                context.SlotId == 9 && context.EventGeneratedUtc == evt.EventGeneratedUtc),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
     public async Task RejectedChatWrite_IsLoggedAndDoesNotStopExistingProcessing()
     {
         var playerDto = CreatePlayerDto(TestPlayerId);
