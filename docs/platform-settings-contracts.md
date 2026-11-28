@@ -23,6 +23,12 @@ rule action is dispatched or recorded as an observation. Legacy Content Safety
 observations retain their existing eligibility and share their single analysis
 result with the rules; unavailable categories remain unknown.
 
+An explicit event `occurrenceId` takes precedence. For plugin chat events that
+lack one, a nonempty UUID in the body `messageId` is used only when it matches
+the Service Bus message ID. A synthesized broker ID alone is not sufficient.
+Player-age checks use the captured chat time, not the processing or replay time;
+missing or contradictory capture/first-seen timestamps leave those checks unknown.
+
 The player-linked evaluation audit contains bounded rule/check outcomes, severity
 values and configured policy-entry IDs, never raw chat or full analyzer responses.
 Audit write failures are logged without blocking chat processing. Repository

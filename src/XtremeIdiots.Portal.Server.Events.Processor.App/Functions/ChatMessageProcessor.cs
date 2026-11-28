@@ -38,10 +38,10 @@ public class ChatMessageProcessor(
         [ServiceBusTrigger(Queues.ChatMessage, Connection = "ServiceBusConnection")] ServiceBusReceivedMessage message,
         FunctionContext context)
     {
-        ChatMessageEvent? chatEvent;
+        ChatMessageEnvelope? chatEvent;
         try
         {
-            chatEvent = JsonSerializer.Deserialize<ChatMessageEvent>(message.Body, JsonOptions.Default);
+            chatEvent = JsonSerializer.Deserialize<ChatMessageEnvelope>(message.Body, JsonOptions.Default);
         }
         catch (JsonException ex)
         {
@@ -191,7 +191,7 @@ public class ChatMessageProcessor(
         var moderationContext = new ModerationContext
         {
             ServerId = chatEvent.ServerId,
-            OccurrenceId = chatEvent.OccurrenceId,
+            OccurrenceId = GetOccurrenceId(chatEvent, message.MessageId),
             GameType = chatEvent.GameType,
             PlayerGuid = chatEvent.PlayerGuid,
             Username = chatEvent.Username,
@@ -251,6 +251,21 @@ public class ChatMessageProcessor(
                 commandPrefix,
                 chatEvent.ServerId);
         }
+    }
+
+    private static Guid? GetOccurrenceId(ChatMessageEnvelope chatEvent, string? brokerMessageId)
+    {
+        if (chatEvent.OccurrenceId is not null)
+        {
+            return chatEvent.OccurrenceId;
+        }
+
+        return chatEvent.MessageId is { ValueKind: JsonValueKind.String } sourceId &&
+            Guid.TryParseExact(sourceId.GetString(), "D", out var occurrenceId) &&
+            occurrenceId != Guid.Empty &&
+            Guid.TryParseExact(brokerMessageId, "D", out var brokerId) &&
+            occurrenceId == brokerId
+                ? occurrenceId : null;
     }
 
     private static string StripLeadingControlCharacters(string message)
@@ -324,6 +339,11 @@ public class ChatMessageProcessor(
             new MemoryCacheEntryOptions().SetSlidingExpiration(PlayerCacheExpiration));
 
         return ctx;
+    }
+
+    private sealed class ChatMessageEnvelope : ChatMessageEvent
+    {
+        public JsonElement? MessageId { get; init; }
     }
 
     private readonly record struct PlayerContextInfo(

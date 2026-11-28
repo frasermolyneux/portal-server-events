@@ -210,11 +210,13 @@ internal sealed class ChatModerationRulesEvaluator(
             case ChatModerationRulesConstants.PlayerFirstSeen:
                 var firstSeen = context.PlayerFirstSeen == default ? (DateTimeOffset?)null :
                     new DateTimeOffset(DateTime.SpecifyKind(context.PlayerFirstSeen, DateTimeKind.Utc));
-                if (firstSeen is null || firstSeen > now)
+                var occurredAt = context.EventGeneratedUtc == default ? (DateTimeOffset?)null :
+                    new DateTimeOffset(DateTime.SpecifyKind(context.EventGeneratedUtc, DateTimeKind.Utc));
+                if (firstSeen is null || occurredAt is null || firstSeen > occurredAt)
                 {
                     return Unknown();
                 }
-                return Check(now - firstSeen.Value <= TimeSpan.FromDays(parameters["withinDays"].GetInt32()));
+                return Check(occurredAt.Value - firstSeen.Value <= TimeSpan.FromDays(parameters["withinDays"].GetInt32()));
 
             case ChatModerationRulesConstants.PlayerTagName:
                 var expected = parameters["tagName"].GetString();

@@ -89,6 +89,36 @@ public sealed class ChatModerationRulesEvaluatorTests
         Assert.Empty(result.Evidence.Nodes);
     }
 
+    [Fact]
+    public void Evaluate_PlayerFirstSeenUsesOriginalChatTimeOnDelayedProcessing()
+    {
+        var snapshot = Snapshot(Rule("new-player",
+            Leaf(ChatModerationRulesConstants.PlayerFirstSeen, ("withinDays", 7))));
+        var context = Context() with { PlayerFirstSeen = Now.AddDays(-6).UtcDateTime };
+
+        var result = ChatModerationRulesEvaluator.Evaluate(context, null, snapshot, OccurrenceId, Now.AddDays(2));
+
+        Assert.Equal(RuleExecutionMatchStatus.Matched, result.MatchStatus);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Evaluate_PlayerFirstSeenIsUnknownWhenCaptureTimeIsUnavailableOrBeforeFirstSeen(bool missingCaptureTime)
+    {
+        var snapshot = Snapshot(Rule("new-player",
+            Leaf(ChatModerationRulesConstants.PlayerFirstSeen, ("withinDays", 7))));
+        var context = Context() with
+        {
+            EventGeneratedUtc = missingCaptureTime ? default : Now.AddDays(-2).UtcDateTime,
+            PlayerFirstSeen = Now.AddDays(-1).UtcDateTime
+        };
+
+        var result = ChatModerationRulesEvaluator.Evaluate(context, null, snapshot, OccurrenceId, Now);
+
+        Assert.Equal(RuleExecutionMatchStatus.Unknown, result.MatchStatus);
+    }
+
     [Theory]
     [InlineData("That player is a CHEATER", RuleExecutionMatchStatus.Matched)]
     [InlineData("That is an anti-cheater plugin", RuleExecutionMatchStatus.NoMatch)]

@@ -1,3 +1,8 @@
+using System.Text.Json;
+using System.Text.Json.Nodes;
+
+using Azure.Messaging.ServiceBus;
+
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Configuration;
@@ -170,6 +175,67 @@ public class ChatMessageProcessorTests
         _moderationPipeline.Verify(x => x.RunAsync(
             It.Is<ModerationContext>(context => context.OccurrenceId == occurrenceId),
             It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Theory]
+    [InlineData("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", null, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")]
+    [InlineData("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", null, null)]
+    [InlineData("invalid", "invalid", null, null)]
+    [InlineData("00000000-0000-0000-0000-000000000000", "00000000-0000-0000-0000-000000000000", null, null)]
+    [InlineData(null, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", null, null)]
+    [InlineData("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")]
+    [InlineData("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "00000000-0000-0000-0000-000000000000", "00000000-0000-0000-0000-000000000000")]
+    public async Task MessageIdentity_UsesMatchingSourceIdOnlyWhenOccurrenceIsAbsent(
+        string? sourceId, string brokerId, string? explicitOccurrence, string? expectedOccurrence)
+    {
+        var occurrence = explicitOccurrence is null ? (Guid?)null : Guid.Parse(explicitOccurrence);
+        var expected = expectedOccurrence is null ? (Guid?)null : Guid.Parse(expectedOccurrence);
+        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.Tags))
+            .ReturnsAsync(SuccessResult(CreatePlayerDto(TestPlayerId)));
+        _chatApi.Setup(x => x.CreateChatMessage(It.IsAny<CreateChatMessageDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(SuccessResult());
+
+        var message = CreateSourceMessage(CreateValidEvent(occurrenceId: occurrence),
+            sourceId is null ? null : JsonValue.Create(sourceId), brokerId);
+
+        await _sut.ProcessChatMessage(message, _functionContext.Object);
+        await _sut.ProcessChatMessage(message, _functionContext.Object);
+
+        _moderationPipeline.Verify(x => x.RunAsync(
+            It.Is<ModerationContext>(context => context.OccurrenceId == expected),
+            It.IsAny<CancellationToken>()), Times.Exactly(2));
+    }
+
+    [Fact]
+    public async Task NonStringSourceId_DoesNotPreventExistingChatProcessing()
+    {
+        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.Tags))
+            .ReturnsAsync(SuccessResult(CreatePlayerDto(TestPlayerId)));
+        _chatApi.Setup(x => x.CreateChatMessage(It.IsAny<CreateChatMessageDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(SuccessResult());
+
+        var message = CreateSourceMessage(CreateValidEvent(), JsonValue.Create(42),
+            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+
+        await _sut.ProcessChatMessage(message, _functionContext.Object);
+
+        _chatApi.Verify(x => x.CreateChatMessage(It.IsAny<CreateChatMessageDto>(), It.IsAny<CancellationToken>()), Times.Once);
+        _moderationPipeline.Verify(x => x.RunAsync(
+            It.Is<ModerationContext>(context => context.OccurrenceId == null),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    private static ServiceBusReceivedMessage CreateSourceMessage(ChatMessageEvent evt, JsonNode? sourceId, string brokerId)
+    {
+        var body = JsonSerializer.SerializeToNode(evt, new JsonSerializerOptions(JsonSerializerDefaults.Web))!.AsObject();
+        if (sourceId is not null)
+        {
+            body["messageId"] = sourceId;
+        }
+
+        return ServiceBusModelFactory.ServiceBusReceivedMessage(
+            body: BinaryData.FromString(body.ToJsonString()),
+            messageId: brokerId);
     }
 
     [Fact]
