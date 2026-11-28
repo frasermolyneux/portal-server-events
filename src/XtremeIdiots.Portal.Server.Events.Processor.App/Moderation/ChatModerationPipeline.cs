@@ -50,12 +50,6 @@ public sealed class ChatModerationPipeline(
                 return;
             }
 
-            // Azure Content Safety API has a 10,000 character limit; truncate to stay within bounds
-            const int maxApiTextLength = 10_000;
-            var textToAnalyse = context.Message.Length > maxApiTextLength
-                ? context.Message[..maxApiTextLength]
-                : context.Message;
-
             // Cost control: only analyse new or tagged players via the paid API
             var newPlayerDays = int.TryParse(configuration["ContentSafety:NewPlayerWindowDays"], out var npd) ? npd : 7;
             var isNewPlayer = newPlayerDays > 0
@@ -66,7 +60,8 @@ public sealed class ChatModerationPipeline(
                 return;
             }
 
-            var moderationResult = await contentSafety.AnalyseAsync(textToAnalyse, ct);
+            var analysis = new ChatModerationAnalysis(contentSafety, context.Message, ct);
+            var moderationResult = await analysis.GetAsync().ConfigureAwait(false);
             if (moderationResult is null)
             {
                 return;
