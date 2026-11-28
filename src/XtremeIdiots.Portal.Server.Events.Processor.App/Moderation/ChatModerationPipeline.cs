@@ -18,15 +18,31 @@ public sealed class ChatModerationPipeline(
     IConfiguration configuration,
     IFeatureManager featureManager,
     IAuditLogger auditLogger,
+    IChatModerationRulesEvaluator rulesEvaluator,
     ILogger<ChatModerationPipeline> logger) : IChatModerationPipeline
 {
     public async Task RunAsync(ModerationContext context, CancellationToken ct = default)
     {
+        var result = await RunLegacyAsync(context, ct).ConfigureAwait(false);
+        try
+        {
+            await rulesEvaluator.EvaluateAsync(context, result, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Chat moderation rule evaluation failed for player {PlayerId} on {ServerId}",
+                context.PlayerId, context.ServerId);
+        }
+    }
+
+    private async Task<ChatModerationResult?> RunLegacyAsync(ModerationContext context, CancellationToken ct)
+    {
+        ChatModerationResult? moderationResult = null;
         try
         {
             if (!await featureManager.IsEnabledAsync("EventIngest.ChatToxicityDetection"))
             {
-                return;
+                return null;
             }
 
             var moderationSettings = await settingsProvider
@@ -35,26 +51,20 @@ public sealed class ChatModerationPipeline(
 
             if (!moderationSettings.IsCategoryEnabled)
             {
-                return;
+                return null;
             }
 
             var minLength = moderationSettings.MinMessageLength;
 
             if (context.Message.Length < minLength)
             {
-                return;
+                return null;
             }
 
             if (context.Message.StartsWith("QUICKMESSAGE_", StringComparison.OrdinalIgnoreCase))
             {
-                return;
+                return null;
             }
-
-            // Azure Content Safety API has a 10,000 character limit; truncate to stay within bounds
-            const int maxApiTextLength = 10_000;
-            var textToAnalyse = context.Message.Length > maxApiTextLength
-                ? context.Message[..maxApiTextLength]
-                : context.Message;
 
             // Cost control: only analyse new or tagged players via the paid API
             var newPlayerDays = int.TryParse(configuration["ContentSafety:NewPlayerWindowDays"], out var npd) ? npd : 7;
@@ -63,19 +73,20 @@ public sealed class ChatModerationPipeline(
 
             if (!isNewPlayer && !context.HasModerateChatTag)
             {
-                return;
+                return null;
             }
 
-            var moderationResult = await contentSafety.AnalyseAsync(textToAnalyse, ct);
+            var analysis = new ChatModerationAnalysis(contentSafety, context.Message, ct);
+            moderationResult = await analysis.GetAsync().ConfigureAwait(false);
             if (moderationResult is null)
             {
-                return;
+                return null;
             }
 
             var triggeredCategories = GetTriggeredCategories(moderationResult, moderationSettings);
             if (triggeredCategories.Count == 0)
             {
-                return;
+                return moderationResult;
             }
 
             var reason = BuildObservationReason(moderationResult, moderationSettings, context.Message, triggeredCategories);
@@ -88,6 +99,7 @@ public sealed class ChatModerationPipeline(
             logger.LogError(ex, "Chat moderation pipeline failed for {Username} on {ServerId}",
                 context.Username, context.ServerId);
         }
+        return moderationResult;
     }
 
     private async Task CreateObservationAsync(ModerationContext context, string reason, string source, CancellationToken ct)
@@ -134,22 +146,23 @@ public sealed class ChatModerationPipeline(
     {
         var triggered = new List<string>();
 
-        if (settings.HateSeverityThreshold.HasValue && result.HateSeverity >= settings.HateSeverityThreshold.Value)
+        // Preserve the legacy observation behavior while retaining missing categories for future rule checks.
+        if (settings.HateSeverityThreshold.HasValue && (result.HateSeverity ?? 0) >= settings.HateSeverityThreshold.Value)
         {
             triggered.Add("Hate");
         }
 
-        if (settings.ViolenceSeverityThreshold.HasValue && result.ViolenceSeverity >= settings.ViolenceSeverityThreshold.Value)
+        if (settings.ViolenceSeverityThreshold.HasValue && (result.ViolenceSeverity ?? 0) >= settings.ViolenceSeverityThreshold.Value)
         {
             triggered.Add("Violence");
         }
 
-        if (settings.SexualSeverityThreshold.HasValue && result.SexualSeverity >= settings.SexualSeverityThreshold.Value)
+        if (settings.SexualSeverityThreshold.HasValue && (result.SexualSeverity ?? 0) >= settings.SexualSeverityThreshold.Value)
         {
             triggered.Add("Sexual");
         }
 
-        if (settings.SelfHarmSeverityThreshold.HasValue && result.SelfHarmSeverity >= settings.SelfHarmSeverityThreshold.Value)
+        if (settings.SelfHarmSeverityThreshold.HasValue && (result.SelfHarmSeverity ?? 0) >= settings.SelfHarmSeverityThreshold.Value)
         {
             triggered.Add("SelfHarm");
         }
@@ -168,10 +181,10 @@ public sealed class ChatModerationPipeline(
             "[AI Content Safety]",
             $"Triggered categories: {string.Join(", ", triggeredCategories)}",
             "",
-            $"Hate: {result.HateSeverity}/6 (threshold: {FormatThreshold(settings.HateSeverityThreshold)})",
-            $"Violence: {result.ViolenceSeverity}/6 (threshold: {FormatThreshold(settings.ViolenceSeverityThreshold)})",
-            $"Sexual: {result.SexualSeverity}/6 (threshold: {FormatThreshold(settings.SexualSeverityThreshold)})",
-            $"SelfHarm: {result.SelfHarmSeverity}/6 (threshold: {FormatThreshold(settings.SelfHarmSeverityThreshold)})",
+            $"Hate: {result.HateSeverity ?? 0}/6 (threshold: {FormatThreshold(settings.HateSeverityThreshold)})",
+            $"Violence: {result.ViolenceSeverity ?? 0}/6 (threshold: {FormatThreshold(settings.ViolenceSeverityThreshold)})",
+            $"Sexual: {result.SexualSeverity ?? 0}/6 (threshold: {FormatThreshold(settings.SexualSeverityThreshold)})",
+            $"SelfHarm: {result.SelfHarmSeverity ?? 0}/6 (threshold: {FormatThreshold(settings.SelfHarmSeverityThreshold)})",
             "",
             "Message excerpt:",
             $"\"{Truncate(message, 200)}\""

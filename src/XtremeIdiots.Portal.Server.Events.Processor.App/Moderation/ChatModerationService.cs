@@ -15,20 +15,20 @@ public class ChatModerationService(
             var response = await client.AnalyzeTextAsync(new AnalyzeTextOptions(message), ct);
 
             var hate = response.Value.CategoriesAnalysis
-                .FirstOrDefault(c => c.Category == TextCategory.Hate)?.Severity ?? 0;
+                .FirstOrDefault(c => c.Category == TextCategory.Hate)?.Severity;
             var selfHarm = response.Value.CategoriesAnalysis
-                .FirstOrDefault(c => c.Category == TextCategory.SelfHarm)?.Severity ?? 0;
+                .FirstOrDefault(c => c.Category == TextCategory.SelfHarm)?.Severity;
             var sexual = response.Value.CategoriesAnalysis
-                .FirstOrDefault(c => c.Category == TextCategory.Sexual)?.Severity ?? 0;
+                .FirstOrDefault(c => c.Category == TextCategory.Sexual)?.Severity;
             var violence = response.Value.CategoriesAnalysis
-                .FirstOrDefault(c => c.Category == TextCategory.Violence)?.Severity ?? 0;
+                .FirstOrDefault(c => c.Category == TextCategory.Violence)?.Severity;
 
-            var max = new[] { hate, selfHarm, sexual, violence }.Max();
+            var max = new[] { hate ?? 0, selfHarm ?? 0, sexual ?? 0, violence ?? 0 }.Max();
             var category = max switch
             {
-                _ when hate == max => "Hate",
-                _ when selfHarm == max => "SelfHarm",
-                _ when sexual == max => "Sexual",
+                _ when (hate ?? 0) == max => "Hate",
+                _ when (selfHarm ?? 0) == max => "SelfHarm",
+                _ when (sexual ?? 0) == max => "Sexual",
                 _ => "Violence"
             };
 

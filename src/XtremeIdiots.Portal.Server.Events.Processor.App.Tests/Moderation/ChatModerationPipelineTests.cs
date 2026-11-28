@@ -12,6 +12,7 @@ using MX.Api.Abstractions;
 using XtremeIdiots.Portal.Repository.Abstractions.Interfaces.V1;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.AdminActions;
 using XtremeIdiots.Portal.Repository.Api.Client.V1;
+using XtremeIdiots.Portal.Server.Events.Abstractions.V1.Events;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Moderation;
 
 using static XtremeIdiots.Portal.Server.Events.Processor.App.Tests.ServiceBusTestHelpers;
@@ -28,6 +29,7 @@ public class ChatModerationPipelineTests
     private readonly Mock<IFeatureManager> _featureManager = new();
     private readonly Mock<ILogger<ChatModerationPipeline>> _logger = new();
     private readonly Mock<IAuditLogger> _auditLogger = new();
+    private readonly Mock<IChatModerationRulesEvaluator> _rulesEvaluator = new();
     private readonly Dictionary<string, string?> _configValues;
     private readonly IConfiguration _configuration;
     private readonly ChatModerationPipeline _sut;
@@ -75,6 +77,7 @@ public class ChatModerationPipelineTests
             _configuration,
             _featureManager.Object,
             _auditLogger.Object,
+            _rulesEvaluator.Object,
             _logger.Object);
     }
 
@@ -88,8 +91,12 @@ public class ChatModerationPipelineTests
             PlayerGuid = "abc123guid",
             Username = "TestPlayer",
             Message = message ?? "This is a test message",
+            MessageType = ChatMessageType.All,
+            SlotId = 3,
+            EventGeneratedUtc = DateTime.UtcNow,
             PlayerId = TestPlayerId,
             PlayerFirstSeen = isNewPlayer ? DateTime.UtcNow.AddDays(-1) : DateTime.UtcNow.AddDays(-30),
+            PlayerTagNames = [],
             HasModerateChatTag = hasModerateChatTag
         };
 
@@ -103,6 +110,7 @@ public class ChatModerationPipelineTests
         await _sut.RunAsync(CreateContext());
 
         _contentSafety.Verify(x => x.AnalyseAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        _rulesEvaluator.Verify(x => x.EvaluateAsync(It.IsAny<ModerationContext>(), null, It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -154,6 +162,8 @@ public class ChatModerationPipelineTests
         await _sut.RunAsync(CreateContext());
 
         _auditLogger.Verify(x => x.LogAudit(It.IsAny<AuditEvent>()), Times.Never);
+        _rulesEvaluator.Verify(x => x.EvaluateAsync(It.IsAny<ModerationContext>(),
+            It.Is<ChatModerationResult>(result => result.HateSeverity == 4), It.IsAny<CancellationToken>()), Times.Once);
         _logger.Verify(x => x.Log(
             LogLevel.Error,
             It.IsAny<EventId>(),
@@ -165,13 +175,32 @@ public class ChatModerationPipelineTests
     [Fact]
     public async Task RunAsync_NewAndTaggedPlayer_UsesOnePaidCheck()
     {
+        var result = new ChatModerationResult(0, 0, 0, 0, 0, "Hate");
         _contentSafety
             .Setup(x => x.AnalyseAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new ChatModerationResult(0, 0, 0, 0, 0, "Hate"));
+            .ReturnsAsync(result);
 
         await _sut.RunAsync(CreateContext(isNewPlayer: true, hasModerateChatTag: true));
 
         _contentSafety.Verify(x => x.AnalyseAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Once);
+        _rulesEvaluator.Verify(x => x.EvaluateAsync(It.IsAny<ModerationContext>(), result, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task RunAsync_RuleFailureDoesNotSuppressLegacyObservation()
+    {
+        _contentSafety.Setup(x => x.AnalyseAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ChatModerationResult(4, 0, 0, 0, 4, "Hate"));
+        _rulesEvaluator.Setup(x => x.EvaluateAsync(It.IsAny<ModerationContext>(),
+                It.IsAny<ChatModerationResult?>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("rules unavailable"));
+
+        await _sut.RunAsync(CreateContext());
+
+        _adminActionsApi.Verify(x => x.CreateAdminAction(It.IsAny<CreateAdminActionDto>(),
+            It.IsAny<CancellationToken>()), Times.Once);
+        _auditLogger.Verify(x => x.LogAudit(It.Is<AuditEvent>(audit =>
+            audit.EventName == "ChatModerationObservationCreated")), Times.Once);
     }
 
     [Fact]
@@ -185,6 +214,23 @@ public class ChatModerationPipelineTests
 
         _adminActionsApi.Verify(x => x.CreateAdminAction(
             It.IsAny<CreateAdminActionDto>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task RunAsync_MissingCategoryAtZeroThreshold_PreservesLegacyObservation()
+    {
+        _settingsProvider
+            .Setup(x => x.GetForServerAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ChatModerationSettings(5, 0, null, null, null));
+        _contentSafety
+            .Setup(x => x.AnalyseAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ChatModerationResult(null, null, null, null, 0, "Hate"));
+
+        await _sut.RunAsync(CreateContext());
+
+        _adminActionsApi.Verify(x => x.CreateAdminAction(
+            It.Is<CreateAdminActionDto>(dto => dto.Text.Contains("Hate: 0/6")),
+            It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]

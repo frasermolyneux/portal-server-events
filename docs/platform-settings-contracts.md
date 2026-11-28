@@ -15,6 +15,26 @@ This document defines how `portal-server-events` consumes platform settings afte
 - New approach: canonical contracts are owned in `portal-repository` via `XtremeIdiots.Portal.Settings.Contracts.V1`.
 - `XtremeIdiots.Portal.ChatCommands.Abstractions.V1` is compatibility-only and not canonical for new behavior.
 
+## Chat moderation rules
+
+The staged `chatModerationRules` namespace is disabled by default. When enabled,
+events with an occurrence ID are evaluated in dry-run mode only: no configured
+rule action is dispatched or recorded as an observation. Legacy Content Safety
+observations retain their existing eligibility and share their single analysis
+result with the rules; unavailable categories remain unknown.
+
+An explicit event `occurrenceId` takes precedence. For plugin chat events that
+lack one, a nonempty UUID in the body `messageId` is used only when it matches
+the Service Bus message ID. A synthesized broker ID alone is not sufficient.
+Player-age checks use the captured chat time, not the processing or replay time;
+missing or contradictory capture/first-seen timestamps leave those checks unknown.
+
+The player-linked evaluation audit contains bounded rule/check outcomes, severity
+values and configured policy-entry IDs, never raw chat or full analyzer responses.
+Audit write failures are logged without blocking chat processing. Repository
+retains these evaluations for 30 days and deletes them with the player. Native
+kicks and private nudges remain unavailable until correlated delivery is deployed.
+
 ## Welcome cutover
 
 The legacy `welcomeMessages` runtime, its process-local deduplication, delayed

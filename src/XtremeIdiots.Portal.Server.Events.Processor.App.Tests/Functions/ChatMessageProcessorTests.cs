@@ -1,3 +1,8 @@
+using System.Text.Json;
+using System.Text.Json.Nodes;
+
+using Azure.Messaging.ServiceBus;
+
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Configuration;
@@ -14,6 +19,7 @@ using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.ChatMessages;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.ConnectedPlayers;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.GameServers;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.Players;
+using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.Tags;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.UserProfiles;
 using XtremeIdiots.Portal.Repository.Api.Client.V1;
 using XtremeIdiots.Portal.Server.Events.Abstractions.V1.Events;
@@ -114,11 +120,13 @@ public class ChatMessageProcessorTests
         string? chatMessage = null,
         int slotId = 3,
         ChatMessageType? type = null,
-        Guid? serverId = null) => new()
+        Guid? serverId = null,
+        Guid? occurrenceId = null) => new()
         {
             EventGeneratedUtc = DateTime.UtcNow.AddSeconds(-10),
             EventPublishedUtc = DateTime.UtcNow.AddSeconds(-5),
             ServerId = serverId ?? TestServerId,
+            OccurrenceId = occurrenceId,
             GameType = gameType ?? "CallOfDuty4",
             SequenceId = 1,
             PlayerGuid = playerGuid ?? "abc123guid",
@@ -149,6 +157,123 @@ public class ChatMessageProcessorTests
             dto.ChatType == ChatType.All &&
             dto.Username == "TestPlayer" &&
             dto.Message == "Hello world"), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")]
+    public async Task ValidMessage_PassesCaptureIdentityToModeration(string? occurrence)
+    {
+        var occurrenceId = occurrence is null ? (Guid?)null : Guid.Parse(occurrence);
+        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.Tags))
+            .ReturnsAsync(SuccessResult(CreatePlayerDto(TestPlayerId)));
+        _chatApi.Setup(x => x.CreateChatMessage(It.IsAny<CreateChatMessageDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(SuccessResult());
+
+        await _sut.ProcessChatMessage(CreateMessage(CreateValidEvent(occurrenceId: occurrenceId)), _functionContext.Object);
+
+        _moderationPipeline.Verify(x => x.RunAsync(
+            It.Is<ModerationContext>(context => context.OccurrenceId == occurrenceId),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Theory]
+    [InlineData("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", null, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")]
+    [InlineData("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", null, null)]
+    [InlineData("invalid", "invalid", null, null)]
+    [InlineData("00000000-0000-0000-0000-000000000000", "00000000-0000-0000-0000-000000000000", null, null)]
+    [InlineData(null, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", null, null)]
+    [InlineData("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")]
+    [InlineData("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "00000000-0000-0000-0000-000000000000", "00000000-0000-0000-0000-000000000000")]
+    public async Task MessageIdentity_UsesMatchingSourceIdOnlyWhenOccurrenceIsAbsent(
+        string? sourceId, string brokerId, string? explicitOccurrence, string? expectedOccurrence)
+    {
+        var occurrence = explicitOccurrence is null ? (Guid?)null : Guid.Parse(explicitOccurrence);
+        var expected = expectedOccurrence is null ? (Guid?)null : Guid.Parse(expectedOccurrence);
+        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.Tags))
+            .ReturnsAsync(SuccessResult(CreatePlayerDto(TestPlayerId)));
+        _chatApi.Setup(x => x.CreateChatMessage(It.IsAny<CreateChatMessageDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(SuccessResult());
+
+        var message = CreateSourceMessage(CreateValidEvent(occurrenceId: occurrence),
+            sourceId is null ? null : JsonValue.Create(sourceId), brokerId);
+
+        await _sut.ProcessChatMessage(message, _functionContext.Object);
+        await _sut.ProcessChatMessage(message, _functionContext.Object);
+
+        _moderationPipeline.Verify(x => x.RunAsync(
+            It.Is<ModerationContext>(context => context.OccurrenceId == expected),
+            It.IsAny<CancellationToken>()), Times.Exactly(2));
+    }
+
+    [Fact]
+    public async Task NonStringSourceId_DoesNotPreventExistingChatProcessing()
+    {
+        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.Tags))
+            .ReturnsAsync(SuccessResult(CreatePlayerDto(TestPlayerId)));
+        _chatApi.Setup(x => x.CreateChatMessage(It.IsAny<CreateChatMessageDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(SuccessResult());
+
+        var message = CreateSourceMessage(CreateValidEvent(), JsonValue.Create(42),
+            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+
+        await _sut.ProcessChatMessage(message, _functionContext.Object);
+
+        _chatApi.Verify(x => x.CreateChatMessage(It.IsAny<CreateChatMessageDto>(), It.IsAny<CancellationToken>()), Times.Once);
+        _moderationPipeline.Verify(x => x.RunAsync(
+            It.Is<ModerationContext>(context => context.OccurrenceId == null),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    private static ServiceBusReceivedMessage CreateSourceMessage(ChatMessageEvent evt, JsonNode? sourceId, string brokerId)
+    {
+        var body = JsonSerializer.SerializeToNode(evt, new JsonSerializerOptions(JsonSerializerDefaults.Web))!.AsObject();
+        if (sourceId is not null)
+        {
+            body["messageId"] = sourceId;
+        }
+
+        return ServiceBusModelFactory.ServiceBusReceivedMessage(
+            body: BinaryData.FromString(body.ToJsonString()),
+            messageId: brokerId);
+    }
+
+    [Fact]
+    public async Task ValidMessage_PassesOriginalChatContextToModeration()
+    {
+        var evt = CreateValidEvent(type: ChatMessageType.Team, slotId: 9);
+        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.Tags))
+            .ReturnsAsync(SuccessResult(CreatePlayerDto(TestPlayerId)));
+        _chatApi.Setup(x => x.CreateChatMessage(It.IsAny<CreateChatMessageDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(SuccessResult());
+
+        await _sut.ProcessChatMessage(CreateMessage(evt), _functionContext.Object);
+
+        _moderationPipeline.Verify(x => x.RunAsync(
+            It.Is<ModerationContext>(context => context.MessageType == ChatMessageType.Team &&
+                context.SlotId == 9 && context.EventGeneratedUtc == evt.EventGeneratedUtc),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task ValidMessage_PassesTagNamesWithoutDiscardingUnavailableNames()
+    {
+        var player = CreatePlayerDto(TestPlayerId);
+        player.Tags.Add(new PlayerTagDto { Tag = new TagDto { Name = "Example" } });
+        player.Tags.Add(new PlayerTagDto());
+        _playersApi.Setup(x => x.GetPlayerByGameType(GameType.CallOfDuty4, "abc123guid", PlayerEntityOptions.Tags))
+            .ReturnsAsync(SuccessResult(player));
+        _chatApi.Setup(x => x.CreateChatMessage(It.IsAny<CreateChatMessageDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(SuccessResult());
+
+        await _sut.ProcessChatMessage(CreateMessage(CreateValidEvent()), _functionContext.Object);
+
+        _moderationPipeline.Verify(x => x.RunAsync(
+            It.Is<ModerationContext>(context => context.PlayerTagNames.SequenceEqual(new string?[] { "Example", null })),
+            It.IsAny<CancellationToken>()), Times.Once);
+        _commandProcessor.Verify(x => x.ProcessAsync(
+            It.Is<CommandContext>(context => context.AuthorizationSnapshot!.Tags.SetEquals(new[] { "Example" })),
+            It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]

@@ -8,7 +8,9 @@ using Microsoft.Extensions.Logging;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.RulesEngine;
 using XtremeIdiots.Portal.Repository.Abstractions.Models.V1.SiegeMode;
 using XtremeIdiots.Portal.Repository.Api.Client.V1;
+using XtremeIdiots.Portal.Settings.Contracts.V1.Contracts.Moderation;
 using XtremeIdiots.Portal.Settings.Contracts.V1.Contracts.RulesEngine;
+using XtremeIdiots.Portal.Settings.Contracts.V1.Contracts.Shared;
 using XtremeIdiots.Portal.Settings.Contracts.V1.Contracts.SiegeMode;
 using XtremeIdiots.Portal.Settings.Contracts.V1.Contracts.WelcomeMessages;
 
@@ -89,19 +91,39 @@ internal sealed class ConfiguredFeatureRulesProvider(
             var globalJson = globalResponse.Result?.Data?.Configuration;
             var serverJson = serverResponse.Result?.Data?.Configuration;
             FeatureRuleSetDocument? global = string.IsNullOrWhiteSpace(globalJson)
-                ? new FeatureRuleSetDocument { FeatureId = featureId, Enabled = false }
+                ? featureId == ChatModerationRulesConstants.FeatureId
+                    ? new ChatModerationRulesDocument()
+                    : new FeatureRuleSetDocument { FeatureId = featureId, Enabled = false }
                 : featureId == WelcomeRulesSettingsConstants.FeatureId
                     ? JsonSerializer.Deserialize<WelcomeRulesSettingsDocument>(globalJson, RulesSerialization.Options)
-                    : JsonSerializer.Deserialize<FeatureRuleSetDocument>(globalJson, RulesSerialization.Options);
+                    : featureId == ChatModerationRulesConstants.FeatureId
+                        ? JsonSerializer.Deserialize<ChatModerationRulesDocument>(globalJson, RulesSerialization.Options)
+                        : JsonSerializer.Deserialize<FeatureRuleSetDocument>(globalJson, RulesSerialization.Options);
             var server = string.IsNullOrWhiteSpace(serverJson)
                 ? null
-                : JsonSerializer.Deserialize<FeatureRuleSetOverrideDocument>(serverJson, RulesSerialization.Options);
-            var validator = new RuleSetValidator();
-            var options = RuleSetValidationOptions.ForFeature(featureId);
-            var globalValidation = global is WelcomeRulesSettingsDocument welcome
-                ? new WelcomeRulesSettingsValidator().Validate(welcome) : validator.Validate(global, options);
-            var overrideValidation = server is null ? null : validator.ValidateOverride(server, options);
-            if (!globalValidation.IsValid || overrideValidation?.IsValid == false)
+                : featureId == ChatModerationRulesConstants.FeatureId
+                    ? JsonSerializer.Deserialize<ChatModerationRulesServerDocument>(serverJson, RulesSerialization.Options)
+                    : JsonSerializer.Deserialize<FeatureRuleSetOverrideDocument>(serverJson, RulesSerialization.Options);
+            SettingsValidationResult globalValidation;
+            SettingsValidationResult? overrideValidation;
+            if (featureId == ChatModerationRulesConstants.FeatureId)
+            {
+                var validator = new ChatModerationRulesValidator();
+                globalValidation = validator.Validate(global as ChatModerationRulesDocument);
+                overrideValidation = server is null ? null :
+                    validator.ValidateServerOverride(server as ChatModerationRulesServerDocument);
+            }
+            else
+            {
+                var validator = new RuleSetValidator();
+                var options = RuleSetValidationOptions.ForFeature(featureId);
+                globalValidation = global is WelcomeRulesSettingsDocument welcome
+                    ? new WelcomeRulesSettingsValidator().Validate(welcome) : validator.Validate(global, options);
+                overrideValidation = server is null ? null : validator.ValidateOverride(server, options);
+            }
+            if (!globalValidation.IsValid || overrideValidation?.IsValid == false ||
+                featureId == ChatModerationRulesConstants.FeatureId &&
+                !string.IsNullOrWhiteSpace(serverJson) && server is null)
             {
                 throw new InvalidOperationException($"Invalid rules configuration for {featureId}: " +
                     string.Join("; ", globalValidation.Errors.Concat(overrideValidation?.Errors ?? [])));
