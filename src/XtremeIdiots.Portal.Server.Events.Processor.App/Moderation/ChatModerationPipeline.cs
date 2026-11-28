@@ -18,15 +18,31 @@ public sealed class ChatModerationPipeline(
     IConfiguration configuration,
     IFeatureManager featureManager,
     IAuditLogger auditLogger,
+    IChatModerationRulesEvaluator rulesEvaluator,
     ILogger<ChatModerationPipeline> logger) : IChatModerationPipeline
 {
     public async Task RunAsync(ModerationContext context, CancellationToken ct = default)
     {
+        var result = await RunLegacyAsync(context, ct).ConfigureAwait(false);
+        try
+        {
+            await rulesEvaluator.EvaluateAsync(context, result, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Chat moderation rule evaluation failed for player {PlayerId} on {ServerId}",
+                context.PlayerId, context.ServerId);
+        }
+    }
+
+    private async Task<ChatModerationResult?> RunLegacyAsync(ModerationContext context, CancellationToken ct)
+    {
+        ChatModerationResult? moderationResult = null;
         try
         {
             if (!await featureManager.IsEnabledAsync("EventIngest.ChatToxicityDetection"))
             {
-                return;
+                return null;
             }
 
             var moderationSettings = await settingsProvider
@@ -35,19 +51,19 @@ public sealed class ChatModerationPipeline(
 
             if (!moderationSettings.IsCategoryEnabled)
             {
-                return;
+                return null;
             }
 
             var minLength = moderationSettings.MinMessageLength;
 
             if (context.Message.Length < minLength)
             {
-                return;
+                return null;
             }
 
             if (context.Message.StartsWith("QUICKMESSAGE_", StringComparison.OrdinalIgnoreCase))
             {
-                return;
+                return null;
             }
 
             // Cost control: only analyse new or tagged players via the paid API
@@ -57,20 +73,20 @@ public sealed class ChatModerationPipeline(
 
             if (!isNewPlayer && !context.HasModerateChatTag)
             {
-                return;
+                return null;
             }
 
             var analysis = new ChatModerationAnalysis(contentSafety, context.Message, ct);
-            var moderationResult = await analysis.GetAsync().ConfigureAwait(false);
+            moderationResult = await analysis.GetAsync().ConfigureAwait(false);
             if (moderationResult is null)
             {
-                return;
+                return null;
             }
 
             var triggeredCategories = GetTriggeredCategories(moderationResult, moderationSettings);
             if (triggeredCategories.Count == 0)
             {
-                return;
+                return moderationResult;
             }
 
             var reason = BuildObservationReason(moderationResult, moderationSettings, context.Message, triggeredCategories);
@@ -83,6 +99,7 @@ public sealed class ChatModerationPipeline(
             logger.LogError(ex, "Chat moderation pipeline failed for {Username} on {ServerId}",
                 context.Username, context.ServerId);
         }
+        return moderationResult;
     }
 
     private async Task CreateObservationAsync(ModerationContext context, string reason, string source, CancellationToken ct)

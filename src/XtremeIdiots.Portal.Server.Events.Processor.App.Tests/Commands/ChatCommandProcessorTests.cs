@@ -7,6 +7,8 @@ using MX.Observability.ApplicationInsights.Auditing;
 using XtremeIdiots.Portal.Repository.Abstractions.Constants.V1;
 using XtremeIdiots.Portal.Server.Events.Processor.App.Commands;
 
+using ChatCommandDefinition = XtremeIdiots.Portal.Server.Events.Processor.App.Commands.ChatCommandDefinition;
+
 namespace XtremeIdiots.Portal.Server.Events.Processor.App.Tests.Commands;
 
 public class ChatCommandProcessorTests
